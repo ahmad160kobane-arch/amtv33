@@ -45,7 +45,7 @@ app.use('/api/agent', agentRoutes);
 app.get('/api/health', async (req, res) => {
   const cloud = require('./lib/cloud');
   const cloudHealth = await cloud.healthCheck();
-  res.json({ status: 'ok', version: '2.0.0', name: 'MA Streaming API', cloud: cloudHealth });
+  res.json({ status: 'ok', version: '2.1.0', name: 'MA Streaming API', cloud: cloudHealth });
 });
 
 // ─── البث يمر فقط عبر السيرفر السحابي ──────────────────
