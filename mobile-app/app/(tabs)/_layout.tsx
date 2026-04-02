@@ -10,6 +10,7 @@ type IoniconsName = React.ComponentProps<typeof Ionicons>['name'];
 
 const TAB_ICONS: Record<string, { active: IoniconsName; inactive: IoniconsName }> = {
   index: { active: 'home', inactive: 'home-outline' },
+  live: { active: 'radio', inactive: 'radio-outline' },
   sports: { active: 'football', inactive: 'football-outline' },
   kids: { active: 'balloon', inactive: 'balloon-outline' },
   entertainment: { active: 'film', inactive: 'film-outline' },
@@ -154,6 +155,7 @@ export default function TabLayout() {
       screenOptions={{ headerShown: false }}
     >
       <Tabs.Screen name="index" options={{ title: 'الرئيسية' }} />
+      <Tabs.Screen name="live" options={{ title: 'بث مباشر' }} />
       <Tabs.Screen name="sports" options={{ title: 'رياضة' }} />
       <Tabs.Screen name="kids" options={{ title: 'أطفال' }} />
       <Tabs.Screen name="entertainment" options={{ title: 'ترفيه' }} />

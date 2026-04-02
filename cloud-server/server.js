@@ -141,6 +141,48 @@ async function _fetchUserFromBackend(token) {
   }
 }
 
+// --- Sync channels from Backend (PostgreSQL) into local SQLite ---
+const _upsertChannel = db.prepare(`
+  INSERT INTO channels (id, name, group_name, logo_url, stream_url, is_enabled)
+  VALUES (?, ?, ?, ?, ?, 1)
+  ON CONFLICT(id) DO UPDATE SET
+    name=excluded.name, group_name=excluded.group_name,
+    logo_url=excluded.logo_url, stream_url=excluded.stream_url,
+    is_enabled=excluded.is_enabled
+`);
+
+let _lastChannelSync = 0;
+const CHANNEL_SYNC_INTERVAL = 10 * 60 * 1000; // 10 minutes
+
+async function syncChannelsFromBackend(force = false) {
+  if (!force && Date.now() - _lastChannelSync < CHANNEL_SYNC_INTERVAL) return 0;
+  try {
+    console.log('[Sync] Fetching channels from backend PostgreSQL...');
+    const res = await fetch(`${config.BACKEND_URL}/api/channels/export`, {
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!res.ok) { console.log('[Sync] Backend returned', res.status); return 0; }
+    const data = await res.json();
+    const channels = data.channels || [];
+    if (channels.length === 0) { console.log('[Sync] No channels from backend'); return 0; }
+
+    const syncMany = db.transaction((rows) => {
+      db.prepare('DELETE FROM channels').run();
+      for (const ch of rows) {
+        _upsertChannel.run(ch.id, ch.name || '', ch.group_name || '', ch.logo_url || '', ch.stream_url || '');
+      }
+    });
+
+    syncMany(channels);
+    _lastChannelSync = Date.now();
+    console.log(`[Sync] Synced ${channels.length} channels from backend PostgreSQL`);
+    return channels.length;
+  } catch (e) {
+    console.error('[Sync] Error:', e.message);
+    return 0;
+  }
+}
+
 // --- Middleware: JWT auth + backend proxy ---
 function requireAuth(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -207,9 +249,14 @@ app.post('/api/stream/live/:channelId', requireAuth, requirePremium, async (req,
       return res.json({ success: true, hlsUrl: `${XTREAM.primary}/live/${XTREAM.user}/${XTREAM.pass}/${xch.stream_id}.m3u8`, ready: true, streamId: String(xch.stream_id), name: xch.name, logo: xch.logo });
     }
   }
-  const ch = db.prepare('SELECT id, name, stream_url FROM channels WHERE id = ? AND is_enabled = 1').get(rawId);
-  if (!ch) return res.status(404).json({ error: 'Ø§Ù„Ù‚Ù†Ø§Ø© ØºÙŠØ± Ù…ØªØ§Ø­Ø©' });
-  if (!ch.stream_url) return res.status(400).json({ error: 'Ø§Ù„Ù‚Ù†Ø§Ø© Ø¨Ø¯ÙˆÙ† Ø±Ø§Ø¨Ø· Ø¨Ø«' });
+  let ch = db.prepare('SELECT id, name, stream_url FROM channels WHERE id = ? AND is_enabled = 1').get(rawId);
+  // Lazy sync: if channel not found locally, sync from backend PostgreSQL and retry
+  if (!ch) {
+    await syncChannelsFromBackend(true);
+    ch = db.prepare('SELECT id, name, stream_url FROM channels WHERE id = ? AND is_enabled = 1').get(rawId);
+  }
+  if (!ch) return res.status(404).json({ error: 'القناة غير متاحة' });
+  if (!ch.stream_url) return res.status(400).json({ error: 'القناة بدون رابط بث' });
 
   // â•â•â• Ø§Ù„ÙˆØ¶Ø¹ Ø§Ù„Ø£Ø³Ø§Ø³ÙŠ: Direct Pipe (Ø¨Ø¯ÙˆÙ† FFmpeg â€” Ø¨Ø« ÙÙˆØ±ÙŠ) â•â•â•
   // Ø§Ù„ØªØ·Ø¨ÙŠÙ‚ ÙŠØªØµÙ„ Ø¨Ù€ /live-pipe/:channelId Ù…Ø¨Ø§Ø´Ø±Ø©
@@ -1132,6 +1179,11 @@ const server = app.listen(config.PORT, config.HOST, async () => {
   // Ù…Ø²Ø§Ù…Ù†Ø© Ù‚Ù†ÙˆØ§Øª Xtream Ø¹Ù†Ø¯ Ø§Ù„ØªØ´ØºÙŠÙ„
   syncXtreamChannels(db).catch(e => console.error('[Xtream] Ø®Ø·Ø£ ÙÙŠ Ø§Ù„Ù…Ø²Ø§Ù…Ù†Ø© Ø¹Ù†Ø¯ Ø§Ù„ØªØ´ØºÙŠÙ„:', e.message));
   xtreamProxy.start();
+
+  // Sync channels from backend PostgreSQL on startup
+  syncChannelsFromBackend(true).catch(e => console.error('[Sync] Startup error:', e.message));
+  // Periodic sync every 10 minutes
+  setInterval(() => syncChannelsFromBackend(true).catch(() => {}), CHANNEL_SYNC_INTERVAL);
 });
 
 const shutdown = async () => {

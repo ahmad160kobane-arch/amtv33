@@ -352,6 +352,14 @@ export async function fetchChannels(params?: { group?: string; search?: string; 
   } catch { return { items: [], total: 0, hasMore: false }; }
 }
 
+export async function fetchChannelGroups(): Promise<string[]> {
+  try {
+    const res = await apiFetch('/api/channels/groups');
+    const data = await res.json();
+    return data.groups || [];
+  } catch { return []; }
+}
+
 // ─── Pagination Types ───────────────────────────────────
 export interface PaginatedResult<T> {
   items: T[];

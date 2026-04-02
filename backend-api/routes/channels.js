@@ -44,6 +44,19 @@ router.get('/', async (req, res) => {
   }
 });
 
+// GET /api/channels/export - Full channel list with stream_url (for cloud server sync)
+router.get('/export', async (req, res) => {
+  try {
+    const channels = await db.prepare(
+      'SELECT id, name, group_name, logo_url, stream_url FROM channels WHERE is_enabled = 1 ORDER BY sort_order'
+    ).all();
+    res.json({ channels, total: channels.length });
+  } catch (err) {
+    console.error('Channel export error:', err);
+    res.status(500).json({ error: 'خطأ في الخادم' });
+  }
+});
+
 // GET /api/channels/groups - List all groups
 router.get('/groups', async (req, res) => {
   const groups = await db.prepare('SELECT DISTINCT group_name FROM channels WHERE is_enabled = 1 ORDER BY group_name').all();
