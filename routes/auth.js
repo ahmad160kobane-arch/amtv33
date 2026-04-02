@@ -88,6 +88,15 @@ router.post('/login', (req, res) => {
   }
 });
 
+// GET /api/auth/me — lightweight user info (used by cloud-server)
+router.get('/me', requireAuth, (req, res) => {
+  const user = db.prepare(
+    'SELECT id, username, plan, expires_at, is_admin, is_blocked, role FROM users WHERE id = ?'
+  ).get(req.user.id);
+  if (!user) return res.status(404).json({ error: 'not found' });
+  res.json({ user: { ...user, is_admin: !!user.is_admin, is_blocked: !!user.is_blocked, role: user.role || 'user' } });
+});
+
 // GET /api/auth/profile
 router.get('/profile', requireAuth, (req, res) => {
   const user = db.prepare(
