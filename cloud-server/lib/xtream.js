@@ -4,10 +4,10 @@
  */
 
 const XTREAM = {
-  primary : 'http://proxpanel.cc:80',
-  backup  : 'http://proxpanel.fans:8080',
-  user    : '8691274970',
-  pass    : '5595837537',
+  primary : 'http://ex2025.cc',
+  backup  : 'http://ex2025.cc',
+  user    : 'ledyxpro24',
+  pass    : '2943689',
 };
 
 // ── Filter: keywords that make a channel "wanted" (channel name OR category name) ──
