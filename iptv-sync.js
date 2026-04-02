@@ -1,4 +1,4 @@
-/**
+﻿/**
  * IPTV Sync Script
  * Fetches content from Xtream Codes API and stores in local database
  * Usage: node iptv-sync.js
@@ -7,20 +7,8 @@
 const db = require('./db');
 const { v4: uuidv4 } = require('uuid');
 
-// ─── IPTV Configuration (من قاعدة البيانات) ────────────────
-const cfg = db.prepare('SELECT server_url, username, password FROM iptv_config WHERE id = 1').get();
-if (!cfg || !cfg.server_url) {
-  console.error('❌ لا يوجد إعدادات IPTV في قاعدة البيانات! أضفها من لوحة التحكم أولاً.');
-  process.exit(1);
-}
-const IPTV = {
-  server: cfg.server_url,
-  username: cfg.username,
-  password: cfg.password,
-};
-console.log(`📡 IPTV: ${IPTV.server} (user: ${IPTV.username})`);
-
-const API_BASE = `${IPTV.server}/player_api.php?username=${IPTV.username}&password=${IPTV.password}`;
+let IPTV = {};
+let API_BASE = '';
 
 // ─── Helpers ───────────────────────────────────────────────
 async function fetchJson(url) {
@@ -109,7 +97,7 @@ async function syncLiveChannels() {
     catMap[c.category_id] = c.category_name;
   }
 
-  const upsert = db.prepare(`
+  const upsert = await db.prepare(`
     INSERT INTO channels (id, name, group_name, logo_url, stream_url, is_enabled, xtream_id, category)
     VALUES (?, ?, ?, ?, ?, 1, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
@@ -122,16 +110,14 @@ async function syncLiveChannels() {
   console.log(`  🔍 تمت التصفية: ${arabicStreams.length} قناة عربية من أصل ${streams.length}`);
 
   let count = 0;
-  const tx = db.transaction(() => {
     for (const s of arabicStreams) {
       const id = `xtream_live_${s.stream_id}`;
       const groupName = catMap[s.category_id] || 'عام';
       const streamUrl = buildLiveStreamUrl(s.stream_id);
-      upsert.run(id, safe(s.name), groupName, safe(s.stream_icon), streamUrl, String(s.stream_id), groupName);
+      await upsert.run(id, safe(s.name), groupName, safe(s.stream_icon), streamUrl, String(s.stream_id), groupName);
       count++;
     }
-  });
-  tx();
+  
   console.log(`  ✅ تم مزامنة ${count} قناة عربية`);
 }
 
@@ -153,7 +139,7 @@ async function syncMovies() {
   const streams = allStreams.filter(s => ARABIC_VOD_CATEGORIES.has(String(s.category_id)));
   console.log(`  🔍 تمت التصفية: ${streams.length} فيلم عربي/مترجم`);
 
-  const upsertVod = db.prepare(`
+  const upsertVod = await db.prepare(`
     INSERT INTO vod (id, title, vod_type, category, poster_url, year, rating, stream_token, description, plot,
       cast_list, director, genre, country, duration, duration_secs, backdrop_url, tmdb_id, trailer,
       xtream_id, container_ext, source_rating)
@@ -172,25 +158,22 @@ async function syncMovies() {
   let detailCount = 0;
 
   // First pass: insert basic info from stream list
-  const tx1 = db.transaction(() => {
-    for (const s of streams) {
-      const id = `xtream_movie_${s.stream_id}`;
-      const catName = catMap[s.category_id] || '';
-      const ext = s.container_extension || 'mkv';
-      const streamUrl = buildMovieStreamUrl(s.stream_id, ext);
-      const year = extractYear(s.name);
+  for (const s of streams) {
+    const id = `xtream_movie_${s.stream_id}`;
+    const catName = catMap[s.category_id] || '';
+    const ext = s.container_extension || 'mkv';
+    const streamUrl = buildMovieStreamUrl(s.stream_id, ext);
+    const year = extractYear(s.name);
 
-      upsertVod.run(
-        id, safe(s.name), catName, safe(s.stream_icon), year,
-        safe(s.rating || ''), streamUrl,
-        '', '', '', '', '', '', '', 0, '',
-        safe(s.tmdb), '', String(s.stream_id), ext,
-        s.rating_5based || 0
-      );
-      count++;
-    }
-  });
-  tx1();
+    await upsertVod.run(
+      id, safe(s.name), catName, safe(s.stream_icon), year,
+      safe(s.rating || ''), streamUrl,
+      '', '', '', '', '', '', '', 0, '',
+      safe(s.tmdb), '', String(s.stream_id), ext,
+      s.rating_5based || 0
+    );
+    count++;
+  }
   console.log(`  ✅ Inserted ${count} movies (basic info)`);
 
   // Second pass: fetch detailed info for newest movies only (sorted by 'added' desc)
@@ -215,7 +198,7 @@ async function syncMovies() {
           ? info.backdrop_path[0] : '';
         const year = extractYear(info.releasedate) || extractYear(s.name);
 
-        upsertVod.run(
+        await upsertVod.run(
           id, safe(info.name || s.name), catName, safe(info.movie_image || s.stream_icon),
           year, safe(info.rating || s.rating || ''), streamUrl,
           safe(info.description || info.plot || ''),
@@ -264,7 +247,7 @@ async function syncSeries() {
   const seriesList = allSeries.filter(s => ARABIC_SERIES_CATEGORIES.has(String(s.category_id)));
   console.log(`  🔍 تمت التصفية: ${seriesList.length} مسلسل عربي/مترجم`);
 
-  const upsertVod = db.prepare(`
+  const upsertVod = await db.prepare(`
     INSERT INTO vod (id, title, vod_type, category, poster_url, year, rating, stream_token, description, plot,
       cast_list, director, genre, country, duration, duration_secs, backdrop_url, tmdb_id, trailer,
       xtream_id, container_ext, source_rating)
@@ -277,7 +260,7 @@ async function syncSeries() {
       source_rating=excluded.source_rating
   `);
 
-  const upsertEp = db.prepare(`
+  const upsertEp = await db.prepare(`
     INSERT INTO episodes (id, vod_id, title, season, episode_num, stream_token, duration, duration_secs, air_date, container_ext, xtream_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
@@ -288,7 +271,6 @@ async function syncSeries() {
 
   // Insert basic info
   let count = 0;
-  const tx1 = db.transaction(() => {
     for (const s of seriesList) {
       const id = `xtream_series_${s.series_id}`;
       const catName = catMap[s.category_id] || '';
@@ -296,7 +278,7 @@ async function syncSeries() {
         ? s.backdrop_path[0] : '';
       const year = extractYear(s.releaseDate || s.release_date);
 
-      upsertVod.run(
+      await upsertVod.run(
         id, safe(s.name), catName, safe(s.cover), year,
         safe(s.rating || ''),
         safe(s.plot || ''), safe(s.plot || ''),
@@ -306,8 +288,7 @@ async function syncSeries() {
       );
       count++;
     }
-  });
-  tx1();
+  
   console.log(`  ✅ Inserted ${count} series (basic info)`);
 
   // Fetch detailed info + episodes (newest 300)
@@ -338,7 +319,7 @@ async function syncSeries() {
           : (Array.isArray(s.backdrop_path) && s.backdrop_path.length > 0 ? s.backdrop_path[0] : '');
         const year = extractYear(info.releaseDate || info.release_date || s.releaseDate);
 
-        upsertVod.run(
+        await upsertVod.run(
           vodId, safe(info.name || s.name), catName, safe(info.cover || s.cover), year,
           safe(info.rating || s.rating || ''),
           safe(info.plot || s.plot || ''), safe(info.plot || s.plot || ''),
@@ -358,7 +339,7 @@ async function syncSeries() {
             const streamUrl = buildSeriesStreamUrl(ep.id, ext);
             const epInfo = ep.info || {};
 
-            upsertEp.run(
+            await upsertEp.run(
               epId, vodId,
               safe(ep.title || `S${seasonNum}E${ep.episode_num}`),
               parseInt(seasonNum) || 1,
@@ -388,6 +369,16 @@ async function syncSeries() {
 
 // ─── Main ──────────────────────────────────────────────────
 async function main() {
+  await db.init();
+
+  const cfg = await db.prepare('SELECT server_url, username, password FROM iptv_config WHERE id = 1').get();
+  if (!cfg || !cfg.server_url) {
+    console.error('❌ لا يوجد إعدادات IPTV في قاعدة البيانات! أضفها من لوحة التحكم أولاً.');
+    process.exit(1);
+  }
+  IPTV = { server: cfg.server_url, username: cfg.username, password: cfg.password };
+  API_BASE = `${IPTV.server}/player_api.php?username=${IPTV.username}&password=${IPTV.password}`;
+
   console.log('╔══════════════════════════════════════════╗');
   console.log('║   IPTV Live Channels Sync ONLY           ║');
   console.log(`║   Server: ${IPTV.server}       ║`);
@@ -404,7 +395,7 @@ async function main() {
   console.log(`   Status: ${account.user_info.status}, Expires: ${new Date(account.user_info.exp_date * 1000).toLocaleDateString()}`);
 
   // Save config
-  db.prepare(`INSERT OR REPLACE INTO iptv_config (id, server_url, username, password, last_sync) VALUES (1, ?, ?, ?, datetime('now'))`)
+  await db.prepare(`INSERT INTO iptv_config (id, server_url, username, password, last_sync) VALUES (1, ?, ?, ?, NOW()) ON CONFLICT(id) DO UPDATE SET server_url=EXCLUDED.server_url, username=EXCLUDED.username, password=EXCLUDED.password, last_sync=NOW()`)
     .run(IPTV.server, IPTV.username, IPTV.password);
 
   const startTime = Date.now();
@@ -417,10 +408,11 @@ async function main() {
   }
 
   // Update last sync
-  db.prepare(`UPDATE iptv_config SET last_sync = datetime('now') WHERE id = 1`).run();
+  await db.prepare(`UPDATE iptv_config SET last_sync = NOW() WHERE id = 1`).run();
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-  const chCount = db.prepare('SELECT COUNT(*) as c FROM channels').get().c;
+  const chRow = await db.prepare('SELECT COUNT(*) as c FROM channels').get();
+  const chCount = chRow.c;
 
   console.log('\n╔══════════════════════════════════════════╗');
   console.log(`║   Sync Complete! (${elapsed}s)              ║`);

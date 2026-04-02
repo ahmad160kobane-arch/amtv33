@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 const db = require('../db');
@@ -7,7 +7,7 @@ const { generateToken, requireAuth } = require('../middleware/auth');
 const router = express.Router();
 
 // POST /api/auth/register
-router.post('/register', (req, res) => {
+router.post('/register', async (req, res) => {
   try {
     const { username, email, password, display_name } = req.body;
 
@@ -18,7 +18,7 @@ router.post('/register', (req, res) => {
       return res.status(400).json({ error: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' });
     }
 
-    const exists = db.prepare('SELECT id FROM users WHERE username = ? OR email = ?').get(username, email);
+    const exists = await db.prepare('SELECT id FROM users WHERE username = ? OR email = ?').get(username, email);
     if (exists) {
       return res.status(409).json({ error: 'اسم المستخدم أو البريد مسجل مسبقاً' });
     }
@@ -26,7 +26,7 @@ router.post('/register', (req, res) => {
     const id = uuidv4();
     const password_hash = bcrypt.hashSync(password, 10);
 
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO users (id, username, email, password_hash, display_name, plan)
       VALUES (?, ?, ?, ?, ?, 'free')
     `).run(id, username.trim(), email.trim().toLowerCase(), password_hash, display_name || username);
@@ -44,7 +44,7 @@ router.post('/register', (req, res) => {
 });
 
 // POST /api/auth/login
-router.post('/login', (req, res) => {
+router.post('/login', async (req, res) => {
   try {
     const { login, password } = req.body;
 
@@ -52,7 +52,7 @@ router.post('/login', (req, res) => {
       return res.status(400).json({ error: 'يرجى إدخال اسم المستخدم/البريد وكلمة المرور' });
     }
 
-    const user = db.prepare(
+    const user = await db.prepare(
       'SELECT id, username, email, password_hash, display_name, avatar_url, plan, expires_at, is_admin, is_blocked, role FROM users WHERE username = ? OR email = ?'
     ).get(login.trim(), login.trim().toLowerCase());
 
@@ -89,8 +89,8 @@ router.post('/login', (req, res) => {
 });
 
 // GET /api/auth/me — lightweight user info (used by cloud-server)
-router.get('/me', requireAuth, (req, res) => {
-  const user = db.prepare(
+router.get('/me', requireAuth, async (req, res) => {
+  const user = await db.prepare(
     'SELECT id, username, plan, expires_at, is_admin, is_blocked, role FROM users WHERE id = ?'
   ).get(req.user.id);
   if (!user) return res.status(404).json({ error: 'not found' });
@@ -98,19 +98,19 @@ router.get('/me', requireAuth, (req, res) => {
 });
 
 // GET /api/auth/profile
-router.get('/profile', requireAuth, (req, res) => {
-  const user = db.prepare(
+router.get('/profile', requireAuth, async (req, res) => {
+  const user = await db.prepare(
     'SELECT id, username, email, display_name, avatar_url, plan, expires_at, is_admin, role, balance, created_at FROM users WHERE id = ?'
   ).get(req.user.id);
 
   if (!user) return res.status(404).json({ error: 'المستخدم غير موجود' });
 
-  const favCount = db.prepare('SELECT COUNT(*) as c FROM favorites WHERE user_id = ?').get(req.user.id).c;
-  const historyCount = db.prepare('SELECT COUNT(*) as c FROM watch_history WHERE user_id = ?').get(req.user.id).c;
+  const favCount = await db.prepare('SELECT COUNT(*) as c FROM favorites WHERE user_id = ?').get(req.user.id).c;
+  const historyCount = await db.prepare('SELECT COUNT(*) as c FROM watch_history WHERE user_id = ?').get(req.user.id).c;
 
   // فحص انتهاء الاشتراك تلقائياً
   if (user.expires_at && new Date(user.expires_at) < new Date()) {
-    db.prepare("UPDATE users SET plan = 'free', expires_at = NULL WHERE id = ?").run(req.user.id);
+    await db.prepare("UPDATE users SET plan = 'free', expires_at = NULL WHERE id = ?").run(req.user.id);
     user.plan = 'free';
     user.expires_at = null;
   }
@@ -124,8 +124,8 @@ router.get('/profile', requireAuth, (req, res) => {
 });
 
 // GET /api/auth/subscription
-router.get('/subscription', requireAuth, (req, res) => {
-  const user = db.prepare(
+router.get('/subscription', requireAuth, async (req, res) => {
+  const user = await db.prepare(
     'SELECT id, plan, expires_at FROM users WHERE id = ?'
   ).get(req.user.id);
 
@@ -135,7 +135,7 @@ router.get('/subscription', requireAuth, (req, res) => {
   let plan = user.plan;
   let expires_at = user.expires_at;
   if (expires_at && new Date(expires_at) < new Date()) {
-    db.prepare("UPDATE users SET plan = 'free', expires_at = NULL WHERE id = ?").run(req.user.id);
+    await db.prepare("UPDATE users SET plan = 'free', expires_at = NULL WHERE id = ?").run(req.user.id);
     plan = 'free';
     expires_at = null;
   }
@@ -151,11 +151,11 @@ router.get('/subscription', requireAuth, (req, res) => {
 });
 
 // POST /api/auth/activate-code
-router.post('/activate-code', requireAuth, (req, res) => {
+router.post('/activate-code', requireAuth, async (req, res) => {
   const { code } = req.body;
   if (!code) return res.status(400).json({ error: 'الكود مطلوب' });
 
-  const activation = db.prepare(`
+  const activation = await db.prepare(`
     SELECT ac.*, sp.duration_days, sp.name as plan_name
     FROM activation_codes ac
     JOIN subscription_plans sp ON ac.plan_id = sp.id
@@ -165,7 +165,7 @@ router.post('/activate-code', requireAuth, (req, res) => {
   if (!activation) return res.status(404).json({ error: 'الكود غير صحيح' });
   if (activation.status !== 'unused') return res.status(400).json({ error: 'هذا الكود مستخدم أو ملغى' });
 
-  const user = db.prepare('SELECT plan, expires_at FROM users WHERE id = ?').get(req.user.id);
+  const user = await db.prepare('SELECT plan, expires_at FROM users WHERE id = ?').get(req.user.id);
 
   // حساب تاريخ الانتهاء الجديد
   let newExpiry;
@@ -178,15 +178,14 @@ router.post('/activate-code', requireAuth, (req, res) => {
   newExpiry.setDate(newExpiry.getDate() + activation.duration_days);
   const expiryStr = newExpiry.toISOString();
 
-  const transaction = db.transaction(() => {
-    db.prepare(
-      "UPDATE activation_codes SET status = 'used', activated_by = ?, activated_at = datetime('now') WHERE id = ?"
+  await db.runTransaction(async (prepare) => {
+    await prepare(
+      "UPDATE activation_codes SET status = 'used', activated_by = ?, activated_at = NOW() WHERE id = ?"
     ).run(req.user.id, activation.id);
-    db.prepare(
+    await prepare(
       "UPDATE users SET plan = 'premium', expires_at = ? WHERE id = ?"
     ).run(expiryStr, req.user.id);
   });
-  transaction();
 
   res.json({
     success: true,
@@ -199,18 +198,18 @@ router.post('/activate-code', requireAuth, (req, res) => {
 });
 
 // POST /api/auth/history — record a watch event from the mobile player
-router.post('/history', requireAuth, (req, res) => {
+router.post('/history', requireAuth, async (req, res) => {
   const { item_id, item_type = 'vod', title = '', poster = '', content_type = 'movie' } = req.body;
   if (!item_id) return res.status(400).json({ error: 'item_id مطلوب' });
 
   try {
     // Upsert: update watched_at if already exists
-    const existing = db.prepare('SELECT id FROM watch_history WHERE user_id = ? AND item_id = ?').get(req.user.id, String(item_id));
+    const existing = await db.prepare('SELECT id FROM watch_history WHERE user_id = ? AND item_id = ?').get(req.user.id, String(item_id));
     if (existing) {
-      db.prepare("UPDATE watch_history SET watched_at = datetime('now'), title = COALESCE(NULLIF(?, ''), title), poster = COALESCE(NULLIF(?, ''), poster), content_type = COALESCE(NULLIF(?, ''), content_type) WHERE id = ?")
+      await db.prepare("UPDATE watch_history SET watched_at = NOW(), title = COALESCE(NULLIF(?, ''), title), poster = COALESCE(NULLIF(?, ''), poster), content_type = COALESCE(NULLIF(?, ''), content_type) WHERE id = ?")
         .run(title, poster, content_type, existing.id);
     } else {
-      db.prepare("INSERT INTO watch_history (id, user_id, item_id, item_type, title, poster, content_type) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      await db.prepare("INSERT INTO watch_history (id, user_id, item_id, item_type, title, poster, content_type) VALUES (?, ?, ?, ?, ?, ?, ?)")
         .run(require('crypto').randomUUID(), req.user.id, String(item_id), item_type, title, poster, content_type);
     }
     res.json({ success: true });
@@ -221,9 +220,9 @@ router.post('/history', requireAuth, (req, res) => {
 });
 
 // GET /api/auth/history
-router.get('/history', requireAuth, (req, res) => {
+router.get('/history', requireAuth, async (req, res) => {
   const { limit = 30, offset = 0 } = req.query;
-  const items = db.prepare(`
+  const items = await db.prepare(`
     SELECT id, item_id, item_type, watched_at,
            COALESCE(title, item_id) as title,
            COALESCE(poster, '') as poster,
@@ -233,22 +232,22 @@ router.get('/history', requireAuth, (req, res) => {
     ORDER BY watched_at DESC
     LIMIT ? OFFSET ?
   `).all(req.user.id, parseInt(limit), parseInt(offset));
-  const total = db.prepare('SELECT COUNT(*) as cnt FROM watch_history WHERE user_id = ?').get(req.user.id);
+  const total = await db.prepare('SELECT COUNT(*) as cnt FROM watch_history WHERE user_id = ?').get(req.user.id);
   res.json({ items, total: total.cnt });
 });
 
 // PUT /api/auth/profile
-router.put('/profile', requireAuth, (req, res) => {
+router.put('/profile', requireAuth, async (req, res) => {
   const { display_name, avatar_url } = req.body;
 
-  db.prepare('UPDATE users SET display_name = COALESCE(?, display_name), avatar_url = COALESCE(?, avatar_url) WHERE id = ?')
+  await db.prepare('UPDATE users SET display_name = COALESCE(?, display_name), avatar_url = COALESCE(?, avatar_url) WHERE id = ?')
     .run(display_name || null, avatar_url || null, req.user.id);
 
   res.json({ success: true });
 });
 
 // PUT /api/auth/password
-router.put('/password', requireAuth, (req, res) => {
+router.put('/password', requireAuth, async (req, res) => {
   const { current_password, new_password } = req.body;
 
   if (!current_password || !new_password) {
@@ -258,12 +257,12 @@ router.put('/password', requireAuth, (req, res) => {
     return res.status(400).json({ error: 'كلمة المرور الجديدة يجب أن تكون 6 أحرف على الأقل' });
   }
 
-  const user = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(req.user.id);
+  const user = await db.prepare('SELECT password_hash FROM users WHERE id = ?').get(req.user.id);
   if (!bcrypt.compareSync(current_password, user.password_hash)) {
     return res.status(401).json({ error: 'كلمة المرور الحالية غير صحيحة' });
   }
 
-  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?')
+  await db.prepare('UPDATE users SET password_hash = ? WHERE id = ?')
     .run(bcrypt.hashSync(new_password, 10), req.user.id);
 
   res.json({ success: true });

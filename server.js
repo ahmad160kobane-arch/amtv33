@@ -2,8 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 
-// Initialize database (creates tables on first run)
-require('./db');
+const db = require('./db');
 
 const authRoutes = require('./routes/auth');
 const channelRoutes = require('./routes/channels');
@@ -56,8 +55,7 @@ const { requireAuth } = require('./middleware/auth');
 const cloud = require('./lib/cloud');
 
 app.get('/hls/:channelId/stream.m3u8', requireAuth, async (req, res) => {
-  const db = require('./db');
-  const ch = db.prepare('SELECT id, name, stream_url FROM channels WHERE id = ? AND is_enabled = 1').get(req.params.channelId);
+  const ch = await db.prepare('SELECT id, name, stream_url FROM channels WHERE id = ? AND is_enabled = 1').get(req.params.channelId);
   if (!ch) return res.status(404).json({ error: 'القناة غير متاحة' });
   // شغّل البث عبر السيرفر السحابي بدلاً من التوجيه المباشر لـ IPTV
   const result = await cloud.startLiveStream(ch.id, ch.stream_url, ch.name);
@@ -77,9 +75,14 @@ app.use((err, req, res, next) => {
 });
 
 // ─── Start ───────────────────────────────────────────────
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`\n  ╔══════════════════════════════════════╗`);
-  console.log(`  ║   MA Streaming API                   ║`);
-  console.log(`  ║   http://localhost:${PORT}              ║`);
-  console.log(`  ╚══════════════════════════════════════╝\n`);
+db.init().then(() => {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n  ╔══════════════════════════════════════╗`);
+    console.log(`  ║   MA Streaming API (PostgreSQL)      ║`);
+    console.log(`  ║   http://localhost:${PORT}              ║`);
+    console.log(`  ╚══════════════════════════════════════╝\n`);
+  });
+}).catch(err => {
+  console.error('[DB] Failed to initialize:', err.message);
+  process.exit(1);
 });

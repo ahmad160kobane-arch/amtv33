@@ -1,4 +1,4 @@
-/**
+﻿/**
  * مسارات البث السحابي — الباك اند يتحكم بالسيرفر السحابي
  * 
  * التدفق:
@@ -28,7 +28,7 @@ const router = express.Router();
  */
 router.post('/stream/live/:channelId', requireAuth, async (req, res) => {
   try {
-    const channel = db.prepare('SELECT id, name, stream_url FROM channels WHERE id = ? AND is_enabled = 1').get(req.params.channelId);
+    const channel = await db.prepare('SELECT id, name, stream_url FROM channels WHERE id = ? AND is_enabled = 1').get(req.params.channelId);
     if (!channel) return res.status(404).json({ error: 'القناة غير متاحة' });
     if (!channel.stream_url) return res.status(400).json({ error: 'القناة بدون رابط بث' });
 
@@ -45,7 +45,7 @@ router.post('/stream/live/:channelId', requireAuth, async (req, res) => {
 
     // سجّل في تاريخ المشاهدة
     try {
-      db.prepare('INSERT OR REPLACE INTO watch_history (id, user_id, item_id, item_type, title, poster, content_type, watched_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime(\'now\'))').run(uuidv4(), req.user.id, channel.id, 'channel', channel.name || '', '', 'channel');
+      await db.prepare('INSERT INTO watch_history (id, user_id, item_id, item_type, title, poster, content_type, watched_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())').run(uuidv4(), req.user.id, channel.id, 'channel', channel.name || '', '', 'channel');
     } catch {}
   } catch (err) {
     console.error('[Cloud] خطأ بث مباشر:', err.message);
@@ -62,19 +62,19 @@ router.post('/stream/vod/:id', requireAuth, async (req, res) => {
   try {
     // ابحث بالـ id أولاً، ثم بالـ stream_token (للتوافق مع التطبيق)
     const paramId = decodeURIComponent(req.params.id);
-    let item = db.prepare('SELECT id, title, stream_token, vod_type, xtream_id, container_ext FROM vod WHERE id = ?').get(paramId);
+    let item = await db.prepare('SELECT id, title, stream_token, vod_type, xtream_id, container_ext FROM vod WHERE id = ?').get(paramId);
     let itemType = 'vod';
     if (!item) {
-      item = db.prepare('SELECT id, title, stream_token, container_ext, xtream_id FROM episodes WHERE id = ?').get(paramId);
+      item = await db.prepare('SELECT id, title, stream_token, container_ext, xtream_id FROM episodes WHERE id = ?').get(paramId);
       itemType = 'episode';
     }
     // بحث بالـ stream_token إذا لم يُوجد بالـ id
     if (!item) {
-      item = db.prepare('SELECT id, title, stream_token, vod_type, xtream_id, container_ext FROM vod WHERE stream_token = ?').get(paramId);
+      item = await db.prepare('SELECT id, title, stream_token, vod_type, xtream_id, container_ext FROM vod WHERE stream_token = ?').get(paramId);
       itemType = 'vod';
     }
     if (!item) {
-      item = db.prepare('SELECT id, title, stream_token, container_ext, xtream_id FROM episodes WHERE stream_token = ?').get(paramId);
+      item = await db.prepare('SELECT id, title, stream_token, container_ext, xtream_id FROM episodes WHERE stream_token = ?').get(paramId);
       itemType = 'episode';
     }
     if (!item) return res.status(404).json({ error: 'المحتوى غير موجود' });
@@ -84,7 +84,7 @@ router.post('/stream/vod/:id', requireAuth, async (req, res) => {
 
     // إذا stream_token فارغ لكن يوجد xtream_id → بناء الرابط من إعدادات IPTV
     if (!sourceUrl && item.xtream_id) {
-      const cfg = db.prepare('SELECT server_url, username, password FROM iptv_config WHERE id = 1').get();
+      const cfg = await db.prepare('SELECT server_url, username, password FROM iptv_config WHERE id = 1').get();
       if (cfg && cfg.server_url) {
         const ext = item.container_ext || 'mkv';
         const type = itemType === 'episode' ? 'series' : 'movie';
@@ -106,10 +106,10 @@ router.post('/stream/vod/:id', requireAuth, async (req, res) => {
 
     // سجّل في تاريخ المشاهدة
     try {
-      const posterRow = db.prepare('SELECT poster_url FROM vod WHERE id = ?').get(item.id);
+      const posterRow = await db.prepare('SELECT poster_url FROM vod WHERE id = ?').get(item.id);
       const posterUrl = (posterRow && posterRow.poster_url) || '';
       const ctype = itemType === 'episode' ? 'series' : 'movie';
-      db.prepare('INSERT OR REPLACE INTO watch_history (id, user_id, item_id, item_type, title, poster, content_type, watched_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime(\'now\'))').run(uuidv4(), req.user.id, item.id, itemType, item.title || '', posterUrl, ctype);
+      await db.prepare('INSERT INTO watch_history (id, user_id, item_id, item_type, title, poster, content_type, watched_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())').run(uuidv4(), req.user.id, item.id, itemType, item.title || '', posterUrl, ctype);
     } catch {}
   } catch (err) {
     console.error('[Cloud] خطأ بث VOD:', err.message);
@@ -180,7 +180,7 @@ router.post('/admin/stop-all', requireAdmin, async (req, res) => {
  * الأدمن يشغل بث يدوياً
  */
 router.post('/admin/start-live/:channelId', requireAdmin, async (req, res) => {
-  const channel = db.prepare('SELECT id, name, stream_url FROM channels WHERE id = ?').get(req.params.channelId);
+  const channel = await db.prepare('SELECT id, name, stream_url FROM channels WHERE id = ?').get(req.params.channelId);
   if (!channel) return res.status(404).json({ error: 'القناة غير موجودة' });
   const result = await cloud.startLiveStream(channel.id, channel.stream_url, channel.name);
   res.json(result);
