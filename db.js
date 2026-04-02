@@ -248,6 +248,22 @@ db.init = async function () {
     `);
   }
 
+  // ─── Seed: default admin user ──────────────────────────
+  const { rows: adminRows } = await pool.query("SELECT COUNT(*) as cnt FROM users WHERE is_admin = 1");
+  if (parseInt(adminRows[0].cnt) === 0) {
+    const bcrypt = require('bcryptjs');
+    const { v4: uuidv4 } = require('uuid');
+    const adminId = uuidv4();
+    const adminHash = bcrypt.hashSync('M@str3am!2026$Adm', 10);
+    await pool.query(
+      `INSERT INTO users (id, username, email, password_hash, display_name, plan, is_admin, role)
+       VALUES ($1, 'admin', 'admin@ma-streaming.com', $2, 'المشرف', 'premium', 1, 'admin')
+       ON CONFLICT (username) DO NOTHING`,
+      [adminId, adminHash]
+    );
+    console.log('[DB] Admin user created');
+  }
+
   console.log('[DB] PostgreSQL tables ready');
 };
 
