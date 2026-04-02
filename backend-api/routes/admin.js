@@ -336,4 +336,107 @@ router.get('/stats/extended', async (req, res) => {
   });
 });
 
+// ─── IPTV Search (Xtream API from Railway) ─────────────
+router.get('/iptv-search', async (req, res) => {
+  const { q } = req.query;
+  if (!q || q.length < 2) return res.json({ channels: [] });
+
+  try {
+    let cfg = await db.prepare('SELECT server_url, username, password FROM iptv_config WHERE id = 1').get();
+    if (!cfg || !cfg.server_url) return res.status(400).json({ error: 'لم يتم تعيين إعدادات IPTV' });
+
+    const apiBase = `${cfg.server_url}/player_api.php?username=${cfg.username}&password=${cfg.password}`;
+    const [catRes, streamRes] = await Promise.all([
+      fetch(`${apiBase}&action=get_live_categories`, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(15000) }),
+      fetch(`${apiBase}&action=get_live_streams`, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(15000) }),
+    ]);
+    const categories = await catRes.json();
+    const streams = await streamRes.json();
+
+    const catById = {};
+    for (const c of (Array.isArray(categories) ? categories : [])) {
+      catById[c.category_id] = c.category_name || 'عام';
+    }
+
+    const query = q.toLowerCase();
+    const filtered = (Array.isArray(streams) ? streams : [])
+      .filter(s => {
+        const name = (s.name || '').toLowerCase();
+        const cat = (catById[s.category_id] || '').toLowerCase();
+        return name.includes(query) || cat.includes(query);
+      })
+      .slice(0, 100)
+      .map(s => ({
+        stream_id: s.stream_id,
+        name: s.name || '',
+        logo: s.stream_icon || '',
+        category: catById[s.category_id] || 'عام',
+        stream_url: `${cfg.server_url}/live/${cfg.username}/${cfg.password}/${s.stream_id}.m3u8`,
+      }));
+
+    res.json({ channels: filtered, total: filtered.length });
+  } catch (e) {
+    res.status(500).json({ error: `خطأ: ${e.message}` });
+  }
+});
+
+// ─── IPTV Sync: load all channels from Xtream ──────────
+router.post('/iptv-sync', async (req, res) => {
+  try {
+    let cfg = await db.prepare('SELECT server_url, username, password FROM iptv_config WHERE id = 1').get();
+    if (!cfg || !cfg.server_url) return res.status(400).json({ error: 'لم يتم تعيين إعدادات IPTV' });
+
+    const apiBase = `${cfg.server_url}/player_api.php?username=${cfg.username}&password=${cfg.password}`;
+    const [catRes, streamRes] = await Promise.all([
+      fetch(`${apiBase}&action=get_live_categories`, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(30000) }),
+      fetch(`${apiBase}&action=get_live_streams`, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(30000) }),
+    ]);
+    const categories = await catRes.json();
+    const streams = await streamRes.json();
+
+    if (!Array.isArray(streams)) return res.status(500).json({ error: 'فشل جلب القنوات من السيرفر' });
+
+    const catById = {};
+    for (const c of (Array.isArray(categories) ? categories : [])) {
+      catById[c.category_id] = c.category_name || 'عام';
+    }
+
+    // Clear old channels and insert all
+    await db.prepare('DELETE FROM channels').run();
+    let count = 0;
+    for (const s of streams) {
+      if (!s.stream_id || !s.name) continue;
+      const id = uuidv4();
+      const streamUrl = `${cfg.server_url}/live/${cfg.username}/${cfg.password}/${s.stream_id}.m3u8`;
+      await db.prepare(
+        'INSERT INTO channels (id, name, group_name, logo_url, stream_url, sort_order, is_enabled) VALUES (?, ?, ?, ?, ?, ?, 1)'
+      ).run(id, s.name, catById[s.category_id] || 'عام', s.stream_icon || '', streamUrl, count);
+      count++;
+    }
+
+    res.json({ success: true, total: streams.length, saved: count });
+  } catch (e) {
+    res.status(500).json({ error: `خطأ: ${e.message}` });
+  }
+});
+
+// ─── IPTV: add selected channels from search ───────────
+router.post('/iptv-add-channels', async (req, res) => {
+  const { channels } = req.body;
+  if (!Array.isArray(channels) || channels.length === 0) return res.status(400).json({ error: 'لم يتم اختيار قنوات' });
+
+  let count = 0;
+  for (const ch of channels) {
+    if (!ch.name || !ch.stream_url) continue;
+    const existing = await db.prepare('SELECT id FROM channels WHERE name = ? AND stream_url = ?').get(ch.name, ch.stream_url);
+    if (existing) continue;
+    const id = uuidv4();
+    await db.prepare(
+      'INSERT INTO channels (id, name, group_name, logo_url, stream_url, sort_order, is_enabled) VALUES (?, ?, ?, ?, ?, ?, 1)'
+    ).run(id, ch.name, ch.category || 'عام', ch.logo || '', ch.stream_url, 0);
+    count++;
+  }
+  res.json({ success: true, added: count });
+});
+
 module.exports = router;

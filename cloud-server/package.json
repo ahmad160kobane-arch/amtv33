@@ -1,0 +1,27 @@
+{
+  "name": "iptv-cloud-streaming",
+  "version": "3.0.0",
+  "description": "سيرفر البث السحابي — FFmpeg + HLS + تحقق مستخدمين + تحديث تلقائي",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@consumet/extensions": "^1.8.8",
+    "@movie-web/providers": "^2.4.13",
+    "better-sqlite3": "^11.0.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.0",
+    "ffmpeg-static": "^5.3.0",
+    "ffprobe-static": "^3.1.0",
+    "jsonwebtoken": "^9.0.0",
+    "puppeteer": "^24.40.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "uuid": "^13.0.0"
+  }
+}

@@ -1,9 +1,10 @@
 node_modules/
-.next/
+hls/
+vod-cache/
 data/
 .env
 *.db
 *.db-shm
 *.db-wal
-uploads/
-logs/
+test*.html
+test*.js
