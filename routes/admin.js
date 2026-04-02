@@ -205,4 +205,135 @@ router.delete('/episodes/:id', async (req, res) => {
   res.json({ success: true });
 });
 
+// ─── IPTV Config Management ─────────────────────────────
+router.get('/iptv-config', async (req, res) => {
+  let cfg = await db.prepare('SELECT server_url, username, password FROM iptv_config WHERE id = 1').get();
+  if (!cfg) cfg = { server_url: '', username: '', password: '' };
+  res.json(cfg);
+});
+
+router.put('/iptv-config', async (req, res) => {
+  const { server_url, username, password } = req.body;
+  const existing = await db.prepare('SELECT id FROM iptv_config WHERE id = 1').get();
+  if (existing) {
+    await db.prepare('UPDATE iptv_config SET server_url = ?, username = ?, password = ? WHERE id = 1')
+      .run(server_url || '', username || '', password || '');
+  } else {
+    await db.prepare('INSERT INTO iptv_config (id, server_url, username, password) VALUES (1, ?, ?, ?)')
+      .run(server_url || '', username || '', password || '');
+  }
+  res.json({ success: true });
+});
+
+// ─── User Role Management ───────────────────────────────
+router.put('/users/:id/role', async (req, res) => {
+  const { role, balance } = req.body;
+  const user = await db.prepare('SELECT id, role FROM users WHERE id = ?').get(req.params.id);
+  if (!user) return res.status(404).json({ error: 'المستخدم غير موجود' });
+
+  let sql = 'UPDATE users SET role = ?';
+  const params = [role || 'user'];
+  if (balance !== undefined) { sql += ', balance = ?'; params.push(balance); }
+  if (role === 'admin') { sql += ', is_admin = 1'; }
+  else { sql += ', is_admin = 0'; }
+  sql += ' WHERE id = ?';
+  params.push(req.params.id);
+  await db.prepare(sql).run(...params);
+  res.json({ success: true });
+});
+
+// ─── Agents Management ──────────────────────────────────
+router.get('/agents', async (req, res) => {
+  const agents = await db.prepare(
+    `SELECT u.id, u.username, u.email, u.display_name, u.balance, u.created_at,
+     (SELECT COUNT(*) FROM activation_codes WHERE created_by = u.id) as total_codes,
+     (SELECT COUNT(*) FROM activation_codes WHERE created_by = u.id AND status = 'used') as used_codes,
+     (SELECT COUNT(*) FROM activation_codes WHERE created_by = u.id AND status = 'unused') as unused_codes
+     FROM users u WHERE u.role = 'agent' ORDER BY u.created_at DESC`
+  ).all();
+  res.json({ agents });
+});
+
+router.put('/agents/:id/balance', async (req, res) => {
+  const { amount, type, description } = req.body;
+  if (!amount || !type) return res.status(400).json({ error: 'المبلغ والنوع مطلوبان' });
+
+  const agent = await db.prepare('SELECT id, balance, role FROM users WHERE id = ? AND role = ?').get(req.params.id, 'agent');
+  if (!agent) return res.status(404).json({ error: 'الوكيل غير موجود' });
+
+  const newBalance = type === 'credit' ? agent.balance + amount : agent.balance - amount;
+  if (newBalance < 0) return res.status(400).json({ error: 'الرصيد غير كافٍ' });
+
+  await db.prepare('UPDATE users SET balance = ? WHERE id = ?').run(newBalance, agent.id);
+  await db.prepare(
+    'INSERT INTO agent_transactions (id, agent_id, type, amount, balance_after, description) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(uuidv4(), agent.id, type, amount, newBalance, description || (type === 'credit' ? 'إيداع من الإدارة' : 'سحب من الإدارة'));
+
+  res.json({ success: true, balance: newBalance });
+});
+
+// ─── Cloud Server Status ────────────────────────────────
+router.get('/cloud-status', async (req, res) => {
+  const cloudUrl = process.env.CLOUD_SERVER_URL || 'http://62.171.153.204:8090';
+  try {
+    const r = await fetch(`${cloudUrl}/health`, { signal: AbortSignal.timeout(5000) });
+    const data = await r.json();
+    res.json({ online: true, ...data, url: cloudUrl });
+  } catch (e) {
+    res.json({ online: false, error: e.message, url: cloudUrl });
+  }
+});
+
+// ─── System Logs (in-memory ring buffer) ────────────────
+const _logs = [];
+const MAX_LOGS = 500;
+
+function addLog(level, message, meta = {}) {
+  _logs.push({ id: uuidv4(), level, message, meta, timestamp: new Date().toISOString() });
+  if (_logs.length > MAX_LOGS) _logs.shift();
+}
+
+// Expose for other modules
+router._addLog = addLog;
+
+router.get('/logs', async (req, res) => {
+  const { level, limit = 100, offset = 0 } = req.query;
+  let filtered = level ? _logs.filter(l => l.level === level) : [..._logs];
+  filtered.reverse(); // newest first
+  const total = filtered.length;
+  const items = filtered.slice(Number(offset), Number(offset) + Number(limit));
+  res.json({ logs: items, total });
+});
+
+router.delete('/logs', async (req, res) => {
+  _logs.length = 0;
+  res.json({ success: true });
+});
+
+// ─── Extended Stats ─────────────────────────────────────
+router.get('/stats/extended', async (req, res) => {
+  const users = await db.prepare('SELECT COUNT(*) as c FROM users').get();
+  const premium = await db.prepare("SELECT COUNT(*) as c FROM users WHERE plan = 'premium'").get();
+  const blocked = await db.prepare('SELECT COUNT(*) as c FROM users WHERE is_blocked = 1').get();
+  const agents = await db.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'agent'").get();
+  const channels = await db.prepare('SELECT COUNT(*) as c FROM channels').get();
+  const enabledCh = await db.prepare('SELECT COUNT(*) as c FROM channels WHERE is_enabled = 1').get();
+  const movies = await db.prepare("SELECT COUNT(*) as c FROM vod WHERE vod_type = 'movie'").get();
+  const series = await db.prepare("SELECT COUNT(*) as c FROM vod WHERE vod_type = 'series'").get();
+  const episodes = await db.prepare('SELECT COUNT(*) as c FROM episodes').get();
+  const codes = await db.prepare('SELECT COUNT(*) as c FROM activation_codes').get();
+  const usedCodes = await db.prepare("SELECT COUNT(*) as c FROM activation_codes WHERE status = 'used'").get();
+  const recentUsers = await db.prepare(
+    'SELECT id, username, plan, role, created_at FROM users ORDER BY created_at DESC LIMIT 5'
+  ).all();
+
+  res.json({
+    users: users.c, premium: premium.c, blocked: blocked.c, agents: agents.c,
+    channels: channels.c, enabledChannels: enabledCh.c,
+    movies: movies.c, series: series.c, episodes: episodes.c,
+    totalCodes: codes.c, usedCodes: usedCodes.c,
+    recentUsers,
+  });
+});
+
 module.exports = router;
