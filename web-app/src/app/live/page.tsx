@@ -11,17 +11,46 @@ function HlsPlayer({ streamUrl, title }: { streamUrl: string; title: string }) {
     if (!videoRef.current || !streamUrl) return;
     const video = videoRef.current;
 
-    if (streamUrl.includes('.m3u8') || streamUrl.includes('m3u')) {
-      // Try native HLS first (Safari), then load hls.js
+    const isHls = streamUrl.includes('.m3u8') || streamUrl.includes('m3u');
+    const isTs  = streamUrl.includes('/xtream-pipe/') || streamUrl.includes('.ts');
+
+    if (isTs) {
+      // Raw MPEG-TS pipe — use mpegts.js via MSE
+      const loadMpegts = () => {
+        const Mpegts = (window as any).mpegts;
+        if (Mpegts && Mpegts.isSupported()) {
+          const player = Mpegts.createPlayer({ type: 'mse', isLive: true, url: streamUrl });
+          player.attachMediaElement(video);
+          player.load();
+          player.play().catch(() => {});
+          (video as any)._mpegts = player;
+        } else {
+          video.src = streamUrl;
+          video.play().catch(() => {});
+        }
+      };
+      if ((window as any).mpegts) {
+        loadMpegts();
+      } else {
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/mpegts.js@latest/dist/mpegts.min.js';
+        script.onload = loadMpegts;
+        document.head.appendChild(script);
+      }
+      return () => {
+        const p = (video as any)._mpegts;
+        if (p) { try { p.destroy(); } catch {} delete (video as any)._mpegts; }
+      };
+    }
+
+    if (isHls) {
+      // HLS — try native (Safari) then hls.js
       if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = streamUrl;
         video.play().catch(() => {});
         return;
       }
-      // Load hls.js dynamically from CDN
-      const script = document.createElement('script');
-      script.src = 'https://cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js';
-      script.onload = () => {
+      const loadHls = () => {
         const Hls = (window as any).Hls;
         if (Hls && Hls.isSupported()) {
           const hls = new Hls({ enableWorker: false });
@@ -31,16 +60,19 @@ function HlsPlayer({ streamUrl, title }: { streamUrl: string; title: string }) {
           (video as any)._hls = hls;
         }
       };
-      if (!(window as any).Hls) {
-        document.head.appendChild(script);
+      if ((window as any).Hls) {
+        loadHls();
       } else {
-        script.onload!(new Event('load'));
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js';
+        script.onload = loadHls;
+        document.head.appendChild(script);
       }
       return () => { const h = (video as any)._hls; if (h) { h.destroy(); delete (video as any)._hls; } };
-    } else {
-      video.src = streamUrl;
-      video.play().catch(() => {});
     }
+
+    video.src = streamUrl;
+    video.play().catch(() => {});
   }, [streamUrl]);
 
   return (

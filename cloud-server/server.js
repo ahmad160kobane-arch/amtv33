@@ -294,58 +294,29 @@ app.post('/api/stream/live/:channelId', requireAuth, requirePremium, async (req,
   });
 });
 
-// Xtream Token Proxy — pipe HLS manifest & rewrite absolute segment URLs
-app.get(['/xtream-play/:token', '/xtream-play/:token/index.m3u8'], async (req, res) => {
+// Xtream Token Redirect — mobile app follows redirect natively via ExoPlayer
+app.get(['/xtream-play/:token', '/xtream-play/:token/index.m3u8'], (req, res) => {
   try {
     const payload = jwt.verify(req.params.token, config.JWT_SECRET);
     if (payload.t !== 'xt' || !payload.sid) return res.status(403).end();
-
     const realUrl = `${XTREAM.primary}/live/${XTREAM.user}/${XTREAM.pass}/${payload.sid}.m3u8`;
-    const upRes = await fetch(realUrl, {
-      headers: { 'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20' },
-      redirect: 'follow',
-    });
-    if (!upRes.ok) return res.status(upRes.status).end();
-
-    let body = await upRes.text();
-
-    // Rewrite absolute IPTV URLs → proxy through /xtream-seg/:token/
-    const iptvBase = `${XTREAM.primary}/live/${XTREAM.user}/${XTREAM.pass}/`;
-    const escaped = iptvBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    body = body.replace(new RegExp(escaped, 'g'), `/xtream-seg/${req.params.token}/`);
-
-    res.set('Content-Type', 'application/vnd.apple.mpegurl');
-    res.set('Access-Control-Allow-Origin', '*');
-    res.set('Cache-Control', 'no-cache');
-    res.send(body);
+    res.redirect(302, realUrl);
   } catch (e) {
-    console.error('[Xtream-play] proxy error:', e.message);
     res.status(403).json({ error: 'Invalid or expired token' });
   }
 });
 
-// Xtream Segment Proxy — pipe .ts segments so browsers don't face CORS
-app.get('/xtream-seg/:token/:segment(*)', async (req, res) => {
+// Xtream TS Pipe — for web browsers (pipes raw .ts stream through cloud server, no CORS/mixed-content issues)
+app.get('/xtream-pipe/:token', async (req, res) => {
   try {
     const payload = jwt.verify(req.params.token, config.JWT_SECRET);
     if (payload.t !== 'xt' || !payload.sid) return res.status(403).end();
-
-    const segUrl = `${XTREAM.primary}/live/${XTREAM.user}/${XTREAM.pass}/${req.params.segment}`;
-    const upRes = await fetch(segUrl, {
-      headers: { 'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20' },
-      redirect: 'follow',
-    });
-    if (!upRes.ok) return res.status(upRes.status).end();
-
-    res.set('Content-Type', upRes.headers.get('content-type') || 'video/mp2t');
-    res.set('Access-Control-Allow-Origin', '*');
-    if (upRes.headers.get('content-length')) res.set('Content-Length', upRes.headers.get('content-length'));
-
-    const { Readable } = require('stream');
-    Readable.fromWeb(upRes.body).pipe(res);
+    const sourceUrl = `${XTREAM.primary}/live/${XTREAM.user}/${XTREAM.pass}/${payload.sid}.m3u8`;
+    console.log(`[Xtream-pipe] #${payload.sid} — بث مباشر للويب`);
+    await liveProxy.streamToClient(`web_xt_${payload.sid}`, sourceUrl, req, res);
   } catch (e) {
-    console.error('[Xtream-seg] proxy error:', e.message);
-    res.status(403).end();
+    console.error('[Xtream-pipe] error:', e.message);
+    res.status(403).json({ error: 'Invalid or expired token' });
   }
 });
 
@@ -1180,17 +1151,17 @@ app.get('/api/xtream/stream/:channelId', (req, res) => {
 
     if (!ch) return res.status(404).json({ error: 'channel not found' });
 
-    // Token manifest proxy — client gets m3u8 from VPS, segments from CDN directly
     const token = jwt.sign({ sid: String(ch.stream_id), t: 'xt' }, config.JWT_SECRET, { expiresIn: '6h' });
-    const tokenUrl = `/xtream-play/${token}/index.m3u8`;
 
     res.json({
       success  : true,
       name     : ch.name,
       logo     : ch.logo,
       category : ch.category,
-      proxyUrl : tokenUrl,
-      directUrl: tokenUrl,
+      // directUrl: mobile/ExoPlayer follows 302 redirect directly to IPTV
+      directUrl: `/xtream-play/${token}/index.m3u8`,
+      // proxyUrl: web browser gets raw TS piped through cloud server (no CORS/mixed-content)
+      proxyUrl : `/xtream-pipe/${token}`,
       streamId : ch.stream_id,
     });
   } catch (e) {

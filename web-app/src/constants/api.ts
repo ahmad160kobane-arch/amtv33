@@ -492,7 +492,7 @@ export async function requestFreeStream(channelId: string): Promise<FreeStreamRe
       name: data.name,
       logo: data.logo,
       group: data.category,
-      streamUrl: data.directUrl || data.proxyUrl,
+      streamUrl: data.proxyUrl || data.directUrl,
     };
   } catch { return { success: false, error: 'خطأ في الاتصال' }; }
 }
