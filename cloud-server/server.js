@@ -243,6 +243,7 @@ app.post('/api/stream/live/:channelId', requireAuth, requirePremium, async (req,
   const rawId = req.params.channelId;
   // -- Xtream live channel (xtream_live_<streamId> or bare numeric ID) --
   // Signed token redirect — credentials hidden from client, client connects directly to source
+  // Signed token redirect — credentials hidden from client, client connects directly to source
   const xtreamMatch = rawId.match(/^xtream_live_(\d+)$/) || rawId.match(/^(\d+)$/);
   if (xtreamMatch) {
     const streamNumId = xtreamMatch[1];
@@ -291,6 +292,19 @@ app.post('/api/stream/live/:channelId', requireAuth, requirePremium, async (req,
     ready: true,
     streamId: ch.id,
   });
+});
+
+// Xtream Token Redirect — URL ends with /index.m3u8 so ExoPlayer detects HLS before redirect
+// Client follows redirect chain with their own IP → CDN token bound to client IP → segments work
+app.get(['/xtream-play/:token', '/xtream-play/:token/index.m3u8'], (req, res) => {
+  try {
+    const payload = jwt.verify(req.params.token, config.JWT_SECRET);
+    if (payload.t !== 'xt' || !payload.sid) return res.status(403).end();
+    const realUrl = `${XTREAM.primary}/live/${XTREAM.user}/${XTREAM.pass}/${payload.sid}.m3u8`;
+    res.redirect(302, realUrl);
+  } catch (e) {
+    res.status(403).json({ error: 'Invalid or expired token' });
+  }
 });
 
 // Xtream Token Redirect — URL ends with /index.m3u8 so ExoPlayer detects HLS before redirect
@@ -682,8 +696,8 @@ app.get('/api/xtream/vod/search', async (req, res) => {
   }
 });
 
-// VOD Token Redirect — client fetches file directly from IPTV with their own IP
-app.get(['/vod-play/:token', '/vod-play/:token/stream.mp4'], (req, res) => {
+// VOD Token Proxy — pipe the IPTV stream through cloud server so browsers don't face CORS/mixed-content
+app.get(['/vod-play/:token', '/vod-play/:token/stream.mp4'], async (req, res) => {
   try {
     const payload = jwt.verify(req.params.token, config.JWT_SECRET);
     if (!payload.sid || !['vod', 'ser'].includes(payload.t)) return res.status(403).end();
@@ -691,60 +705,39 @@ app.get(['/vod-play/:token', '/vod-play/:token/stream.mp4'], (req, res) => {
     const path = payload.t === 'ser'
       ? `series/${XTREAM.user}/${XTREAM.pass}/${payload.sid}.${ext}`
       : `movie/${XTREAM.user}/${XTREAM.pass}/${payload.sid}.${ext}`;
-    res.redirect(302, `${XTREAM.primary}/${path}`);
+    const upstream = `${XTREAM.primary}/${path}`;
+
+    const range = req.headers.range;
+    const headers = { 'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20' };
+    if (range) headers['Range'] = range;
+
+    const upRes = await fetch(upstream, { headers, redirect: 'follow' });
+    if (!upRes.ok && upRes.status !== 206) return res.status(upRes.status).end();
+
+    res.status(upRes.status);
+    res.set('Content-Type', upRes.headers.get('content-type') || 'video/mp4');
+    if (upRes.headers.get('content-length')) res.set('Content-Length', upRes.headers.get('content-length'));
+    if (upRes.headers.get('content-range'))  res.set('Content-Range', upRes.headers.get('content-range'));
+    if (upRes.headers.get('accept-ranges'))  res.set('Accept-Ranges', upRes.headers.get('accept-ranges'));
+
+    const { Readable } = require('stream');
+    Readable.fromWeb(upRes.body).pipe(res);
   } catch (e) {
+    console.error('[VOD-play] proxy error:', e.message);
     res.status(403).json({ error: 'Invalid or expired token' });
   }
 });
 
 // ═══════════════════════════════════════════════════════
-// VidSrc/TMDB Content API — أفلام ومسلسلات من TMDB
+// DISABLED: Old VidSrc/TMDB Content API (kept for reference)
 // ═══════════════════════════════════════════════════════
-
-app.get('/api/vidsrc/home', async (req, res) => {
-  try {
-    const data = await vidsrcApi.getHome();
-    res.json(data);
-  } catch (e) {
-    console.error('[Vidsrc] home error:', e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.get('/api/vidsrc/browse', async (req, res) => {
-  try {
-    const { type, category, page, limit } = req.query;
-    const data = await vidsrcApi.browse({ type, category, page: parseInt(page) || 1 });
-    if (limit && data.items) data.items = data.items.slice(0, parseInt(limit));
-    res.json(data);
-  } catch (e) {
-    console.error('[Vidsrc] browse error:', e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.get('/api/vidsrc/search', async (req, res) => {
-  try {
-    const { q, page } = req.query;
-    const data = await vidsrcApi.search(q || '', parseInt(page) || 1);
-    res.json(data);
-  } catch (e) {
-    console.error('[Vidsrc] search error:', e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.get('/api/vidsrc/detail/:type/:id', async (req, res) => {
-  try {
-    const { type, id } = req.params;
-    const data = await vidsrcApi.getDetail(id, type);
-    if (!data) return res.status(404).json({ error: 'Not found' });
-    res.json(data);
-  } catch (e) {
-    console.error('[Vidsrc] detail error:', e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
+/*
+app.get('/api/vidsrc/home', async (req, res) => { ... });
+app.get('/api/vidsrc/browse', async (req, res) => { ... });
+app.get('/api/vidsrc/search', async (req, res) => { ... });
+app.get('/api/vidsrc/detail/:type/:id', async (req, res) => { ... });
+app.get('/api/vidsrc/episodes', async (req, res) => { ... });
+*/
 
 /**
  * POST /api/stream/vidsrc
