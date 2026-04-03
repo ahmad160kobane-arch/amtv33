@@ -294,6 +294,183 @@ export async function searchVidsrc(query: string): Promise<VidsrcItem[]> {
   } catch { return []; }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// النظام الجديد: Xtream VOD — أفلام ومسلسلات من IPTV
+// ═══════════════════════════════════════════════════════════════════
+
+export interface IptvVodItem {
+  id: string;
+  name: string;
+  poster: string;
+  rating: string;
+  year: string;
+  genre?: string;
+  category_id?: string;
+  ext?: string;
+  vod_type: 'movie' | 'series';
+}
+
+export interface IptvVodDetail extends IptvVodItem {
+  backdrop?: string;
+  plot?: string;
+  cast?: string;
+  director?: string;
+  runtime?: string;
+  trailer?: string;
+}
+
+export interface IptvEpisode {
+  id: string;
+  episode: number;
+  title: string;
+  poster?: string;
+  plot?: string;
+  duration?: string;
+  released?: string;
+  ext: string;
+  season: number;
+}
+
+export interface IptvSeason {
+  season: number;
+  episodes: IptvEpisode[];
+}
+
+export interface IptvSeriesDetail extends IptvVodDetail {
+  seasons: IptvSeason[];
+}
+
+export interface IptvBrowseResult {
+  items: IptvVodItem[];
+  page: number;
+  total: number;
+  hasMore: boolean;
+}
+
+export interface IptvHomeData {
+  latestMovies: IptvVodItem[];
+  latestSeries: IptvVodItem[];
+  vodCategories: { id: string; name: string }[];
+  seriesCategories: { id: string; name: string }[];
+}
+
+export interface IptvCategoryWithMovies {
+  id: string;
+  name: string;
+  items: IptvVodItem[];
+}
+
+export async function fetchIptvHome(): Promise<IptvHomeData> {
+  const cached = getCached<IptvHomeData>('iptv_home');
+  if (cached) return cached;
+  try {
+    const res = await apiFetch('/api/xtream/vod/home');
+    if (!res.ok) throw new Error();
+    const data = await res.json();
+    setCache('iptv_home', data);
+    return data;
+  } catch {
+    return { latestMovies: [], latestSeries: [], vodCategories: [], seriesCategories: [] };
+  }
+}
+
+export async function fetchIptvCategoriesWithMovies(maxCategories = 40, filter = ''): Promise<{ categories: IptvCategoryWithMovies[]; total: number }> {
+  const key = `iptv_cats_movies_${maxCategories}_${filter}`;
+  const cached = getCached<{ categories: IptvCategoryWithMovies[]; total: number }>(key);
+  if (cached) return cached;
+  try {
+    const res = await apiFetch(`/api/xtream/vod/categories-with-movies?max_categories=${maxCategories}&per_category=12${filter ? '&filter=' + filter : ''}`);
+    if (!res.ok) throw new Error();
+    const data = await res.json();
+    setCache(key, data);
+    return data;
+  } catch {
+    return { categories: [], total: 0 };
+  }
+}
+
+export async function fetchIptvMovies(params?: { categoryId?: string; page?: number; search?: string }): Promise<IptvBrowseResult> {
+  const q = new URLSearchParams();
+  if (params?.categoryId) q.set('category_id', params.categoryId);
+  if (params?.page) q.set('page', String(params.page));
+  if (params?.search) q.set('search', params.search);
+  const qs = q.toString();
+  const key = `iptv_movies_${qs}`;
+  const cached = getCached<IptvBrowseResult>(key);
+  if (cached) return cached;
+  try {
+    const res = await apiFetch(`/api/xtream/vod/streams${qs ? '?' + qs : ''}`);
+    if (!res.ok) throw new Error();
+    const data = await res.json();
+    setCache(key, data);
+    return data;
+  } catch {
+    return { items: [], page: 1, total: 0, hasMore: false };
+  }
+}
+
+export async function fetchIptvSeries(params?: { categoryId?: string; page?: number; search?: string }): Promise<IptvBrowseResult> {
+  const q = new URLSearchParams();
+  if (params?.categoryId) q.set('category_id', params.categoryId);
+  if (params?.page) q.set('page', String(params.page));
+  if (params?.search) q.set('search', params.search);
+  const qs = q.toString();
+  const key = `iptv_series_${qs}`;
+  const cached = getCached<IptvBrowseResult>(key);
+  if (cached) return cached;
+  try {
+    const res = await apiFetch(`/api/xtream/series/list${qs ? '?' + qs : ''}`);
+    if (!res.ok) throw new Error();
+    const data = await res.json();
+    setCache(key, data);
+    return data;
+  } catch {
+    return { items: [], page: 1, total: 0, hasMore: false };
+  }
+}
+
+export async function fetchIptvMovieDetail(vodId: string): Promise<IptvVodDetail | null> {
+  try {
+    const res = await apiFetch(`/api/xtream/vod/info/${vodId}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+export async function fetchIptvSeriesDetail(seriesId: string): Promise<IptvSeriesDetail | null> {
+  try {
+    const res = await apiFetch(`/api/xtream/series/info/${seriesId}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+export async function fetchIptvSearch(query: string, page = 1): Promise<IptvBrowseResult> {
+  try {
+    const res = await apiFetch(`/api/xtream/vod/search?q=${encodeURIComponent(query)}&page=${page}`);
+    if (!res.ok) throw new Error();
+    return await res.json();
+  } catch { return { items: [], page: 1, total: 0, hasMore: false }; }
+}
+
+export async function requestIptvVodStream(vodId: string, ext = 'mp4'): Promise<{ success: boolean; streamUrl?: string; error?: string }> {
+  try {
+    const res = await apiFetch(`/api/xtream/vod/stream/${vodId}?ext=${ext}`);
+    const data = await res.json();
+    if (!res.ok) return { success: false, error: data.error };
+    return { success: true, streamUrl: data.streamUrl || '' };
+  } catch (err: any) { return { success: false, error: err.message }; }
+}
+
+export async function requestIptvSeriesStream(episodeId: string, ext = 'mp4'): Promise<{ success: boolean; streamUrl?: string; error?: string }> {
+  try {
+    const res = await apiFetch(`/api/xtream/series/stream/${episodeId}?ext=${ext}`);
+    const data = await res.json();
+    if (!res.ok) return { success: false, error: data.error };
+    return { success: true, streamUrl: data.streamUrl || '' };
+  } catch (err: any) { return { success: false, error: err.message }; }
+}
+
 // ─── Xtream Channels (beIN Sports + الكأس + عراقي + عربي) ─────────────
 export interface FreeStreamResult {
   success: boolean;

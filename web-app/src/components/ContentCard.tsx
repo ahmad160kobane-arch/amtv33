@@ -1,16 +1,24 @@
 'use client';
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { VidsrcItem } from '@/constants/api';
+interface ContentItem {
+  id: string;
+  title: string;
+  poster: string;
+  vod_type: 'movie' | 'series';
+  year?: string;
+  rating?: string;
+  tmdb_id?: string;
+}
 
 interface Props {
-  item: VidsrcItem;
+  item: ContentItem;
 }
 
 export default function ContentCard({ item }: Props) {
   const [imgError, setImgError] = useState(false);
-  const type = item.vod_type === 'series' ? 'tv' : 'movie';
-  const href = `/detail?tmdbId=${item.tmdb_id || item.id}&type=${type}&title=${encodeURIComponent(item.title)}&poster=${encodeURIComponent(item.poster || '')}`;
+  const type = item.vod_type === 'series' ? 'series' : 'movie';
+  const href = `/detail?id=${item.id}&type=${type}&title=${encodeURIComponent(item.title)}&poster=${encodeURIComponent(item.poster || '')}`;
 
   return (
     <Link href={href} className="block w-full group cursor-pointer card-hover">

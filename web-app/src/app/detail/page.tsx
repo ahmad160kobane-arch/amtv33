@@ -1,63 +1,48 @@
 'use client';
 import React, { useEffect, useState, useCallback, useRef, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { fetchVidsrcDetail, checkFavorite, toggleFavorite, addWatchHistory, isLoggedIn, VidsrcDetail, VidsrcEpisode } from '@/constants/api';
+import { fetchIptvMovieDetail, fetchIptvSeriesDetail, requestIptvVodStream, requestIptvSeriesStream, checkFavorite, toggleFavorite, addWatchHistory, isLoggedIn, IptvVodDetail, IptvSeriesDetail, IptvEpisode, IptvSeason } from '@/constants/api';
 
 function DetailContent() {
   const params = useSearchParams();
   const router = useRouter();
-  const tmdbId = params.get('tmdbId') || params.get('id') || '';
-  const type = (params.get('type') || 'movie') as 'movie' | 'tv';
+  const contentId = params.get('id') || params.get('tmdbId') || '';
+  const vodType = params.get('type') || params.get('vodType') || 'movie';
   const paramTitle = params.get('title') || '';
   const paramPoster = params.get('poster') || '';
 
-  const [detail, setDetail] = useState<VidsrcDetail | null>(null);
+  const [detail, setDetail] = useState<(IptvVodDetail & { seasons?: IptvSeason[] }) | null>(null);
   const [loading, setLoading] = useState(true);
   const [isFav, setIsFav] = useState(false);
   const [loggedIn, setLoggedIn] = useState(false);
   const [currentSeason, setCurrentSeason] = useState(1);
-  const [currentEpisode, setCurrentEpisode] = useState(1);
-  const [playerReady, setPlayerReady] = useState(false);
-  const [proxyHtml, setProxyHtml] = useState<string | null>(null);
-  const [proxyLoading, setProxyLoading] = useState(false);
+  const [currentEpisode, setCurrentEpisode] = useState<IptvEpisode | null>(null);
+  const [streamUrl, setStreamUrl] = useState('');
+  const [streamLoading, setStreamLoading] = useState(false);
+  const [streamError, setStreamError] = useState('');
   const [descExpanded, setDescExpanded] = useState(false);
   const [posterError, setPosterError] = useState(false);
   const historyRecorded = useRef('');
 
-  const title = detail?.title || paramTitle;
+  const isSeries = vodType === 'series' || vodType === 'tv' || detail?.vod_type === 'series';
+  const title = detail?.name || paramTitle;
   const poster = detail?.poster || paramPoster;
-  const description = detail?.description || '';
-  const isVod = true;
-  const isSeries = type === 'tv' || detail?.vod_type === 'series';
-
-  const vType = type === 'tv' ? 'tv' : 'movie';
-  const embedUrl = playerReady
-    ? (isSeries
-        ? `https://vidsrc.to/embed/tv/${tmdbId}/${currentSeason}/${currentEpisode}`
-        : `https://vidsrc.to/embed/movie/${tmdbId}`)
-    : '';
-
-  // Fetch proxied embed HTML with injected ad blocker
-  useEffect(() => {
-    if (!embedUrl) return;
-    setProxyHtml(null);
-    setProxyLoading(true);
-    fetch(`/api/proxy/embed?url=${encodeURIComponent(embedUrl)}`)
-      .then(r => { if (!r.ok) throw new Error('proxy failed'); return r.text(); })
-      .then(html => setProxyHtml(html))
-      .catch(() => setProxyHtml(null)) // fall back to direct iframe
-      .finally(() => setProxyLoading(false));
-  }, [embedUrl]);
+  const description = detail?.plot || '';
 
   const loadData = useCallback(async () => {
-    if (!tmdbId) return;
+    if (!contentId) return;
     try {
-      const [data, logged, fav] = await Promise.all([
-        fetchVidsrcDetail(vType, tmdbId),
-        isLoggedIn(),
-        isLoggedIn().then(l => l ? checkFavorite(tmdbId) : false),
-      ]);
+      let data: any = null;
+      if (isSeries) {
+        data = await fetchIptvSeriesDetail(contentId);
+      } else {
+        data = await fetchIptvMovieDetail(contentId);
+      }
       setDetail(data);
+      const [logged, fav] = await Promise.all([
+        isLoggedIn(),
+        isLoggedIn().then(l => l ? checkFavorite(contentId) : false),
+      ]);
       setLoggedIn(logged);
       setIsFav(fav);
     } catch (e) {
@@ -65,30 +50,66 @@ function DetailContent() {
     } finally {
       setLoading(false);
     }
-  }, [tmdbId, vType]);
+  }, [contentId, isSeries]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
   const handleFav = async () => {
     if (!loggedIn) { router.push('/account'); return; }
-    const res = await toggleFavorite({ item_id: tmdbId, item_type: 'vod', title, poster, content_type: type === 'tv' ? 'series' : 'movie' });
+    const res = await toggleFavorite({ item_id: contentId, item_type: 'vod', title, poster, content_type: isSeries ? 'series' : 'movie' });
     setIsFav(res.favorited);
   };
 
-  const handleWatch = () => {
-    setPlayerReady(true);
+  const handleWatch = async () => {
+    setStreamLoading(true);
+    setStreamError('');
+    setStreamUrl('');
+    try {
+      const result = await requestIptvVodStream(contentId, detail?.ext || 'mp4');
+      if (result.success && result.streamUrl) {
+        setStreamUrl(result.streamUrl);
+        recordHistory();
+      } else {
+        setStreamError(result.error || 'فشل تحميل الفيلم');
+      }
+    } catch {
+      setStreamError('خطأ في الاتصال');
+    } finally {
+      setStreamLoading(false);
+    }
+  };
+
+  const handleEpisodePlay = async (ep: IptvEpisode) => {
+    setCurrentEpisode(ep);
+    setStreamLoading(true);
+    setStreamError('');
+    setStreamUrl('');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    try {
+      const result = await requestIptvSeriesStream(ep.id, ep.ext || 'mp4');
+      if (result.success && result.streamUrl) {
+        setStreamUrl(result.streamUrl);
+        recordHistory();
+      } else {
+        setStreamError(result.error || 'فشل تحميل الحلقة');
+      }
+    } catch {
+      setStreamError('خطأ في الاتصال');
+    } finally {
+      setStreamLoading(false);
+    }
   };
 
   const recordHistory = useCallback(() => {
-    const key = `${tmdbId}_${currentSeason}_${currentEpisode}`;
+    const key = `${contentId}_${currentSeason}_${currentEpisode?.id}`;
     if (key === historyRecorded.current || !loggedIn) return;
     historyRecorded.current = key;
-    addWatchHistory({ item_id: tmdbId, item_type: 'vod', title, poster, content_type: type === 'tv' ? 'series' : 'movie' });
-  }, [tmdbId, currentSeason, currentEpisode, loggedIn, title, poster, type]);
+    addWatchHistory({ item_id: contentId, item_type: 'vod', title, poster, content_type: isSeries ? 'series' : 'movie' });
+  }, [contentId, currentSeason, currentEpisode, loggedIn, title, poster, isSeries]);
 
-  const seasons: number[] = detail?.seasons || [];
-  const allEpisodes: VidsrcEpisode[] = detail?.episodes || [];
-  const episodes = allEpisodes.filter(ep => ep.season === currentSeason);
+  const seasons: IptvSeason[] = (detail as IptvSeriesDetail)?.seasons || [];
+  const currentSeasonData = seasons.find(s => s.season === currentSeason);
+  const episodes: IptvEpisode[] = currentSeasonData?.episodes || [];
 
   const MetaBadges = () => (
     <div className="flex items-center gap-2 mb-1.5 flex-wrap">
@@ -109,7 +130,6 @@ function DetailContent() {
 
   const EpisodesList = () => (
     <>
-      {/* Season selector */}
       {isSeries && (
         loading ? (
           <div className="mb-4">
@@ -124,11 +144,11 @@ function DetailContent() {
             <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
               {seasons.map(s => (
                 <button
-                  key={s}
-                  onClick={() => { setCurrentSeason(s); setCurrentEpisode(1); }}
-                  className={`flex-shrink-0 px-3 py-1.5 rounded-lg text-sm font-medium transition ${currentSeason === s ? 'bg-brand-primary text-black' : 'bg-dark-card text-dark-muted hover:bg-dark-input'}`}
+                  key={s.season}
+                  onClick={() => { setCurrentSeason(s.season); setCurrentEpisode(null); }}
+                  className={`flex-shrink-0 px-3 py-1.5 rounded-lg text-sm font-medium transition ${currentSeason === s.season ? 'bg-brand-primary text-black' : 'bg-dark-card text-dark-muted hover:bg-dark-input'}`}
                 >
-                  الموسم {s}
+                  الموسم {s.season}
                 </button>
               ))}
             </div>
@@ -136,7 +156,6 @@ function DetailContent() {
         ) : null
       )}
 
-      {/* Episodes */}
       {isSeries && loading && (
         <div className="mb-6 flex flex-col gap-2">
           {[1, 2, 3, 4].map(i => (
@@ -156,20 +175,20 @@ function DetailContent() {
           <div className="flex flex-col gap-2">
             {episodes.map(ep => (
               <button
-                key={ep.episode}
-                onClick={() => { setCurrentEpisode(ep.episode); setPlayerReady(true); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-                className={`flex items-center gap-3 p-3 rounded-xl text-right transition ${currentEpisode === ep.episode && playerReady ? 'bg-brand-primary/15 border border-brand-primary/40' : 'bg-dark-card hover:bg-dark-input'}`}
+                key={ep.id}
+                onClick={() => handleEpisodePlay(ep)}
+                className={`flex items-center gap-3 p-3 rounded-xl text-right transition ${currentEpisode?.id === ep.id ? 'bg-brand-primary/15 border border-brand-primary/40' : 'bg-dark-card hover:bg-dark-input'}`}
               >
-                <div className={`w-16 h-10 rounded-lg flex-shrink-0 overflow-hidden flex items-center justify-center font-bold text-sm ${currentEpisode === ep.episode && playerReady ? 'bg-brand-primary/20' : 'bg-dark-input'}`}>
-                  {ep.thumbnail ? (
-                    <img src={ep.thumbnail} alt={ep.title || ''} className="w-full h-full object-cover" loading="lazy" />
+                <div className={`w-16 h-10 rounded-lg flex-shrink-0 overflow-hidden flex items-center justify-center font-bold text-sm ${currentEpisode?.id === ep.id ? 'bg-brand-primary/20' : 'bg-dark-input'}`}>
+                  {ep.poster ? (
+                    <img src={ep.poster} alt={ep.title || ''} className="w-full h-full object-cover" loading="lazy" />
                   ) : (
-                    <span className={currentEpisode === ep.episode && playerReady ? 'text-brand-primary' : 'text-dark-muted'}>{ep.episode}</span>
+                    <span className={currentEpisode?.id === ep.id ? 'text-brand-primary' : 'text-dark-muted'}>{ep.episode}</span>
                   )}
                 </div>
                 <div className="flex-1 text-right">
                   <p className="text-sm font-medium text-dark-text line-clamp-1">{ep.title || `الحلقة ${ep.episode}`}</p>
-                  {(ep.released || ep.air_date) && <p className="text-xs text-dark-muted mt-0.5">{ep.released || ep.air_date}</p>}
+                  {ep.released && <p className="text-xs text-dark-muted mt-0.5">{ep.released}</p>}
                 </div>
               </button>
             ))}
@@ -181,7 +200,6 @@ function DetailContent() {
 
   return (
     <div className="min-h-screen bg-dark-bg text-dark-text pb-24 md:pb-10">
-      {/* Backdrop — full width */}
       <div className="relative w-full" style={{ height: 'clamp(200px, 35vw, 420px)' }}>
         {(detail?.backdrop || poster) && !posterError ? (
           <img src={detail?.backdrop || poster} alt={title} className="w-full h-full object-cover"
@@ -198,14 +216,11 @@ function DetailContent() {
         </button>
       </div>
 
-      {/* ── Desktop two-column layout ── */}
       <div className="max-w-7xl mx-auto px-4 lg:px-8 -mt-16 relative z-10">
         <div className={`lg:flex lg:gap-8 ${isSeries ? '' : 'lg:justify-center'}`}>
 
-          {/* ── LEFT / MAIN COLUMN ── */}
           <div className={`flex-1 min-w-0 ${isSeries ? '' : 'lg:max-w-4xl'}`}>
 
-            {/* Poster + Title */}
             <div className="flex gap-4 items-end mb-4">
               <div className="w-24 h-36 md:w-32 md:h-48 rounded-xl overflow-hidden flex-shrink-0 shadow-2xl border border-white/10">
                 {poster && !posterError ? (
@@ -221,17 +236,16 @@ function DetailContent() {
               <div className="flex-1 pb-2">
                 <MetaBadges />
                 <h1 className="text-lg md:text-2xl lg:text-3xl font-black text-white leading-tight">{title}</h1>
-                {detail?.genres && detail.genres.length > 0 && (
+                {detail?.genre && (
                   <div className="flex flex-wrap gap-1.5 mt-2">
-                    {detail.genres.slice(0, 4).map(g => (
-                      <span key={g} className="px-2 py-0.5 rounded-full bg-white/10 text-white/70 text-xs">{g}</span>
+                    {detail.genre.split(',').slice(0, 4).map((g: string) => (
+                      <span key={g.trim()} className="px-2 py-0.5 rounded-full bg-white/10 text-white/70 text-xs">{g.trim()}</span>
                     ))}
                   </div>
                 )}
               </div>
             </div>
 
-            {/* Description */}
             {description ? (
               <div className="mb-4">
                 <p className={`text-sm text-dark-muted leading-relaxed ${descExpanded ? '' : 'line-clamp-3'}`}>{description}</p>
@@ -243,15 +257,18 @@ function DetailContent() {
               </div>
             ) : null}
 
-            {/* Action buttons */}
             <div className="flex gap-3 mb-4 flex-wrap">
-              {!playerReady && (
-                <button onClick={handleWatch}
-                  className="flex-1 min-w-[140px] flex items-center justify-center gap-2 bg-brand-primary hover:bg-brand-dark text-black font-bold py-3 rounded-xl transition-all hover:scale-105 active:scale-95 shadow-lg shadow-brand-primary/20">
-                  <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
-                  </svg>
-                  مشاهدة الآن
+              {!isSeries && !streamUrl && (
+                <button onClick={handleWatch} disabled={streamLoading}
+                  className="flex-1 min-w-[140px] flex items-center justify-center gap-2 bg-brand-primary hover:bg-brand-dark text-black font-bold py-3 rounded-xl transition-all hover:scale-105 active:scale-95 shadow-lg shadow-brand-primary/20 disabled:opacity-50">
+                  {streamLoading ? (
+                    <div className="w-5 h-5 border-2 border-black border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
+                    </svg>
+                  )}
+                  {streamLoading ? 'جارٍ التحميل...' : 'مشاهدة الآن'}
                 </button>
               )}
               <button onClick={handleFav}
@@ -261,33 +278,29 @@ function DetailContent() {
                 </svg>
                 {isFav ? 'مفضل' : 'مفضلة'}
               </button>
-              <button onClick={() => navigator.share?.({ title, url: window.location.href })}
-                className="flex items-center gap-2 px-4 py-3 rounded-xl bg-dark-card text-dark-muted hover:bg-dark-input text-sm transition">
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
-                </svg>
-                مشاركة
-              </button>
             </div>
 
             {/* Video Player */}
-            {playerReady && embedUrl && (
+            {(streamUrl || streamLoading || streamError) && (
               <div className="mb-6 rounded-xl overflow-hidden bg-black shadow-2xl">
                 <div className="relative w-full" style={{ paddingTop: '56.25%' }}>
-                  {proxyLoading && (
+                  {streamLoading && (
                     <div className="absolute inset-0 flex items-center justify-center bg-black z-10">
                       <div className="w-10 h-10 border-2 border-brand-primary border-t-transparent rounded-full animate-spin" />
                     </div>
                   )}
-                  {!proxyLoading && (
-                    <iframe
-                      key={embedUrl}
-                      {...(proxyHtml ? { srcDoc: proxyHtml } : { src: embedUrl })}
+                  {streamError && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-black gap-2">
+                      <svg className="w-8 h-8 text-brand-error" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                      <p className="text-white/70 text-sm">{streamError}</p>
+                    </div>
+                  )}
+                  {streamUrl && !streamLoading && (
+                    <video
+                      key={streamUrl}
                       className="absolute inset-0 w-full h-full"
-                      allowFullScreen
-                      allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
-                      referrerPolicy="no-referrer-when-downgrade"
-                      onLoad={recordHistory}
+                      controls autoPlay playsInline
+                      src={streamUrl}
                       title={title}
                     />
                   )}
@@ -295,8 +308,7 @@ function DetailContent() {
               </div>
             )}
 
-            {/* Cast/Director/Info — always in main column */}
-            {(detail?.cast || detail?.director || detail?.country || detail?.runtime || detail?.duration) && (
+            {(detail?.cast || detail?.director || detail?.runtime) && (
               <div className="mb-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {detail.director && (
                   <div className="flex items-start gap-3 p-3 rounded-xl bg-dark-card">
@@ -314,30 +326,20 @@ function DetailContent() {
                     <div><p className="text-xs text-dark-muted">الممثلون</p><p className="text-sm text-dark-text font-medium line-clamp-2">{detail.cast}</p></div>
                   </div>
                 )}
-                {detail.country && (
-                  <div className="flex items-start gap-3 p-3 rounded-xl bg-dark-card">
-                    <svg className="w-4 h-4 text-brand-primary mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    <div><p className="text-xs text-dark-muted">الدولة</p><p className="text-sm text-dark-text font-medium">{detail.country}</p></div>
-                  </div>
-                )}
-                {(detail.runtime || detail.duration) && (
+                {detail.runtime && (
                   <div className="flex items-start gap-3 p-3 rounded-xl bg-dark-card">
                     <svg className="w-4 h-4 text-brand-primary mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
-                    <div><p className="text-xs text-dark-muted">المدة</p><p className="text-sm text-dark-text font-medium">{detail.runtime || detail.duration}</p></div>
+                    <div><p className="text-xs text-dark-muted">المدة</p><p className="text-sm text-dark-text font-medium">{detail.runtime}</p></div>
                   </div>
                 )}
               </div>
             )}
 
-            {/* Episodes — mobile only (shown below player on small screens) */}
             {isSeries && <div className="lg:hidden"><EpisodesList /></div>}
           </div>
 
-          {/* ── RIGHT COLUMN — Episodes sidebar (desktop only, series only) ── */}
           {isSeries && (
             <div className="hidden lg:flex lg:flex-col lg:w-80 xl:w-96 flex-shrink-0">
               <div className="sticky top-4 max-h-[calc(100vh-2rem)] overflow-y-auto no-scrollbar pr-1">

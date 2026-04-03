@@ -1,49 +1,37 @@
 'use client';
 import React, { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
-import { fetchVidsrcBrowse, fetchVidsrcHome, VidsrcItem } from '@/constants/api';
-import HeroSlider from '@/components/HeroSlider';
+import { fetchIptvHome, fetchIptvCategoriesWithMovies, IptvVodItem, IptvCategoryWithMovies } from '@/constants/api';
 import ContentRow from '@/components/ContentRow';
-import { SkeletonHero, SkeletonRow } from '@/components/Skeleton';
+import { SkeletonRow } from '@/components/Skeleton';
+
+function toContentItem(v: IptvVodItem) {
+  return { id: v.id, title: v.name, poster: v.poster, vod_type: v.vod_type, year: v.year, rating: v.rating };
+}
 
 export default function EntertainmentPage() {
   const [loading, setLoading] = useState(true);
-  const [trending, setTrending] = useState<VidsrcItem[]>([]);
-  const [latestMovies, setLatestMovies] = useState<VidsrcItem[]>([]);
-  const [latestSeries, setLatestSeries] = useState<VidsrcItem[]>([]);
-  const [comedy, setComedy] = useState<VidsrcItem[]>([]);
-  const [drama, setDrama] = useState<VidsrcItem[]>([]);
-  const [action, setAction] = useState<VidsrcItem[]>([]);
-  const [romance, setRomance] = useState<VidsrcItem[]>([]);
-  const [thriller, setThriller] = useState<VidsrcItem[]>([]);
-  const [scifi, setScifi] = useState<VidsrcItem[]>([]);
-  const [mystery, setMystery] = useState<VidsrcItem[]>([]);
+  const [latestMovies, setLatestMovies] = useState<IptvVodItem[]>([]);
+  const [latestSeries, setLatestSeries] = useState<IptvVodItem[]>([]);
+  const [categories, setCategories] = useState<IptvCategoryWithMovies[]>([]);
 
   const load = useCallback(async () => {
     try {
-      const home = await fetchVidsrcHome();
-      setTrending(home.trending || []);
+      const [home, cats] = await Promise.all([
+        fetchIptvHome(),
+        fetchIptvCategoriesWithMovies(10),
+      ]);
       setLatestMovies(home.latestMovies || []);
-      setLatestSeries(home.latestTvShows || []);
+      setLatestSeries(home.latestSeries || []);
+      setCategories(cats.categories || []);
     } catch (e) {
       console.error('Entertainment load error:', e);
     } finally {
       setLoading(false);
     }
-    await Promise.all([
-      fetchVidsrcBrowse({ type: 'movie', category: 'comedy', page: 1 }).then(d => setComedy(d.items?.slice(0, 12) || [])).catch(() => {}),
-      fetchVidsrcBrowse({ type: 'tv', category: 'drama', page: 1 }).then(d => setDrama(d.items?.slice(0, 12) || [])).catch(() => {}),
-      fetchVidsrcBrowse({ type: 'movie', category: 'action', page: 1 }).then(d => setAction(d.items?.slice(0, 12) || [])).catch(() => {}),
-      fetchVidsrcBrowse({ type: 'movie', category: 'romance', page: 1 }).then(d => setRomance(d.items?.slice(0, 12) || [])).catch(() => {}),
-      fetchVidsrcBrowse({ type: 'movie', category: 'thriller', page: 1 }).then(d => setThriller(d.items?.slice(0, 12) || [])).catch(() => {}),
-      fetchVidsrcBrowse({ type: 'movie', category: 'science-fiction', page: 1 }).then(d => setScifi(d.items?.slice(0, 12) || [])).catch(() => {}),
-      fetchVidsrcBrowse({ type: 'tv', category: 'mystery', page: 1 }).then(d => setMystery(d.items?.slice(0, 12) || [])).catch(() => {}),
-    ]).catch(() => {});
   }, []);
 
   useEffect(() => { load(); }, [load]);
-
-  const heroItems = trending.filter(v => v.backdrop || v.poster).slice(0, 6);
 
   return (
     <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-20 md:pb-6">
@@ -52,14 +40,12 @@ export default function EntertainmentPage() {
         <h1 className="text-xl font-black text-light-text dark:text-dark-text">استكشف</h1>
       </div>
 
-      {/* Category chips */}
       <div className="flex gap-2 overflow-x-auto no-scrollbar px-4 pb-3">
         {[
           { label: 'رياضة', href: '/sports', icon: '⚽' },
           { label: 'أطفال', href: '/kids', icon: '🎈' },
           { label: 'أفلام', href: '/allcontent?type=movie', icon: '🎬' },
-          { label: 'مسلسلات', href: '/allcontent?type=tv', icon: '📺' },
-          { label: 'أنيميشن', href: '/allcontent?category=animation', icon: '✨' },
+          { label: 'مسلسلات', href: '/allcontent?type=series', icon: '📺' },
         ].map((c) => (
           <Link key={c.label} href={c.href} className="flex-shrink-0 flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-light-card dark:bg-dark-card hover:bg-brand-primary/15 text-sm font-bold text-light-text dark:text-dark-text transition">
             <span>{c.icon}</span>
@@ -68,22 +54,18 @@ export default function EntertainmentPage() {
         ))}
       </div>
 
-      {loading ? <SkeletonHero /> : <HeroSlider items={heroItems} />}
-
-      <div className="mt-6">
+      <div className="mt-2">
         {loading ? (
-          <><SkeletonRow /><SkeletonRow /></>
+          <><SkeletonRow /><SkeletonRow /><SkeletonRow /></>
         ) : (
           <>
-            {latestSeries.length > 0 && <ContentRow title="أحدث المسلسلات" items={latestSeries} seeAllHref="/allcontent?type=tv" />}
-            {latestMovies.length > 0 && <ContentRow title="أحدث الأفلام" items={latestMovies} seeAllHref="/allcontent?type=movie" />}
-            {drama.length > 0 && <ContentRow title="مسلسلات دراما" items={drama} seeAllHref="/allcontent?type=tv&category=drama" />}
-            {action.length > 0 && <ContentRow title="أفلام أكشن" items={action} seeAllHref="/allcontent?type=movie&category=action" />}
-            {comedy.length > 0 && <ContentRow title="أفلام كوميدي" items={comedy} seeAllHref="/allcontent?type=movie&category=comedy" />}
-            {romance.length > 0 && <ContentRow title="أفلام رومانسية" items={romance} seeAllHref="/allcontent?type=movie&category=romance" />}
-            {thriller.length > 0 && <ContentRow title="أفلام إثارة" items={thriller} seeAllHref="/allcontent?type=movie&category=thriller" />}
-            {scifi.length > 0 && <ContentRow title="خيال علمي" items={scifi} seeAllHref="/allcontent?type=movie&category=science-fiction" />}
-            {mystery.length > 0 && <ContentRow title="مسلسلات غموض" items={mystery} seeAllHref="/allcontent?type=tv&category=mystery" />}
+            {latestMovies.length > 0 && <ContentRow title="أحدث الأفلام" items={latestMovies.map(toContentItem)} seeAllHref="/allcontent?type=movie" />}
+            {latestSeries.length > 0 && <ContentRow title="أحدث المسلسلات" items={latestSeries.map(toContentItem)} seeAllHref="/allcontent?type=series" />}
+            {categories.map(cat => (
+              cat.items.length > 0 && (
+                <ContentRow key={cat.id} title={cat.name} items={cat.items.map(toContentItem)} seeAllHref={`/allcontent?type=movie&categoryId=${cat.id}`} />
+              )
+            ))}
           </>
         )}
       </div>

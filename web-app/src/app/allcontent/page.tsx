@@ -1,25 +1,16 @@
 'use client';
 import React, { useEffect, useState, useCallback, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { fetchVidsrcBrowse, searchVidsrc, VidsrcItem } from '@/constants/api';
+import { fetchIptvMovies, fetchIptvSeries, fetchIptvSearch, IptvVodItem } from '@/constants/api';
 import ContentCard from '@/components/ContentCard';
 import { SkeletonGrid } from '@/components/Skeleton';
 
-const TYPES = [{ id: '', label: 'الكل' }, { id: 'movie', label: 'أفلام' }, { id: 'tv', label: 'مسلسلات' }];
-const CATEGORIES = [
-  { id: '', label: 'الكل' },
-  { id: 'action', label: 'أكشن' }, { id: 'comedy', label: 'كوميدي' },
-  { id: 'drama', label: 'دراما' }, { id: 'horror', label: 'رعب' },
-  { id: 'thriller', label: 'إثارة' }, { id: 'animation', label: 'أنيميشن' },
-  { id: 'romance', label: 'رومانسي' }, { id: 'science-fiction', label: 'خيال علمي' },
-  { id: 'crime', label: 'جريمة' }, { id: 'family', label: 'عائلي' },
-  { id: 'adventure', label: 'مغامرة' }, { id: 'mystery', label: 'غموض' },
-];
+const TYPES = [{ id: '', label: 'الكل' }, { id: 'movie', label: 'أفلام' }, { id: 'series', label: 'مسلسلات' }];
 
 function AllContentContent() {
   const params = useSearchParams();
   const router = useRouter();
-  const [items, setItems] = useState<VidsrcItem[]>([]);
+  const [items, setItems] = useState<IptvVodItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [page, setPage] = useState(1);
@@ -27,20 +18,25 @@ function AllContentContent() {
   const [search, setSearch] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [activeType, setActiveType] = useState(params.get('type') || '');
-  const [activeCategory, setActiveCategory] = useState(params.get('category') || '');
+  const [activeCategoryId, setActiveCategoryId] = useState(params.get('categoryId') || '');
 
   const load = useCallback(async (p = 1, reset = false) => {
     if (p === 1) setLoading(true); else setLoadingMore(true);
     try {
       if (searchQuery.trim()) {
-        const results = await searchVidsrc(searchQuery);
-        setItems(results);
-        setHasMore(false);
-      } else {
-        const data = await fetchVidsrcBrowse({ type: activeType || undefined, category: activeCategory || undefined, page: p, limit: 24 });
+        const data = await fetchIptvSearch(searchQuery, p);
+        setItems(prev => reset ? (data.items || []) : [...prev, ...(data.items || [])]);
+        setHasMore(data.hasMore ?? false);
+      } else if (activeType === 'series') {
+        const data = await fetchIptvSeries({ categoryId: activeCategoryId || undefined, page: p, search: undefined });
         const newItems = data.items || [];
         setItems(prev => reset ? newItems : [...prev, ...newItems]);
-        setHasMore(data.hasMore ?? newItems.length >= 24);
+        setHasMore(data.hasMore ?? newItems.length >= 20);
+      } else {
+        const data = await fetchIptvMovies({ categoryId: activeCategoryId || undefined, page: p, search: undefined });
+        const newItems = data.items || [];
+        setItems(prev => reset ? newItems : [...prev, ...newItems]);
+        setHasMore(data.hasMore ?? newItems.length >= 20);
       }
     } catch (e) {
       console.error('Content load error:', e);
@@ -48,9 +44,9 @@ function AllContentContent() {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [activeType, activeCategory, searchQuery]);
+  }, [activeType, activeCategoryId, searchQuery]);
 
-  useEffect(() => { setPage(1); load(1, true); }, [activeType, activeCategory, searchQuery]);
+  useEffect(() => { setPage(1); load(1, true); }, [activeType, activeCategoryId, searchQuery]);
 
   const loadMore = () => {
     const next = page + 1;
@@ -63,14 +59,21 @@ function AllContentContent() {
     setSearchQuery(search);
   };
 
+  const toCard = (item: IptvVodItem) => ({
+    id: item.id,
+    title: item.name,
+    poster: item.poster,
+    vod_type: item.vod_type,
+    year: item.year,
+    rating: item.rating,
+  });
+
   return (
     <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-24 md:pb-6">
       <div className="max-w-7xl mx-auto px-4">
-        {/* Header */}
         <div className="py-4">
           <h1 className="text-xl font-black text-light-text dark:text-dark-text mb-3">تصفح المحتوى</h1>
 
-          {/* Search */}
           <form onSubmit={handleSearch} className="relative mb-4">
             <input
               type="text"
@@ -86,26 +89,15 @@ function AllContentContent() {
             </button>
           </form>
 
-          {/* Type filter */}
           <div className="flex gap-2 overflow-x-auto no-scrollbar pb-2 mb-2">
             {TYPES.map(t => (
-              <button key={t.id} onClick={() => { setActiveType(t.id); setSearchQuery(''); setSearch(''); }}
+              <button key={t.id} onClick={() => { setActiveType(t.id); setActiveCategoryId(''); setSearchQuery(''); setSearch(''); }}
                 className={`flex-shrink-0 px-3 py-1.5 rounded-lg text-sm font-medium transition ${activeType === t.id ? 'bg-brand-primary text-black' : 'bg-light-input dark:bg-dark-input text-light-muted dark:text-dark-muted hover:text-light-text dark:hover:text-dark-text'}`}
               >{t.label}</button>
             ))}
           </div>
-
-          {/* Category filter */}
-          <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
-            {CATEGORIES.map(c => (
-              <button key={c.id} onClick={() => { setActiveCategory(c.id); setSearchQuery(''); setSearch(''); }}
-                className={`flex-shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium transition ${activeCategory === c.id ? 'bg-brand-primary/20 text-brand-primary border border-brand-primary/40' : 'bg-light-input dark:bg-dark-input text-light-muted dark:text-dark-muted hover:text-light-text dark:hover:text-dark-text'}`}
-              >{c.label}</button>
-            ))}
-          </div>
         </div>
 
-        {/* Grid */}
         {loading ? (
           <SkeletonGrid count={24} />
         ) : items.length === 0 ? (
@@ -119,7 +111,7 @@ function AllContentContent() {
           <>
             <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
               {items.map((item, i) => (
-                <ContentCard key={`${item.id}_${i}`} item={item} />
+                <ContentCard key={`${item.id}_${i}`} item={toCard(item) as any} />
               ))}
             </div>
             {hasMore && (

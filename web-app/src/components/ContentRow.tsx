@@ -1,12 +1,20 @@
 'use client';
 import React, { useRef } from 'react';
 import Link from 'next/link';
-import { VidsrcItem } from '@/constants/api';
 import ContentCard from './ContentCard';
+
+interface ContentItem {
+  id: string;
+  title: string;
+  poster: string;
+  vod_type: 'movie' | 'series';
+  year?: string;
+  rating?: string;
+}
 
 interface Props {
   title: string;
-  items: VidsrcItem[];
+  items: ContentItem[];
   seeAllHref?: string;
   showBadge?: boolean;
   cardWidth?: string;
