@@ -80,7 +80,7 @@ export default function HomePage() {
           </>
         )}
 
-        {/* Live Channels */}
+        {/* Live Channels — poster style */}
         {channels.length > 0 && (
           <section className="mb-8">
             <div className="flex items-center justify-between px-4 mb-3">
@@ -93,25 +93,33 @@ export default function HomePage() {
                 المزيد
               </button>
             </div>
-            <div className="flex gap-3 overflow-x-auto no-scrollbar px-4 pb-2">
+            <div className="flex gap-2.5 overflow-x-auto no-scrollbar px-4 pb-2">
               {channels.map((ch) => (
                 <button
                   key={ch.id}
                   onClick={() => router.push(`/live?channelId=${ch.id}&title=${encodeURIComponent(ch.name)}`)}
-                  className="w-28 flex-shrink-0 flex flex-col items-center p-3 rounded-xl bg-light-card dark:bg-dark-card hover:bg-light-input dark:hover:bg-dark-input transition relative"
+                  className="w-[105px] flex-shrink-0 rounded-xl overflow-hidden relative group card-hover aspect-[2/3] bg-light-card dark:bg-dark-card"
                 >
-                  <div className="absolute top-2 right-2 w-1.5 h-1.5 rounded-full bg-brand-success live-dot" />
-                  <div className="w-14 h-10 rounded-lg bg-light-input dark:bg-dark-input flex items-center justify-center mb-2 overflow-hidden">
+                  {/* Logo centered */}
+                  <div className="absolute inset-0 flex items-center justify-center p-4">
                     {ch.logo && !logoErrors.has(ch.id) ? (
-                      <img src={ch.logo} alt={ch.name} className="w-full h-full object-contain"
+                      <img src={ch.logo} alt={ch.name} className="w-full h-full object-contain drop-shadow-lg"
                         onError={() => setLogoErrors(p => new Set(p).add(ch.id))} />
                     ) : (
-                      <svg className="w-5 h-5 text-brand-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <svg className="w-10 h-10 text-brand-primary opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0" />
                       </svg>
                     )}
                   </div>
-                  <span className="text-[10px] font-bold text-light-text dark:text-dark-text text-center line-clamp-1">{ch.name}</span>
+                  {/* Bottom gradient + name */}
+                  <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent pt-10 pb-2 px-2">
+                    <span className="text-[10px] font-bold text-white text-center block line-clamp-1">{ch.name}</span>
+                  </div>
+                  {/* Live badge */}
+                  <div className="absolute top-1.5 right-1.5 flex items-center gap-1 bg-red-600/90 px-1.5 py-0.5 rounded-md">
+                    <div className="w-1 h-1 rounded-full bg-white live-dot" />
+                    <span className="text-[8px] font-bold text-white">مباشر</span>
+                  </div>
                 </button>
               ))}
             </div>

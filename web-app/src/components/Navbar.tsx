@@ -65,6 +65,21 @@ function IconEntertainment({ active }: { active: boolean }) {
   );
 }
 
+function IconLive({ active }: { active: boolean }) {
+  return (
+    <svg className="w-5 h-5" viewBox="0 0 24 24" fill={active ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={active ? 0 : 1.8} strokeLinecap="round" strokeLinejoin="round">
+      {active ? (
+        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z" />
+      ) : (
+        <>
+          <circle cx="12" cy="12" r="10" />
+          <polygon points="10,8 16,12 10,16" />
+        </>
+      )}
+    </svg>
+  );
+}
+
 function IconMyList({ active }: { active: boolean }) {
   return (
     <svg className="w-5 h-5" viewBox="0 0 24 24" fill={active ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
@@ -90,8 +105,7 @@ function IconAccount({ active }: { active: boolean }) {
 
 const NAV_ICONS: Record<string, React.FC<{ active: boolean }>> = {
   '/': IconHome,
-  '/sports': IconSports,
-  '/kids': IconKids,
+  '/live': IconLive,
   '/entertainment': IconEntertainment,
   '/mylist': IconMyList,
   '/account': IconAccount,
@@ -99,9 +113,8 @@ const NAV_ICONS: Record<string, React.FC<{ active: boolean }>> = {
 
 const NAV_ITEMS = [
   { href: '/', label: 'الرئيسية' },
-  { href: '/sports', label: 'رياضة' },
-  { href: '/kids', label: 'أطفال' },
-  { href: '/entertainment', label: 'ترفيه' },
+  { href: '/live', label: 'مباشر' },
+  { href: '/entertainment', label: 'استكشف' },
   { href: '/mylist', label: 'قائمتي' },
   { href: '/account', label: 'حسابي' },
 ];

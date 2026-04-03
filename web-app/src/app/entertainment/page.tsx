@@ -1,5 +1,6 @@
 'use client';
 import React, { useEffect, useState, useCallback } from 'react';
+import Link from 'next/link';
 import { fetchVidsrcBrowse, fetchVidsrcHome, VidsrcItem } from '@/constants/api';
 import HeroSlider from '@/components/HeroSlider';
 import ContentRow from '@/components/ContentRow';
@@ -48,7 +49,23 @@ export default function EntertainmentPage() {
     <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-20 md:pb-6">
       <div className="px-4 pt-4 pb-2 flex items-center gap-2">
         <svg className="w-6 h-6 text-brand-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="15" rx="2" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M17 2L12 7L7 2" /><polygon points="10,11 10,17 16,14" fill="currentColor" stroke="none" /></svg>
-        <h1 className="text-xl font-black text-light-text dark:text-dark-text">ترفيه</h1>
+        <h1 className="text-xl font-black text-light-text dark:text-dark-text">استكشف</h1>
+      </div>
+
+      {/* Category chips */}
+      <div className="flex gap-2 overflow-x-auto no-scrollbar px-4 pb-3">
+        {[
+          { label: 'رياضة', href: '/sports', icon: '⚽' },
+          { label: 'أطفال', href: '/kids', icon: '🎈' },
+          { label: 'أفلام', href: '/allcontent?type=movie', icon: '🎬' },
+          { label: 'مسلسلات', href: '/allcontent?type=tv', icon: '📺' },
+          { label: 'أنيميشن', href: '/allcontent?category=animation', icon: '✨' },
+        ].map((c) => (
+          <Link key={c.label} href={c.href} className="flex-shrink-0 flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-light-card dark:bg-dark-card hover:bg-brand-primary/15 text-sm font-bold text-light-text dark:text-dark-text transition">
+            <span>{c.icon}</span>
+            <span>{c.label}</span>
+          </Link>
+        ))}
       </div>
 
       {loading ? <SkeletonHero /> : <HeroSlider items={heroItems} />}

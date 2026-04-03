@@ -13,7 +13,7 @@ export default function ContentCard({ item }: Props) {
   const href = `/detail?tmdbId=${item.tmdb_id || item.id}&type=${type}&title=${encodeURIComponent(item.title)}&poster=${encodeURIComponent(item.poster || '')}`;
 
   return (
-    <Link href={href} className="block w-full group cursor-pointer">
+    <Link href={href} className="block w-full group cursor-pointer card-hover">
       <div className="relative w-full aspect-[2/3] rounded-xl overflow-hidden bg-dark-input">
         {item.poster && !imgError ? (
           <img
