@@ -294,29 +294,58 @@ app.post('/api/stream/live/:channelId', requireAuth, requirePremium, async (req,
   });
 });
 
-// Xtream Token Redirect — URL ends with /index.m3u8 so ExoPlayer detects HLS before redirect
-// Client follows redirect chain with their own IP → CDN token bound to client IP → segments work
-app.get(['/xtream-play/:token', '/xtream-play/:token/index.m3u8'], (req, res) => {
+// Xtream Token Proxy — pipe HLS manifest & rewrite absolute segment URLs
+app.get(['/xtream-play/:token', '/xtream-play/:token/index.m3u8'], async (req, res) => {
   try {
     const payload = jwt.verify(req.params.token, config.JWT_SECRET);
     if (payload.t !== 'xt' || !payload.sid) return res.status(403).end();
+
     const realUrl = `${XTREAM.primary}/live/${XTREAM.user}/${XTREAM.pass}/${payload.sid}.m3u8`;
-    res.redirect(302, realUrl);
+    const upRes = await fetch(realUrl, {
+      headers: { 'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20' },
+      redirect: 'follow',
+    });
+    if (!upRes.ok) return res.status(upRes.status).end();
+
+    let body = await upRes.text();
+
+    // Rewrite absolute IPTV URLs → proxy through /xtream-seg/:token/
+    const iptvBase = `${XTREAM.primary}/live/${XTREAM.user}/${XTREAM.pass}/`;
+    const escaped = iptvBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    body = body.replace(new RegExp(escaped, 'g'), `/xtream-seg/${req.params.token}/`);
+
+    res.set('Content-Type', 'application/vnd.apple.mpegurl');
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Cache-Control', 'no-cache');
+    res.send(body);
   } catch (e) {
+    console.error('[Xtream-play] proxy error:', e.message);
     res.status(403).json({ error: 'Invalid or expired token' });
   }
 });
 
-// Xtream Token Redirect — URL ends with /index.m3u8 so ExoPlayer detects HLS before redirect
-// Client follows redirect chain with their own IP → CDN token bound to client IP → segments work
-app.get(['/xtream-play/:token', '/xtream-play/:token/index.m3u8'], (req, res) => {
+// Xtream Segment Proxy — pipe .ts segments so browsers don't face CORS
+app.get('/xtream-seg/:token/:segment(*)', async (req, res) => {
   try {
     const payload = jwt.verify(req.params.token, config.JWT_SECRET);
     if (payload.t !== 'xt' || !payload.sid) return res.status(403).end();
-    const realUrl = `${XTREAM.primary}/live/${XTREAM.user}/${XTREAM.pass}/${payload.sid}.m3u8`;
-    res.redirect(302, realUrl);
+
+    const segUrl = `${XTREAM.primary}/live/${XTREAM.user}/${XTREAM.pass}/${req.params.segment}`;
+    const upRes = await fetch(segUrl, {
+      headers: { 'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20' },
+      redirect: 'follow',
+    });
+    if (!upRes.ok) return res.status(upRes.status).end();
+
+    res.set('Content-Type', upRes.headers.get('content-type') || 'video/mp2t');
+    res.set('Access-Control-Allow-Origin', '*');
+    if (upRes.headers.get('content-length')) res.set('Content-Length', upRes.headers.get('content-length'));
+
+    const { Readable } = require('stream');
+    Readable.fromWeb(upRes.body).pipe(res);
   } catch (e) {
-    res.status(403).json({ error: 'Invalid or expired token' });
+    console.error('[Xtream-seg] proxy error:', e.message);
+    res.status(403).end();
   }
 });
 
