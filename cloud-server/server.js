@@ -24,7 +24,8 @@ const HlsProxy = require('./lib/hls-proxy');
 const LiveProxy = require('./lib/live-proxy');
 const { syncXtreamChannels, XTREAM } = require('./lib/xtream');
 const xtreamProxy = require('./lib/xtream-proxy');
-const vidsrcApi = require('./lib/vidsrc-api');
+const vidsrcApi = require('./lib/vidsrc-api'); // DISABLED — replaced by xtream-vod
+const xtreamVod = require('./lib/xtream-vod');
 const { fetchArabicSubtitles } = require('./lib/subtitle-fetcher');
 const { initLuluStream, getLuluStream } = require('./lib/lulustream');
 
@@ -241,12 +242,21 @@ function requirePremium(req, res, next) {
 app.post('/api/stream/live/:channelId', requireAuth, requirePremium, async (req, res) => {
   const rawId = req.params.channelId;
   // -- Xtream live channel (xtream_live_<streamId> or bare numeric ID) --
+  // Signed token redirect — credentials hidden from client, client connects directly to source
   const xtreamMatch = rawId.match(/^xtream_live_(\d+)$/) || rawId.match(/^(\d+)$/);
   if (xtreamMatch) {
     const streamNumId = xtreamMatch[1];
     const xch = db.prepare('SELECT id, name, logo, category, stream_id, base_url FROM xtream_channels WHERE stream_id = ? OR id = ?').get(Number(streamNumId), streamNumId);
     if (xch) {
-      return res.json({ success: true, hlsUrl: `${XTREAM.primary}/live/${XTREAM.user}/${XTREAM.pass}/${xch.stream_id}.m3u8`, ready: true, streamId: String(xch.stream_id), name: xch.name, logo: xch.logo });
+      const token = jwt.sign({ sid: String(xch.stream_id), t: 'xt' }, config.JWT_SECRET, { expiresIn: '6h' });
+      return res.json({
+        success: true,
+        hlsUrl: `/xtream-play/${token}/index.m3u8`,
+        ready: true,
+        streamId: String(xch.stream_id),
+        name: xch.name,
+        logo: xch.logo,
+      });
     }
   }
   let ch = db.prepare('SELECT id, name, stream_url FROM channels WHERE id = ? AND is_enabled = 1').get(rawId);
@@ -283,11 +293,41 @@ app.post('/api/stream/live/:channelId', requireAuth, requirePremium, async (req,
   });
 });
 
+// Xtream Token Redirect — URL ends with /index.m3u8 so ExoPlayer detects HLS before redirect
+// Client follows redirect chain with their own IP → CDN token bound to client IP → segments work
+app.get(['/xtream-play/:token', '/xtream-play/:token/index.m3u8'], (req, res) => {
+  try {
+    const payload = jwt.verify(req.params.token, config.JWT_SECRET);
+    if (payload.t !== 'xt' || !payload.sid) return res.status(403).end();
+    const realUrl = `${XTREAM.primary}/live/${XTREAM.user}/${XTREAM.pass}/${payload.sid}.m3u8`;
+    res.redirect(302, realUrl);
+  } catch (e) {
+    res.status(403).json({ error: 'Invalid or expired token' });
+  }
+});
+
 // â•â•â• Direct Live Pipe â€” Ø¨Ø« Ù…Ø¨Ø§Ø´Ø± Ø¨Ø¯ÙˆÙ† FFmpeg (pipe) â•â•â•
-app.get('/live-pipe/:channelId', requireAuth, requirePremium, async (req, res) => {
-  const ch = db.prepare('SELECT id, name, stream_url FROM channels WHERE id = ? AND is_enabled = 1').get(req.params.channelId);
+app.get('/live-pipe/:channelId', requireAuth, async (req, res) => {
+  const rawId = req.params.channelId;
+
+  // Xtream channel proxy — server connects to IPTV source instead of client
+  // Auth only (no premium check) — free channels also use this
+  const xtreamPipeMatch = rawId.match(/^xtream_(\d+)$/);
+  if (xtreamPipeMatch) {
+    const streamId = xtreamPipeMatch[1];
+    const sourceUrl = `${XTREAM.primary}/live/${XTREAM.user}/${XTREAM.pass}/${streamId}.m3u8`;
+    console.log(`[LivePipe] Xtream #${streamId} (proxied)`);
+    await liveProxy.streamToClient(`xtream_${streamId}`, sourceUrl, req, res);
+    return;
+  }
+
+  // Local channels require premium
+  const user = req.user;
+  if (!user || !user.is_premium) return res.status(403).json({ error: 'Premium required' });
+
+  const ch = db.prepare('SELECT id, name, stream_url FROM channels WHERE id = ? AND is_enabled = 1').get(rawId);
   if (!ch || !ch.stream_url) return res.status(404).end();
-  console.log(`[LivePipe] â–¶ ${ch.name}`);
+  console.log(`[LivePipe] ${ch.name}`);
   await liveProxy.streamToClient(ch.id, ch.stream_url, req, res);
 });
 
@@ -520,32 +560,166 @@ app.get('/vod/subtitle/:id/:trackIndex', async (req, res) => {
   }
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-// Content API â€” Ø£ÙÙ„Ø§Ù… ÙˆÙ…Ø³Ù„Ø³Ù„Ø§Øª Ù…Ù† TMDB Ù…Ø¨Ø§Ø´Ø±Ø©
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// IPTV VOD API — أفلام ومسلسلات من Xtream
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+app.get('/api/xtream/vod/home', async (req, res) => {
+  try {
+    const data = await xtreamVod.getHome();
+    res.json(data);
+  } catch (e) {
+    console.error('[VOD] home:', e.message);
+    res.status(500).json({ error: 'فشل جلب البيانات' });
+  }
+});
+
+app.get('/api/xtream/vod/categories', async (req, res) => {
+  try { res.json(await xtreamVod.getVodCategories()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/xtream/vod/categories-with-movies', async (req, res) => {
+  try {
+    const perCategory = parseInt(req.query.per_category) || 12;
+    const maxCategories = parseInt(req.query.max_categories) || 40;
+    const filter = req.query.filter || '';
+    const data = await xtreamVod.getVodByCategory({ perCategory, maxCategories, filter });
+    res.json(data);
+  } catch (e) {
+    console.error('[categories-with-movies]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/xtream/vod/streams', async (req, res) => {
+  try {
+    const { category_id, page, limit, search } = req.query;
+    const data = await xtreamVod.getVodStreams({
+      categoryId: category_id,
+      page: parseInt(page) || 1,
+      limit: parseInt(limit) || 20,
+      search: search || undefined,
+    });
+    res.json(data);
+  } catch (e) {
+    console.error('[VOD] streams:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/xtream/vod/info/:vodId', async (req, res) => {
+  try {
+    const data = await xtreamVod.getVodInfo(req.params.vodId);
+    res.json(data);
+  } catch (e) {
+    console.error('[VOD] info:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/xtream/vod/stream/:vodId', (req, res) => {
+  try {
+    const info = { id: req.params.vodId, ext: req.query.ext || 'mp4' };
+    const token = jwt.sign({ sid: info.id, ext: info.ext, t: 'vod' }, config.JWT_SECRET, { expiresIn: '6h' });
+    res.json({ success: true, streamUrl: `/vod-play/${token}/stream.mp4` });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/xtream/series/categories', async (req, res) => {
+  try { res.json(await xtreamVod.getSeriesCategories()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/xtream/series/list', async (req, res) => {
+  try {
+    const { category_id, page, limit, search } = req.query;
+    const data = await xtreamVod.getSeriesList({
+      categoryId: category_id,
+      page: parseInt(page) || 1,
+      limit: parseInt(limit) || 20,
+      search: search || undefined,
+    });
+    res.json(data);
+  } catch (e) {
+    console.error('[Series] list:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/xtream/series/info/:seriesId', async (req, res) => {
+  try {
+    const data = await xtreamVod.getSeriesInfo(req.params.seriesId);
+    res.json(data);
+  } catch (e) {
+    console.error('[Series] info:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/xtream/series/stream/:episodeId', (req, res) => {
+  try {
+    const token = jwt.sign(
+      { sid: req.params.episodeId, ext: req.query.ext || 'mp4', t: 'ser' },
+      config.JWT_SECRET,
+      { expiresIn: '6h' }
+    );
+    res.json({ success: true, streamUrl: `/vod-play/${token}/stream.mp4` });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/xtream/vod/search', async (req, res) => {
+  try {
+    const { q, page } = req.query;
+    const data = await xtreamVod.search(q || '', parseInt(page) || 1);
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// VOD Token Redirect — client fetches file directly from IPTV with their own IP
+app.get(['/vod-play/:token', '/vod-play/:token/stream.mp4'], (req, res) => {
+  try {
+    const payload = jwt.verify(req.params.token, config.JWT_SECRET);
+    if (!payload.sid || !['vod', 'ser'].includes(payload.t)) return res.status(403).end();
+    const ext = payload.ext || 'mp4';
+    const path = payload.t === 'ser'
+      ? `series/${XTREAM.user}/${XTREAM.pass}/${payload.sid}.${ext}`
+      : `movie/${XTREAM.user}/${XTREAM.pass}/${payload.sid}.${ext}`;
+    res.redirect(302, `${XTREAM.primary}/${path}`);
+  } catch (e) {
+    res.status(403).json({ error: 'Invalid or expired token' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// VidSrc/TMDB Content API — أفلام ومسلسلات من TMDB
+// ═══════════════════════════════════════════════════════
 
 app.get('/api/vidsrc/home', async (req, res) => {
   try {
     const data = await vidsrcApi.getHome();
     res.json(data);
   } catch (e) {
-    console.error('[Content] home:', e.message);
-    res.status(500).json({ error: 'ÙØ´Ù„ Ø¬Ù„Ø¨ Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª' });
+    console.error('[Vidsrc] home error:', e.message);
+    res.status(500).json({ error: e.message });
   }
 });
 
 app.get('/api/vidsrc/browse', async (req, res) => {
   try {
-    const { type, page, category } = req.query;
-    const data = await vidsrcApi.browse({
-      type: type || 'all',
-      page: parseInt(page) || 1,
-      category: category || 'popular',
-    });
+    const { type, category, page, limit } = req.query;
+    const data = await vidsrcApi.browse({ type, category, page: parseInt(page) || 1 });
+    if (limit && data.items) data.items = data.items.slice(0, parseInt(limit));
     res.json(data);
   } catch (e) {
-    console.error('[Content] browse:', e.message);
-    res.status(500).json({ error: 'ÙØ´Ù„ Ø¬Ù„Ø¨ Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª' });
+    console.error('[Vidsrc] browse error:', e.message);
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -555,8 +729,8 @@ app.get('/api/vidsrc/search', async (req, res) => {
     const data = await vidsrcApi.search(q || '', parseInt(page) || 1);
     res.json(data);
   } catch (e) {
-    console.error('[Content] search:', e.message);
-    res.status(500).json({ error: 'ÙØ´Ù„ Ø§Ù„Ø¨Ø­Ø«' });
+    console.error('[Vidsrc] search error:', e.message);
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -564,22 +738,11 @@ app.get('/api/vidsrc/detail/:type/:id', async (req, res) => {
   try {
     const { type, id } = req.params;
     const data = await vidsrcApi.getDetail(id, type);
-    if (!data) return res.status(404).json({ error: 'ØºÙŠØ± Ù…ÙˆØ¬ÙˆØ¯' });
+    if (!data) return res.status(404).json({ error: 'Not found' });
     res.json(data);
   } catch (e) {
-    console.error('[Content] detail:', e.message);
-    res.status(500).json({ error: 'ÙØ´Ù„ Ø¬Ù„Ø¨ Ø§Ù„ØªÙØ§ØµÙŠÙ„' });
-  }
-});
-
-app.get('/api/vidsrc/episodes', async (req, res) => {
-  try {
-    const page = parseInt(req.query.page) || 1;
-    const data = await vidsrcApi.getLatestEpisodes(page);
-    res.json({ items: data });
-  } catch (e) {
-    console.error('[Content] episodes:', e.message);
-    res.status(500).json({ error: 'ÙØ´Ù„ Ø¬Ù„Ø¨ Ø§Ù„Ø­Ù„Ù‚Ø§Øª' });
+    console.error('[Vidsrc] detail error:', e.message);
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -987,25 +1150,25 @@ app.get('/api/xtream/channels', (req, res) => {
  * Returns the HLS proxy URL for a channel
  * The proxy handles viewer tracking + segment caching
  */
-app.get('/api/xtream/stream/:channelId', requireAuth, (req, res) => {
+app.get('/api/xtream/stream/:channelId', (req, res) => {
   try {
     const ch = db.prepare(
       'SELECT id, name, logo, category, stream_id, base_url FROM xtream_channels WHERE id = ?'
     ).get(req.params.channelId);
 
-    if (!ch) return res.status(404).json({ error: 'Ø§Ù„Ù‚Ù†Ø§Ø© ØºÙŠØ± Ù…ÙˆØ¬ÙˆØ¯Ø©' });
+    if (!ch) return res.status(404).json({ error: 'channel not found' });
 
-    // Direct Xtream URL — client connects straight to provider (no server proxy)
-    // avoids IP-based stream restrictions on data-centre IPs
-    const directUrl = `${XTREAM.primary}/live/${XTREAM.user}/${XTREAM.pass}/${ch.stream_id}.m3u8`;
+    // Token manifest proxy — client gets m3u8 from VPS, segments from CDN directly
+    const token = jwt.sign({ sid: String(ch.stream_id), t: 'xt' }, config.JWT_SECRET, { expiresIn: '6h' });
+    const tokenUrl = `/xtream-play/${token}/index.m3u8`;
 
     res.json({
       success  : true,
       name     : ch.name,
       logo     : ch.logo,
       category : ch.category,
-      proxyUrl : directUrl,
-      directUrl: directUrl,
+      proxyUrl : tokenUrl,
+      directUrl: tokenUrl,
       streamId : ch.stream_id,
     });
   } catch (e) {
