@@ -1502,28 +1502,38 @@ const server = app.listen(config.PORT, config.HOST, async () => {
   liveProxy.start();
 
 
-  // Xtream channel sync on startup (await so channels are ready)
-  try {
-    await syncXtreamChannels(db);
-  } catch (e) {
-    console.error('[Xtream] Sync startup error:', e.message);
-  }
-  xtreamProxy.start();
-
-  // Periodic Xtream channel sync every 30 minutes
-  setInterval(() => syncXtreamChannels(db).catch(e => console.error('[Xtream] Periodic sync error:', e.message)), 30 * 60 * 1000);
-
-  // Pre-warm VOD cache on startup
-  try {
-    const home = await xtreamVod.getHome();
-    console.log(`[VOD] Pre-warmed: ${home.latestMovies?.length || 0} movies, ${home.latestSeries?.length || 0} series`);
-  } catch (e) {
-    console.error('[VOD] Pre-warm error:', e.message);
-  }
+  // Sync Xtream IPTV data on startup
+  const { syncXtreamChannels } = require('./lib/xtream');
+  console.log('[Init] Syncing Xtream IPTV data...');
+  syncXtreamChannels(db).then(result => {
+    console.log(`[Init] Xtream sync complete: ${result.saved} channels saved from ${result.total} total`);
+  }).catch(e => console.error('[Init] Xtream sync error:', e.message));
 
   // Sync channels from backend PostgreSQL on startup
   syncChannelsFromBackend(true).catch(e => console.error('[Sync] Startup error:', e.message));
   setInterval(() => syncChannelsFromBackend(true).catch(() => {}), CHANNEL_SYNC_INTERVAL);
+
+  // Periodic Xtream sync every 30 minutes
+  setInterval(() => {
+    console.log('[Init] Periodic Xtream sync...');
+    syncXtreamChannels(db).catch(e => console.error('[Init] Periodic Xtream sync error:', e.message));
+  }, 30 * 60 * 1000);
+
+  // Pre-warm VOD cache on startup (fetch latest movies & series)
+  try {
+    console.log('[VOD] Pre-warming cache...');
+    const home = await xtreamVod.getHome();
+    console.log(`[VOD] Pre-warmed: ${home.latestMovies?.length || 0} movies, ${home.latestSeries?.length || 0} series`);
+    
+    // Also pre-load categories for better UX
+    const [vodCats, seriesCats] = await Promise.all([
+      xtreamVod.getVodCategories(),
+      xtreamVod.getSeriesCategories(),
+    ]);
+    console.log(`[VOD] Categories loaded: ${vodCats?.length || 0} VOD, ${seriesCats?.length || 0} Series`);
+  } catch (e) {
+    console.error('[VOD] Pre-warm error:', e.message);
+  }
 });
 
 const shutdown = async () => {
