@@ -152,8 +152,28 @@ export interface SubscriptionPlan {
   id: string;
   name: string;
   duration_days: number;
+  max_connections: number;
   price_usd: number;
   is_active: number;
+}
+
+export interface ActiveSession {
+  id: string;
+  stream_id: string;
+  type: string;
+  started_at: number;
+  last_seen: number;
+}
+
+export interface SessionInfo {
+  plan: string;
+  isPremium: boolean;
+  expires_at: string | null;
+  daysLeft: number | null;
+  max_connections: number;
+  active_sessions: number;
+  sessions: ActiveSession[];
+  is_admin: boolean;
 }
 
 // ─── Core fetch ──────────────────────────────────────────
@@ -504,7 +524,7 @@ export async function requestFreeStream(channelId: string): Promise<FreeStreamRe
       name: data.name,
       logo: data.logo,
       group: data.category,
-      streamUrl: data.proxyUrl || data.directUrl,
+      streamUrl: data.hlsUrl || data.proxyUrl || data.directUrl,
     };
   } catch { return { success: false, error: 'خطأ في الاتصال' }; }
 }
@@ -641,4 +661,44 @@ export async function fetchAgentCodes(params?: { status?: string; limit?: number
     if (!res.ok) return { codes: [], total: 0 };
     return await res.json();
   } catch { return { codes: [], total: 0 }; }
+}
+
+// ─── Session Management (cloud-server) ──────────────────
+const CLOUD_URL = 'http://62.171.153.204:8090';
+
+async function cloudFetch(path: string, options: RequestInit = {}): Promise<Response> {
+  const token = getStorage(TOKEN_KEY);
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(options.headers as Record<string, string> || {}) };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return fetch(`${CLOUD_URL}${path}`, { ...options, headers });
+}
+
+export async function fetchSessionInfo(): Promise<SessionInfo | null> {
+  try {
+    const res = await cloudFetch('/api/session/subscription-info');
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+export async function fetchActiveSessions(): Promise<{ sessions: ActiveSession[]; active: number; max: number; plan: string }> {
+  try {
+    const res = await cloudFetch('/api/session/active');
+    if (!res.ok) return { sessions: [], active: 0, max: 1, plan: 'free' };
+    return await res.json();
+  } catch { return { sessions: [], active: 0, max: 1, plan: 'free' }; }
+}
+
+export async function releaseSession(sessionId: string): Promise<boolean> {
+  try {
+    const res = await cloudFetch('/api/session/force-release', { method: 'POST', body: JSON.stringify({ sessionId }) });
+    return res.ok;
+  } catch { return false; }
+}
+
+export async function releaseAllSessions(): Promise<boolean> {
+  try {
+    const res = await cloudFetch('/api/session/release-all', { method: 'POST' });
+    return res.ok;
+  } catch { return false; }
 }

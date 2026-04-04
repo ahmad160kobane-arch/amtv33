@@ -386,14 +386,16 @@ app.get(['/xtream-play/:token', '/xtream-play/:token/index.m3u8'], (req, res) =>
   }
 });
 
-// Xtream TS Pipe — for web browsers (pipes raw .ts stream through cloud server, no CORS/mixed-content issues)
+// Xtream Pipe — redirect to HLS proxy (no persistent connections, multi-channel safe)
 app.get('/xtream-pipe/:token', async (req, res) => {
   try {
     const payload = jwt.verify(req.params.token, config.JWT_SECRET);
     if (payload.t !== 'xt' || !payload.sid) return res.status(403).end();
-    const sourceUrl = `${XTREAM.primary}/live/${XTREAM.user}/${XTREAM.pass}/${payload.sid}.m3u8`;
-    console.log(`[Xtream-pipe] #${payload.sid} — بث مباشر للويب`);
-    await liveProxy.streamToClient(`web_xt_${payload.sid}`, sourceUrl, req, res);
+    const sid = `pipe_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const base = encodeURIComponent(XTREAM.primary);
+    const hlsUrl = `/proxy/live/${payload.sid}/index.m3u8?sid=${sid}&base=${base}`;
+    console.log(`[Xtream-pipe] #${payload.sid} → HLS proxy`);
+    res.redirect(302, hlsUrl);
   } catch (e) {
     console.error('[Xtream-pipe] error:', e.message);
     res.status(403).json({ error: 'Invalid or expired token' });
@@ -1242,14 +1244,18 @@ app.get('/api/xtream/stream/:channelId', async (req, res) => {
 
     const token = jwt.sign({ sid: String(ch.stream_id), t: 'xt' }, config.JWT_SECRET, { expiresIn: '6h' });
 
+    const sid = `web_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const base = encodeURIComponent(ch.base_url || XTREAM.primary);
     res.json({
       success  : true,
       name     : ch.name,
       logo     : ch.logo,
       category : ch.category,
+      // hlsUrl: HLS proxy — segment caching, no persistent connections, multi-channel safe
+      hlsUrl   : `/proxy/live/${ch.stream_id}/index.m3u8?sid=${sid}&base=${base}`,
       // directUrl: mobile/ExoPlayer follows 302 redirect directly to IPTV
       directUrl: `/xtream-play/${token}/index.m3u8`,
-      // proxyUrl: web browser gets raw TS piped through cloud server (no CORS/mixed-content)
+      // proxyUrl: raw TS pipe (legacy, persistent connection — avoid for multi-channel)
       proxyUrl : `/xtream-pipe/${token}`,
       streamId : ch.stream_id,
     });
@@ -1298,7 +1304,8 @@ app.get('/api/xtream/viewers', requireAuth, (req, res) => {
 app.get('/proxy/live/:streamId/index.m3u8', async (req, res) => {
   const { streamId } = req.params;
   const sessionId = req.query.sid || req.ip || 'anon';
-  const baseUrl   = req.query.base ? decodeURIComponent(req.query.base) : XTREAM.primary;
+  let baseUrl = XTREAM.primary;
+  try { if (req.query.base) baseUrl = decodeURIComponent(req.query.base); } catch {}
   const proxyBase = `${req.protocol}://${req.get('host')}`;
 
   try {
@@ -1322,7 +1329,8 @@ app.get('/proxy/live/:streamId/index.m3u8', async (req, res) => {
 app.get('/proxy/live/:streamId/seg/:encodedPath(*)', async (req, res) => {
   const { streamId, encodedPath } = req.params;
   const sessionId = req.query.sid || req.ip || 'anon';
-  const baseUrl   = req.query.base ? decodeURIComponent(req.query.base) : XTREAM.primary;
+  let baseUrl = XTREAM.primary;
+  try { if (req.query.base) baseUrl = decodeURIComponent(req.query.base); } catch {}
 
   try {
     const { buf, contentType } = await xtreamProxy.getSegment(streamId, encodedPath, baseUrl, sessionId);
@@ -1491,13 +1499,27 @@ const server = app.listen(config.PORT, config.HOST, async () => {
   liveProxy.start();
 
 
-  // Ù…Ø²Ø§Ù…Ù†Ø© Ù‚Ù†ÙˆØ§Øª Xtream Ø¹Ù†Ø¯ Ø§Ù„ØªØ´ØºÙŠÙ„
-  syncXtreamChannels(db).catch(e => console.error('[Xtream] Ø®Ø·Ø£ ÙÙŠ Ø§Ù„Ù…Ø²Ø§Ù…Ù†Ø© Ø¹Ù†Ø¯ Ø§Ù„ØªØ´ØºÙŠÙ„:', e.message));
+  // Xtream channel sync on startup (await so channels are ready)
+  try {
+    await syncXtreamChannels(db);
+  } catch (e) {
+    console.error('[Xtream] Sync startup error:', e.message);
+  }
   xtreamProxy.start();
+
+  // Periodic Xtream channel sync every 30 minutes
+  setInterval(() => syncXtreamChannels(db).catch(e => console.error('[Xtream] Periodic sync error:', e.message)), 30 * 60 * 1000);
+
+  // Pre-warm VOD cache on startup
+  try {
+    const home = await xtreamVod.getHome();
+    console.log(`[VOD] Pre-warmed: ${home.latestMovies?.length || 0} movies, ${home.latestSeries?.length || 0} series`);
+  } catch (e) {
+    console.error('[VOD] Pre-warm error:', e.message);
+  }
 
   // Sync channels from backend PostgreSQL on startup
   syncChannelsFromBackend(true).catch(e => console.error('[Sync] Startup error:', e.message));
-  // Periodic sync every 10 minutes
   setInterval(() => syncChannelsFromBackend(true).catch(() => {}), CHANNEL_SYNC_INTERVAL);
 });
 

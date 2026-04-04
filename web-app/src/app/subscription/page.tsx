@@ -1,27 +1,46 @@
 'use client';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
-import { fetchSubscription, activateCode, SubscriptionInfo, isLoggedIn } from '@/constants/api';
+import {
+  fetchSubscription, activateCode, SubscriptionInfo, isLoggedIn,
+  fetchSessionInfo, fetchActiveSessions, releaseSession, releaseAllSessions,
+  ActiveSession, SessionInfo,
+} from '@/constants/api';
 
 export default function SubscriptionPage() {
   const [sub, setSub] = useState<SubscriptionInfo | null>(null);
+  const [sessionInfo, setSessionInfo] = useState<SessionInfo | null>(null);
+  const [sessions, setSessions] = useState<ActiveSession[]>([]);
+  const [sessActive, setSessActive] = useState(0);
+  const [sessMax, setSessMax] = useState(1);
   const [loading, setLoading] = useState(true);
   const [loggedIn, setLoggedIn] = useState(false);
   const [code, setCode] = useState('');
   const [activating, setActivating] = useState(false);
   const [success, setSuccess] = useState('');
   const [error, setError] = useState('');
+  const [releasing, setReleasing] = useState('');
+
+  const loadData = useCallback(async () => {
+    const [subData, sessData] = await Promise.all([
+      fetchSubscription(),
+      fetchActiveSessions(),
+    ]);
+    setSub(subData);
+    setSessions(sessData.sessions || []);
+    setSessActive(sessData.active || 0);
+    setSessMax(sessData.max || 1);
+    const info = await fetchSessionInfo();
+    setSessionInfo(info);
+  }, []);
 
   useEffect(() => {
     isLoggedIn().then(async (l) => {
       setLoggedIn(l);
-      if (l) {
-        const data = await fetchSubscription();
-        setSub(data);
-      }
+      if (l) await loadData();
       setLoading(false);
     });
-  }, []);
+  }, [loadData]);
 
   const handleActivate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -31,11 +50,23 @@ export default function SubscriptionPage() {
       const res = await activateCode(code.trim().toUpperCase());
       setSuccess(res.message || 'تم تفعيل الاشتراك بنجاح!');
       setCode('');
-      const data = await fetchSubscription();
-      setSub(data);
-    } catch (err: any) {
-      setError(err.message);
-    } finally { setActivating(false); }
+      await loadData();
+    } catch (err: any) { setError(err.message); }
+    finally { setActivating(false); }
+  };
+
+  const handleRelease = async (sessionId: string) => {
+    setReleasing(sessionId);
+    await releaseSession(sessionId);
+    await loadData();
+    setReleasing('');
+  };
+
+  const handleReleaseAll = async () => {
+    setReleasing('all');
+    await releaseAllSessions();
+    await loadData();
+    setReleasing('');
   };
 
   if (loading) {
@@ -63,11 +94,11 @@ export default function SubscriptionPage() {
 
   return (
     <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-24 md:pb-6">
-      <div className="max-w-lg mx-auto px-4 py-6">
-        <h1 className="text-xl font-black text-light-text dark:text-dark-text mb-6">الاشتراك</h1>
+      <div className="max-w-lg mx-auto px-4 py-6 space-y-5">
+        <h1 className="text-xl font-black text-light-text dark:text-dark-text">الاشتراك</h1>
 
         {/* Current plan card */}
-        <div className={`rounded-2xl p-5 mb-6 ${isPremium ? 'bg-gradient-to-br from-amber-500/20 to-orange-500/10 border border-amber-500/30' : 'bg-light-card dark:bg-dark-card'}`}>
+        <div className={`rounded-2xl p-5 ${isPremium ? 'bg-gradient-to-br from-amber-500/20 to-orange-500/10 border border-amber-500/30' : 'bg-light-card dark:bg-dark-card'}`}>
           <div className="flex items-center gap-3 mb-3">
             <span className="flex items-center justify-center w-10 h-10">
             {isPremium ? (
@@ -75,8 +106,8 @@ export default function SubscriptionPage() {
             ) : (
               <svg className="w-8 h-8 text-dark-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
             )}
-          </span>
-            <div>
+            </span>
+            <div className="flex-1">
               <h2 className="font-black text-light-text dark:text-dark-text text-lg">{isPremium ? 'بريميوم' : 'مجاني'}</h2>
               <p className="text-xs text-light-muted dark:text-dark-muted">
                 {isPremium && sub?.expires_at ? `ينتهي: ${new Date(sub.expires_at).toLocaleDateString('ar-SA')}` : 'اشترك للحصول على محتوى أكثر'}
@@ -85,7 +116,7 @@ export default function SubscriptionPage() {
           </div>
 
           {isPremium && sub?.daysLeft !== null && sub?.daysLeft !== undefined && (
-            <div className="flex items-center gap-2 bg-amber-500/10 rounded-xl px-3 py-2">
+            <div className="flex items-center gap-2 bg-amber-500/10 rounded-xl px-3 py-2 mb-3">
               <svg className="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
@@ -93,9 +124,23 @@ export default function SubscriptionPage() {
             </div>
           )}
 
+          {/* Connection info */}
+          <div className="flex items-center gap-3 bg-light-input/50 dark:bg-dark-input/50 rounded-xl px-3 py-2.5">
+            <svg className="w-5 h-5 text-purple-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+            </svg>
+            <div className="flex-1">
+              <p className="text-xs text-light-muted dark:text-dark-muted">الاتصالات المتزامنة</p>
+              <p className="text-sm font-bold text-light-text dark:text-dark-text">
+                <span className={sessActive >= sessMax ? 'text-red-400' : 'text-emerald-400'}>{sessActive}</span>
+                <span className="text-light-muted dark:text-dark-muted"> / {sessMax}</span>
+              </p>
+            </div>
+          </div>
+
           {!isPremium && (
-            <div className="flex flex-col gap-2">
-              {['مشاهدة بدون إعلانات', 'جودة عالية HD', 'محتوى حصري', 'بث مباشر للقنوات المميزة'].map((f) => (
+            <div className="flex flex-col gap-2 mt-3">
+              {['مشاهدة بدون إعلانات', 'جودة عالية HD', 'محتوى حصري', 'بث مباشر للقنوات المميزة', 'حتى 3 أجهزة متزامنة'].map((f) => (
                 <div key={f} className="flex items-center gap-2">
                   <svg className="w-3.5 h-3.5 text-brand-primary flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
                     <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
@@ -107,6 +152,48 @@ export default function SubscriptionPage() {
           )}
         </div>
 
+        {/* Active Sessions */}
+        {sessions.length > 0 && (
+          <div className="bg-light-card dark:bg-dark-card rounded-2xl p-5">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-bold text-light-text dark:text-dark-text">الجلسات النشطة</h3>
+              {sessions.length > 1 && (
+                <button
+                  onClick={handleReleaseAll}
+                  disabled={releasing === 'all'}
+                  className="text-xs px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 font-bold hover:bg-red-500/20 transition disabled:opacity-50"
+                >
+                  {releasing === 'all' ? '...' : 'إنهاء الكل'}
+                </button>
+              )}
+            </div>
+            <div className="space-y-2">
+              {sessions.map(s => (
+                <div key={s.id} className="flex items-center justify-between bg-light-input dark:bg-dark-input rounded-xl px-3 py-2.5">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                    <div>
+                      <p className="text-xs font-bold text-light-text dark:text-dark-text">
+                        {s.type === 'live' ? 'بث مباشر' : s.type === 'vod' ? 'فيلم/مسلسل' : s.type}
+                      </p>
+                      <p className="text-[10px] text-light-muted dark:text-dark-muted">
+                        منذ {Math.round((Date.now() - s.started_at) / 60000)} دقيقة
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleRelease(s.id)}
+                    disabled={releasing === s.id}
+                    className="text-xs px-2.5 py-1 rounded-lg bg-red-500/10 text-red-400 font-bold hover:bg-red-500/20 transition disabled:opacity-50"
+                  >
+                    {releasing === s.id ? '...' : 'إنهاء'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Activate code */}
         <div className="bg-light-card dark:bg-dark-card rounded-2xl p-5">
           <h3 className="font-bold text-light-text dark:text-dark-text mb-1">تفعيل كود الاشتراك</h3>
@@ -114,7 +201,7 @@ export default function SubscriptionPage() {
 
           {success && (
             <div className="mb-3 p-3 rounded-xl bg-brand-success/10 border border-brand-success/20 text-brand-success text-sm text-center font-medium">
-              <svg className="inline w-4 h-4 ml-1" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" /></svg> {success}
+              {success}
             </div>
           )}
           {error && (
@@ -128,7 +215,7 @@ export default function SubscriptionPage() {
               type="text"
               value={code}
               onChange={e => setCode(e.target.value.toUpperCase())}
-              placeholder="XXXX-XXXX-XXXX"
+              placeholder="MA-XXXX-XXXX-XXXX"
               className="flex-1 bg-light-input dark:bg-dark-input text-light-text dark:text-dark-text rounded-xl px-4 py-3 text-sm font-bold tracking-widest placeholder:text-light-muted dark:placeholder:text-dark-muted placeholder:tracking-normal placeholder:font-medium focus:outline-none focus:ring-2 focus:ring-brand-primary/40 uppercase"
               style={{ direction: 'ltr', textAlign: 'center' }}
             />

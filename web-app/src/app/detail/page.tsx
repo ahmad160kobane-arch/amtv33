@@ -2,6 +2,7 @@
 import React, { useEffect, useState, useCallback, useRef, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { fetchIptvMovieDetail, fetchIptvSeriesDetail, requestIptvVodStream, requestIptvSeriesStream, checkFavorite, toggleFavorite, addWatchHistory, isLoggedIn, IptvVodDetail, IptvSeriesDetail, IptvEpisode, IptvSeason } from '@/constants/api';
+import VodPlayer from '@/components/VodPlayer';
 
 function DetailContent() {
   const params = useSearchParams();
@@ -110,6 +111,24 @@ function DetailContent() {
   const seasons: IptvSeason[] = (detail as IptvSeriesDetail)?.seasons || [];
   const currentSeasonData = seasons.find(s => s.season === currentSeason);
   const episodes: IptvEpisode[] = currentSeasonData?.episodes || [];
+
+  const getNextEpisode = useCallback((): IptvEpisode | null => {
+    if (!currentEpisode) return episodes[0] || null;
+    const idx = episodes.findIndex(e => e.id === currentEpisode.id);
+    if (idx >= 0 && idx < episodes.length - 1) return episodes[idx + 1];
+    const nextSeason = seasons.find(s => s.season === currentSeason + 1);
+    if (nextSeason && nextSeason.episodes.length > 0) return nextSeason.episodes[0];
+    return null;
+  }, [currentEpisode, episodes, seasons, currentSeason]);
+
+  const getPrevEpisode = useCallback((): IptvEpisode | null => {
+    if (!currentEpisode) return null;
+    const idx = episodes.findIndex(e => e.id === currentEpisode.id);
+    if (idx > 0) return episodes[idx - 1];
+    const prevSeason = seasons.find(s => s.season === currentSeason - 1);
+    if (prevSeason && prevSeason.episodes.length > 0) return prevSeason.episodes[prevSeason.episodes.length - 1];
+    return null;
+  }, [currentEpisode, episodes, seasons, currentSeason]);
 
   const MetaBadges = () => (
     <div className="flex items-center gap-2 mb-1.5 flex-wrap">
@@ -302,29 +321,36 @@ function DetailContent() {
 
             {/* Video Player */}
             {(streamUrl || streamLoading || streamError) && (
-              <div className="mb-6 rounded-xl overflow-hidden bg-black shadow-2xl">
-                <div className="relative w-full" style={{ paddingTop: '56.25%' }}>
-                  {streamLoading && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-black z-10">
-                      <div className="w-10 h-10 border-2 border-brand-primary border-t-transparent rounded-full animate-spin" />
+              <div className="mb-6">
+                {streamLoading && (
+                  <div className="relative w-full bg-black rounded-2xl overflow-hidden shadow-2xl" style={{ paddingTop: '56.25%' }}>
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+                      <div className="w-12 h-12 border-[3px] border-brand-primary border-t-transparent rounded-full animate-spin" />
+                      <span className="text-white/60 text-xs">جارٍ تحميل الفيديو...</span>
                     </div>
-                  )}
-                  {streamError && (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-black gap-2">
-                      <svg className="w-8 h-8 text-brand-error" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                  </div>
+                )}
+                {streamError && !streamLoading && (
+                  <div className="relative w-full bg-black rounded-2xl overflow-hidden shadow-2xl" style={{ paddingTop: '56.25%' }}>
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+                      <svg className="w-10 h-10 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                       <p className="text-white/70 text-sm">{streamError}</p>
                     </div>
-                  )}
-                  {streamUrl && !streamLoading && (
-                    <video
-                      key={streamUrl}
-                      className="absolute inset-0 w-full h-full"
-                      controls autoPlay playsInline
-                      src={streamUrl}
-                      title={title}
-                    />
-                  )}
-                </div>
+                  </div>
+                )}
+                {streamUrl && !streamLoading && !streamError && (
+                  <VodPlayer
+                    streamUrl={streamUrl}
+                    title={title}
+                    poster={poster}
+                    subtitle={isSeries && currentEpisode ? `${currentEpisode.title || 'الحلقة ' + currentEpisode.episode} — الموسم ${currentSeason}` : undefined}
+                    onClose={() => { setStreamUrl(''); setStreamError(''); }}
+                    hasNext={isSeries && !!getNextEpisode()}
+                    hasPrev={isSeries && !!getPrevEpisode()}
+                    onNext={isSeries ? () => { const next = getNextEpisode(); if (next) handleEpisodePlay(next); } : undefined}
+                    onPrev={isSeries ? () => { const prev = getPrevEpisode(); if (prev) handleEpisodePlay(prev); } : undefined}
+                  />
+                )}
               </div>
             )}
 
