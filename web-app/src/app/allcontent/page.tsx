@@ -28,15 +28,25 @@ function AllContentContent() {
         setItems(prev => reset ? (data.items || []) : [...prev, ...(data.items || [])]);
         setHasMore(data.hasMore ?? false);
       } else if (activeType === 'series') {
-        const data = await fetchIptvSeries({ categoryId: activeCategoryId || undefined, page: p, search: undefined });
+        const data = await fetchIptvSeries({ categoryId: activeCategoryId || undefined, page: p });
+        const newItems = data.items || [];
+        setItems(prev => reset ? newItems : [...prev, ...newItems]);
+        setHasMore(data.hasMore ?? newItems.length >= 20);
+      } else if (activeType === 'movie') {
+        const data = await fetchIptvMovies({ categoryId: activeCategoryId || undefined, page: p });
         const newItems = data.items || [];
         setItems(prev => reset ? newItems : [...prev, ...newItems]);
         setHasMore(data.hasMore ?? newItems.length >= 20);
       } else {
-        const data = await fetchIptvMovies({ categoryId: activeCategoryId || undefined, page: p, search: undefined });
-        const newItems = data.items || [];
-        setItems(prev => reset ? newItems : [...prev, ...newItems]);
-        setHasMore(data.hasMore ?? newItems.length >= 20);
+        // الكل — merge movies + series
+        const [movData, serData] = await Promise.all([
+          fetchIptvMovies({ page: p }),
+          fetchIptvSeries({ page: p }),
+        ]);
+        const merged = [...(movData.items || []), ...(serData.items || [])]
+          .sort(() => Math.random() - 0.5);
+        setItems(prev => reset ? merged : [...prev, ...merged]);
+        setHasMore((movData.hasMore ?? false) || (serData.hasMore ?? false));
       }
     } catch (e) {
       console.error('Content load error:', e);

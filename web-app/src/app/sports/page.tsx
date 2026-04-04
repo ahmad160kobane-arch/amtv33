@@ -12,10 +12,12 @@ export default function SportsPage() {
 
   const load = useCallback(async () => {
     try {
-      await Promise.all([
-        fetchFreeChannels({ group: 'رياضة', limit: 30 }).then(d => setFreeChannels(d.channels || [])).catch(() => {}),
-      ]);
-    } finally {
+      const d = await fetchFreeChannels({ limit: 100 });
+      const sports = (d.channels || []).filter((ch: FreeChannel) =>
+        ch.group?.includes('رياض') || ch.group?.includes('sport') || ch.group?.toLowerCase().includes('sport')
+      );
+      setFreeChannels(sports.length > 0 ? sports : d.channels || []);
+    } catch {} finally {
       setLoading(false);
     }
   }, []);

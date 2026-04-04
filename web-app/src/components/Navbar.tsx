@@ -244,7 +244,7 @@ export default function Navbar() {
       </header>
 
       {/* Bottom nav for mobile */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-light-card/95 dark:bg-dark-card/95 backdrop-blur border-t border-light-border dark:border-dark-border flex">
+      <nav className="bottom-nav md:hidden fixed bottom-0 left-0 right-0 z-50 bg-light-card/95 dark:bg-dark-card/95 backdrop-blur border-t border-light-border dark:border-dark-border flex">
         {NAV_ITEMS.map((item) => {
           const active = pathname === item.href || (item.href !== '/' && pathname.startsWith(item.href));
           return (
