@@ -31,10 +31,9 @@ if (fs.existsSync(_envFile)) {
 const HLS_DIR = path.join(__dirname, 'hls');
 fs.mkdirSync(HLS_DIR, { recursive: true });
 
-// مسار قاعدة البيانات المحلية
+// مجلد البيانات
 const DATA_DIR = path.join(__dirname, 'data');
 fs.mkdirSync(DATA_DIR, { recursive: true });
-const DB_PATH = process.env.DB_PATH || path.join(DATA_DIR, 'cloud.db');
 
 module.exports = {
   // ─── السيرفر ──────────────────────────────
@@ -44,8 +43,8 @@ module.exports = {
   // ─── الباك اند (Railway) ───────────────────
   BACKEND_URL: process.env.BACKEND_URL || 'http://localhost:3000',
 
-  // ─── قاعدة البيانات (محلية — مستقلة) ────────
-  DB_PATH,
+  // ─── قاعدة البيانات (PostgreSQL) ───────────
+  DATABASE_URL: process.env.DATABASE_URL || '',
 
   // ─── JWT (نفس المفتاح المستخدم في الباك اند) ─
   JWT_SECRET: process.env.JWT_SECRET || 'ma-streaming-secret-key-change-in-production',

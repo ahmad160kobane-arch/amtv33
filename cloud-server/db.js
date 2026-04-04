@@ -1,0 +1,127 @@
+/**
+ * PostgreSQL wrapper for cloud-server
+ * Same pattern as backend-api/db.js — async prepare/get/all/run
+ */
+const { Pool } = require('pg');
+const config = require('./config');
+
+const pool = new Pool({
+  connectionString: config.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
+
+pool.on('error', (err) => console.error('[DB] Pool error:', err.message));
+
+function _convert(sql) {
+  let i = 0;
+  return sql.replace(/\?/g, () => `$${++i}`);
+}
+
+const db = {
+  pool,
+
+  prepare(sql) {
+    const pgSql = _convert(sql);
+    return {
+      async get(...params) {
+        const { rows } = await pool.query(pgSql, params);
+        return rows[0] || undefined;
+      },
+      async all(...params) {
+        const { rows } = await pool.query(pgSql, params);
+        return rows;
+      },
+      async run(...params) {
+        const res = await pool.query(pgSql, params);
+        return { changes: res.rowCount };
+      },
+    };
+  },
+
+  async exec(sql) {
+    await pool.query(sql);
+  },
+
+  async query(sql, params) {
+    return pool.query(sql, params);
+  },
+
+  async close() {
+    await pool.end();
+  },
+
+  async runTransaction(fn) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const prepare = (sql) => {
+        const pgSql = _convert(sql);
+        return {
+          async get(...p) { return (await client.query(pgSql, p)).rows[0] || undefined; },
+          async all(...p) { return (await client.query(pgSql, p)).rows; },
+          async run(...p) { return { changes: (await client.query(pgSql, p)).rowCount }; },
+        };
+      };
+      const result = await fn(prepare);
+      await client.query('COMMIT');
+      return result;
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+  },
+};
+
+// Init: create cloud-server specific tables + migrations
+db.init = async function () {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS active_sessions (
+      id          TEXT PRIMARY KEY,
+      user_id     TEXT NOT NULL,
+      stream_id   TEXT NOT NULL,
+      type        TEXT DEFAULT 'live',
+      device_info TEXT DEFAULT '',
+      ip          TEXT DEFAULT '',
+      started_at  BIGINT NOT NULL,
+      last_seen   BIGINT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sessions_user ON active_sessions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_sessions_seen ON active_sessions(last_seen);
+  `);
+
+  // Migration: add device_info + ip columns if missing
+  try { await pool.query("ALTER TABLE active_sessions ADD COLUMN IF NOT EXISTS device_info TEXT DEFAULT ''"); } catch(e) {}
+  try { await pool.query("ALTER TABLE active_sessions ADD COLUMN IF NOT EXISTS ip TEXT DEFAULT ''"); } catch(e) {}
+
+  // Migration: ensure xtream_channels has cloud-server columns
+  try { await pool.query('ALTER TABLE xtream_channels ADD COLUMN IF NOT EXISTS raw_cat TEXT DEFAULT \'\''); } catch(e) {}
+  try { await pool.query('ALTER TABLE xtream_channels ADD COLUMN IF NOT EXISTS cat_id TEXT DEFAULT \'\''); } catch(e) {}
+  try { await pool.query('ALTER TABLE xtream_channels ADD COLUMN IF NOT EXISTS updated_at BIGINT DEFAULT 0'); } catch(e) {}
+  try { await pool.query('ALTER TABLE xtream_channels ADD COLUMN IF NOT EXISTS base_url TEXT DEFAULT \'\''); } catch(e) {}
+
+  // Ensure xtream_channels id is TEXT (cloud-server uses stream_id as text id)
+  // If table doesn't exist yet, create it
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS xtream_channels (
+      id         TEXT PRIMARY KEY,
+      name       TEXT NOT NULL,
+      logo       TEXT DEFAULT '',
+      category   TEXT DEFAULT '',
+      raw_cat    TEXT DEFAULT '',
+      cat_id     TEXT DEFAULT '',
+      stream_id  INTEGER NOT NULL,
+      epg_id     TEXT DEFAULT '',
+      sort_order INTEGER DEFAULT 99,
+      base_url   TEXT DEFAULT '',
+      updated_at BIGINT DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_xtream_cat ON xtream_channels(category);
+    CREATE INDEX IF NOT EXISTS idx_xtream_sort ON xtream_channels(sort_order);
+  `);
+
+  console.log('[DB] PostgreSQL connected + tables ready');
+};
+
+module.exports = db;

@@ -11,8 +11,8 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const jwt = require('jsonwebtoken');
-const Database = require('better-sqlite3');
 const config = require('./config');
+const db = require('./db');
 const StreamManager = require('./lib/stream-manager');
 const VodProxy = require('./lib/vod-proxy');
 const IptvUpdater = require('./lib/iptv-updater');
@@ -29,78 +29,10 @@ const xtreamVod = require('./lib/xtream-vod');
 const { fetchArabicSubtitles } = require('./lib/subtitle-fetcher');
 const { initLuluStream, getLuluStream } = require('./lib/lulustream');
 
-// ─── قاعدة بيانات محلية مستقلة ───────────────────────────
-const db = new Database(config.DB_PATH);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+// ─── PostgreSQL (shared with backend-api) ───────────────────
+// db module handles connection + table init in db.init()
 
-// إنشاء الجداول المطلوبة محلياً
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users_cache (
-    id              TEXT PRIMARY KEY,
-    username        TEXT DEFAULT '',
-    plan            TEXT DEFAULT 'free',
-    expires_at      TEXT DEFAULT NULL,
-    max_connections INTEGER DEFAULT 1,
-    role            TEXT DEFAULT 'user',
-    is_admin        INTEGER DEFAULT 0,
-    is_blocked      INTEGER DEFAULT 0,
-    cached_at       INTEGER DEFAULT 0
-  );
-  CREATE TABLE IF NOT EXISTS active_sessions (
-    id         TEXT PRIMARY KEY,
-    user_id    TEXT NOT NULL,
-    stream_id  TEXT NOT NULL,
-    type       TEXT DEFAULT 'live',
-    started_at INTEGER NOT NULL,
-    last_seen  INTEGER NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS idx_sessions_user ON active_sessions(user_id);
-  CREATE INDEX IF NOT EXISTS idx_sessions_seen ON active_sessions(last_seen);
-  CREATE TABLE IF NOT EXISTS channels (
-    id          TEXT PRIMARY KEY,
-    name        TEXT NOT NULL,
-    group_name  TEXT DEFAULT '',
-    logo_url    TEXT DEFAULT '',
-    stream_url  TEXT NOT NULL,
-    is_enabled  INTEGER DEFAULT 1,
-    sort_order  INTEGER DEFAULT 0
-  );
-  CREATE TABLE IF NOT EXISTS vod (
-    id           TEXT PRIMARY KEY,
-    title        TEXT NOT NULL,
-    vod_type     TEXT DEFAULT 'movie',
-    stream_token TEXT DEFAULT '',
-    xtream_id    TEXT DEFAULT '',
-    container_ext TEXT DEFAULT '',
-    tmdb_id      TEXT DEFAULT '',
-    category     TEXT DEFAULT ''
-  );
-  CREATE TABLE IF NOT EXISTS episodes (
-    id           TEXT PRIMARY KEY,
-    vod_id       TEXT DEFAULT '',
-    title        TEXT NOT NULL,
-    season       INTEGER DEFAULT 1,
-    episode_num  INTEGER DEFAULT 1,
-    stream_token TEXT NOT NULL,
-    container_ext TEXT DEFAULT '',
-    xtream_id    TEXT DEFAULT ''
-  );
-  CREATE TABLE IF NOT EXISTS watch_history (
-    id         TEXT PRIMARY KEY,
-    user_id    TEXT NOT NULL,
-    item_id    TEXT NOT NULL,
-    item_type  TEXT DEFAULT 'vod',
-    watched_at TEXT DEFAULT (datetime('now'))
-  );
-  CREATE TABLE IF NOT EXISTS iptv_config (
-    id          INTEGER PRIMARY KEY DEFAULT 1,
-    server_url  TEXT DEFAULT '',
-    username    TEXT DEFAULT '',
-    password    TEXT DEFAULT ''
-  );
-`);
-console.log(`[DB] محلية: ${config.DB_PATH}`);
+console.log('[DB] PostgreSQL mode');
 
 const app = express();
 const streamManager = new StreamManager();
@@ -122,82 +54,15 @@ app.use((req, res, next) => {
   next();
 });
 
-// --- User cache (5 min TTL) ---
-const USER_CACHE_TTL = 5 * 60 * 1000;
-const _upsertUser = db.prepare(`
-  INSERT INTO users_cache (id, username, plan, expires_at, max_connections, role, is_admin, is_blocked, cached_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  ON CONFLICT(id) DO UPDATE SET
-    username=excluded.username, plan=excluded.plan, expires_at=excluded.expires_at,
-    max_connections=excluded.max_connections,
-    role=excluded.role, is_admin=excluded.is_admin, is_blocked=excluded.is_blocked,
-    cached_at=excluded.cached_at
-`);
-
-async function _fetchUserFromBackend(token) {
-  try {
-    const res = await fetch(`${config.BACKEND_URL}/api/auth/me`, {
-      headers: { 'Authorization': `Bearer ${token}` },
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    const u = data.user || data;
-    if (!u || !u.id) return null;
-    _upsertUser.run(u.id, u.username||'', u.plan||'free', u.expires_at||null,
-      u.max_connections||1, u.role||'user', u.is_admin?1:0, u.is_blocked?1:0, Date.now());
-    return { id:u.id, username:u.username, plan:u.plan||'free', expires_at:u.expires_at,
-      max_connections:u.max_connections||1, role:u.role||'user', is_admin:u.is_admin?1:0, is_blocked:u.is_blocked?1:0 };
-  } catch (e) {
-    console.log(`[Auth] Backend unreachable: ${e.message}`);
-    return null;
-  }
+// --- User lookup (direct PG — same database as backend) ---
+async function _getUserById(userId) {
+  return db.prepare(
+    'SELECT id, username, plan, expires_at, max_connections, role, is_admin, is_blocked FROM users WHERE id = ?'
+  ).get(userId);
 }
 
-// --- Sync channels from Backend (PostgreSQL) into local SQLite ---
-const _upsertChannel = db.prepare(`
-  INSERT INTO channels (id, name, group_name, logo_url, stream_url, is_enabled)
-  VALUES (?, ?, ?, ?, ?, 1)
-  ON CONFLICT(id) DO UPDATE SET
-    name=excluded.name, group_name=excluded.group_name,
-    logo_url=excluded.logo_url, stream_url=excluded.stream_url,
-    is_enabled=excluded.is_enabled
-`);
-
-let _lastChannelSync = 0;
-const CHANNEL_SYNC_INTERVAL = 10 * 60 * 1000; // 10 minutes
-
-async function syncChannelsFromBackend(force = false) {
-  if (!force && Date.now() - _lastChannelSync < CHANNEL_SYNC_INTERVAL) return 0;
-  try {
-    console.log('[Sync] Fetching channels from backend PostgreSQL...');
-    const res = await fetch(`${config.BACKEND_URL}/api/channels/export`, {
-      signal: AbortSignal.timeout(30000),
-    });
-    if (!res.ok) { console.log('[Sync] Backend returned', res.status); return 0; }
-    const data = await res.json();
-    const channels = data.channels || [];
-    if (channels.length === 0) { console.log('[Sync] No channels from backend'); return 0; }
-
-    const syncMany = db.transaction((rows) => {
-      db.prepare('DELETE FROM channels').run();
-      for (const ch of rows) {
-        _upsertChannel.run(ch.id, ch.name || '', ch.group_name || '', ch.logo_url || '', ch.stream_url || '');
-      }
-    });
-
-    syncMany(channels);
-    _lastChannelSync = Date.now();
-    console.log(`[Sync] Synced ${channels.length} channels from backend PostgreSQL`);
-    return channels.length;
-  } catch (e) {
-    console.error('[Sync] Error:', e.message);
-    return 0;
-  }
-}
-
-// --- Middleware: JWT auth + backend proxy ---
-function requireAuth(req, res, next) {
+// --- Middleware: JWT auth (direct PG) ---
+async function requireAuth(req, res, next) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'يجب تسجيل الدخول' });
@@ -207,27 +72,19 @@ function requireAuth(req, res, next) {
   try { decoded = jwt.verify(token, config.JWT_SECRET); }
   catch (e) { return res.status(401).json({ error: 'رمز الدخول غير صالح' }); }
 
-  const cached = db.prepare('SELECT * FROM users_cache WHERE id = ?').get(decoded.userId);
-  if (cached && (Date.now() - cached.cached_at) < USER_CACHE_TTL) {
-    if (cached.is_blocked) return res.status(403).json({ error: 'الحساب محظور' });
-    req.user = cached;
-    return next();
-  }
-
-  _fetchUserFromBackend(token).then(user => {
+  try {
+    const user = await _getUserById(decoded.userId);
     if (user) {
       if (user.is_blocked) return res.status(403).json({ error: 'الحساب محظور' });
       req.user = user;
       return next();
     }
-    if (cached) { req.user = cached; return next(); }
-    req.user = { id:decoded.userId, username:'', plan:'free', role:'user', is_admin:0, is_blocked:0 };
-    next();
-  }).catch(() => {
-    if (cached) { req.user = cached; return next(); }
-    req.user = { id:decoded.userId, username:'', plan:'free', role:'user', is_admin:0, is_blocked:0 };
-    next();
-  });
+  } catch (e) {
+    console.log(`[Auth] PG query error: ${e.message}`);
+  }
+  // Fallback if user not found in DB
+  req.user = { id: decoded.userId, username: '', plan: 'free', max_connections: 1, role: 'user', is_admin: 0, is_blocked: 0 };
+  next();
 }
 
 // --- Middleware: Premium check ---
@@ -255,76 +112,201 @@ function requirePremium(req, res, next) {
 const SESSION_TIMEOUT = 5 * 60 * 1000; // 5 min — session expires if no heartbeat
 const { randomUUID } = require('crypto');
 
-const _insertSession = db.prepare('INSERT INTO active_sessions (id, user_id, stream_id, type, started_at, last_seen) VALUES (?, ?, ?, ?, ?, ?)');
-const _deleteSession = db.prepare('DELETE FROM active_sessions WHERE id = ?');
-const _deleteSessionByStream = db.prepare('DELETE FROM active_sessions WHERE user_id = ? AND stream_id = ?');
-const _updateHeartbeat = db.prepare('UPDATE active_sessions SET last_seen = ? WHERE id = ?');
-const _cleanExpired = db.prepare('DELETE FROM active_sessions WHERE last_seen < ?');
-const _getUserSessions = db.prepare('SELECT * FROM active_sessions WHERE user_id = ? ORDER BY started_at ASC');
-const _getSessionById = db.prepare('SELECT * FROM active_sessions WHERE id = ?');
+// ─── Channel sync from backend PostgreSQL ───────────────────
+const CHANNEL_SYNC_INTERVAL = 10 * 60 * 1000; // 10 minutes
+async function syncChannelsFromBackend(force = false) {
+  try {
+    const rows = await db.prepare(
+      'SELECT id, name, group_name, logo_url, stream_url, is_enabled, sort_order, xtream_id, category FROM channels'
+    ).all();
+    console.log(`[Sync] Synced ${rows.length} channels from backend PostgreSQL`);
+  } catch (e) {
+    console.error('[Sync] Channel sync error:', e.message);
+  }
+}
 
-function checkConnectionLimit(userId, streamId, streamType) {
-  const user = db.prepare('SELECT * FROM users_cache WHERE id = ?').get(userId);
+// ─── Async session helpers (all use PostgreSQL via shared db) ───
+async function _cleanExpiredSessions() {
+  return db.prepare('DELETE FROM active_sessions WHERE last_seen < ?').run(Date.now() - SESSION_TIMEOUT);
+}
+
+async function _getUserSessions(userId) {
+  return db.prepare('SELECT * FROM active_sessions WHERE user_id = ? ORDER BY started_at ASC').all(userId);
+}
+
+async function _getSessionById(sessionId) {
+  return db.prepare('SELECT * FROM active_sessions WHERE id = ?').get(sessionId);
+}
+
+async function _insertSession(id, userId, streamId, streamType, startedAt, lastSeen) {
+  return db.prepare('INSERT INTO active_sessions (id, user_id, stream_id, type, started_at, last_seen) VALUES (?, ?, ?, ?, ?, ?)').run(id, userId, streamId, streamType, startedAt, lastSeen);
+}
+
+async function _deleteSession(sessionId) {
+  return db.prepare('DELETE FROM active_sessions WHERE id = ?').run(sessionId);
+}
+
+async function _deleteSessionByStream(userId, streamId) {
+  return db.prepare('DELETE FROM active_sessions WHERE user_id = ? AND stream_id = ?').run(userId, streamId);
+}
+
+async function _updateHeartbeat(sessionId) {
+  return db.prepare('UPDATE active_sessions SET last_seen = ? WHERE id = ?').run(Date.now(), sessionId);
+}
+
+/**
+ * checkConnectionLimit — queries the real `users` table (shared PostgreSQL)
+ * Returns: { allowed, sessionId, error?, message?, active?, max? }
+ */
+async function checkConnectionLimit(userId, streamId, streamType) {
+  // Query the real users table (shared with backend-api)
+  const user = await db.prepare(
+    'SELECT id, plan, expires_at, max_connections, is_admin, role, is_blocked FROM users WHERE id = ?'
+  ).get(userId);
   const maxConn = (user && user.max_connections) || 1;
   const isAdmin = user && (user.is_admin || user.role === 'admin' || user.role === 'agent');
+
+  // Check subscription validity (auto-expire if needed)
+  if (user && !isAdmin) {
+    if (user.plan === 'premium' && user.expires_at && new Date(user.expires_at) < new Date()) {
+      await db.prepare("UPDATE users SET plan = 'free', expires_at = NULL WHERE id = ?").run(userId);
+      return {
+        allowed: false, error: 'subscription_expired',
+        message: 'انتهت صلاحية اشتراكك، يرجى التجديد',
+        active: 0, max: 1,
+      };
+    }
+  }
+
   if (isAdmin) {
-    _deleteSessionByStream.run(userId, streamId);
+    await _deleteSessionByStream(userId, streamId);
     const sid = randomUUID();
-    _insertSession.run(sid, userId, streamId, streamType, Date.now(), Date.now());
+    await _insertSession(sid, userId, streamId, streamType, Date.now(), Date.now());
     return { allowed: true, sessionId: sid };
   }
-  _cleanExpired.run(Date.now() - SESSION_TIMEOUT);
-  const sessions = _getUserSessions.all(userId);
+
+  // Clean expired sessions
+  await _cleanExpiredSessions();
+  const sessions = await _getUserSessions(userId);
+
+  // If already watching this stream, just update heartbeat
   const existing = sessions.find(s => s.stream_id === streamId);
   if (existing) {
-    _updateHeartbeat.run(Date.now(), existing.id);
+    await _updateHeartbeat(existing.id);
     return { allowed: true, sessionId: existing.id };
   }
+
+  // Check connection limit based on subscription plan
   if (sessions.length >= maxConn) {
     return {
       allowed: false, error: 'connection_limit',
-      message: `\u0644\u0642\u062f \u0648\u0635\u0644\u062a \u0644\u0644\u062d\u062f \u0627\u0644\u0623\u0642\u0635\u0649 \u0645\u0646 \u0627\u0644\u0627\u062a\u0635\u0627\u0644\u0627\u062a \u0627\u0644\u0645\u062a\u0632\u0627\u0645\u0646\u0629 (${maxConn}). \u0623\u063a\u0644\u0642 \u0628\u062b\u0627\u064b \u0622\u062e\u0631 \u0623\u0648 \u0642\u0645 \u0628\u062a\u0631\u0642\u064a\u0629 \u0627\u0634\u062a\u0631\u0627\u0643\u0643.`,
+      message: `لقد وصلت للحد الأقصى من الاتصالات المتزامنة (${maxConn}). أغلق بثاً آخر أو قم بترقية اشتراكك.`,
       active: sessions.length, max: maxConn,
+      sessions: sessions.map(s => ({ id: s.id, stream_id: s.stream_id, type: s.type, started_at: s.started_at })),
     };
   }
+
   const sid = randomUUID();
-  _insertSession.run(sid, userId, streamId, streamType, Date.now(), Date.now());
+  await _insertSession(sid, userId, streamId, streamType, Date.now(), Date.now());
   return { allowed: true, sessionId: sid };
 }
 
-function releaseUserSession(userId, streamId) { _deleteSessionByStream.run(userId, streamId); }
-function releaseSessionById(sessionId) { _deleteSession.run(sessionId); }
-function heartbeatSession(sessionId) { _updateHeartbeat.run(Date.now(), sessionId); }
+async function releaseUserSession(userId, streamId) { await _deleteSessionByStream(userId, streamId); }
+async function releaseSessionById(sessionId) { await _deleteSession(sessionId); }
+async function heartbeatSession(sessionId) { await _updateHeartbeat(sessionId); }
 
-setInterval(() => {
-  const removed = _cleanExpired.run(Date.now() - SESSION_TIMEOUT);
-  if (removed.changes > 0) console.log(`[Sessions] Cleaned ${removed.changes} expired sessions`);
+// Periodic cleanup of expired sessions
+setInterval(async () => {
+  try {
+    const removed = await _cleanExpiredSessions();
+    if (removed.changes > 0) console.log(`[Sessions] Cleaned ${removed.changes} expired sessions`);
+  } catch (e) { console.error('[Sessions] Cleanup error:', e.message); }
 }, 2 * 60 * 1000);
 
 // POST /api/session/heartbeat
-app.post('/api/session/heartbeat', requireAuth, (req, res) => {
+app.post('/api/session/heartbeat', requireAuth, async (req, res) => {
   const { sessionId } = req.body;
   if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
-  const session = _getSessionById.get(sessionId);
+  const session = await _getSessionById(sessionId);
   if (!session || session.user_id !== req.user.id) return res.status(404).json({ error: 'session not found' });
-  heartbeatSession(sessionId);
+  await heartbeatSession(sessionId);
   res.json({ success: true });
 });
 
 // POST /api/session/release
-app.post('/api/session/release', requireAuth, (req, res) => {
+app.post('/api/session/release', requireAuth, async (req, res) => {
   const { sessionId, streamId } = req.body;
-  if (sessionId) releaseSessionById(sessionId);
-  else if (streamId) releaseUserSession(req.user.id, streamId);
+  if (sessionId) await releaseSessionById(sessionId);
+  else if (streamId) await releaseUserSession(req.user.id, streamId);
   res.json({ success: true });
 });
 
-// GET /api/session/active
-app.get('/api/session/active', requireAuth, (req, res) => {
-  _cleanExpired.run(Date.now() - SESSION_TIMEOUT);
-  const sessions = _getUserSessions.all(req.user.id);
-  const user = db.prepare('SELECT max_connections FROM users_cache WHERE id = ?').get(req.user.id);
-  res.json({ sessions, active: sessions.length, max: (user && user.max_connections) || 1 });
+// GET /api/session/active — user's active sessions with subscription info
+app.get('/api/session/active', requireAuth, async (req, res) => {
+  await _cleanExpiredSessions();
+  const sessions = await _getUserSessions(req.user.id);
+  const user = await db.prepare('SELECT plan, expires_at, max_connections FROM users WHERE id = ?').get(req.user.id);
+  const maxConn = (user && user.max_connections) || 1;
+  const plan = (user && user.plan) || 'free';
+  const expires_at = (user && user.expires_at) || null;
+  res.json({ sessions, active: sessions.length, max: maxConn, plan, expires_at });
+});
+
+// POST /api/session/force-release — force release a specific session (for users who hit limit)
+app.post('/api/session/force-release', requireAuth, async (req, res) => {
+  const { sessionId } = req.body;
+  if (!sessionId) return res.status(400).json({ error: 'sessionId مطلوب' });
+  const session = await _getSessionById(sessionId);
+  if (!session || session.user_id !== req.user.id) return res.status(404).json({ error: 'الجلسة غير موجودة' });
+  await releaseSessionById(sessionId);
+  const remaining = await _getUserSessions(req.user.id);
+  res.json({ success: true, active: remaining.length });
+});
+
+// POST /api/session/release-all — release all sessions for user
+app.post('/api/session/release-all', requireAuth, async (req, res) => {
+  await db.prepare('DELETE FROM active_sessions WHERE user_id = ?').run(req.user.id);
+  res.json({ success: true, active: 0 });
+});
+
+// GET /api/session/subscription-info — subscription details + session limits
+app.get('/api/session/subscription-info', requireAuth, async (req, res) => {
+  const user = await db.prepare(
+    'SELECT plan, expires_at, max_connections, is_admin, role FROM users WHERE id = ?'
+  ).get(req.user.id);
+  if (!user) return res.status(404).json({ error: 'المستخدم غير موجود' });
+
+  await _cleanExpiredSessions();
+  const sessions = await _getUserSessions(req.user.id);
+
+  const isPremium = user.plan === 'premium';
+  let daysLeft = null;
+  if (isPremium && user.expires_at) {
+    const diff = new Date(user.expires_at) - new Date();
+    daysLeft = Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
+  }
+
+  // Auto-expire
+  if (isPremium && user.expires_at && new Date(user.expires_at) < new Date()) {
+    await db.prepare("UPDATE users SET plan = 'free', expires_at = NULL WHERE id = ?").run(req.user.id);
+    user.plan = 'free';
+    user.expires_at = null;
+    user.max_connections = 1;
+  }
+
+  res.json({
+    plan: user.plan,
+    isPremium: user.plan === 'premium',
+    expires_at: user.expires_at,
+    daysLeft,
+    max_connections: user.max_connections || 1,
+    active_sessions: sessions.length,
+    sessions: sessions.map(s => ({
+      id: s.id, stream_id: s.stream_id, type: s.type,
+      started_at: s.started_at, last_seen: s.last_seen,
+    })),
+    is_admin: !!(user.is_admin || user.role === 'admin'),
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -333,7 +315,7 @@ app.post('/api/stream/live/:channelId', requireAuth, requirePremium, async (req,
   const rawId = req.params.channelId;
 
   // ═══ Connection limit check ═══
-  const connCheck = checkConnectionLimit(req.user.id, `live_${rawId}`, 'live');
+  const connCheck = await checkConnectionLimit(req.user.id, `live_${rawId}`, 'live');
   if (!connCheck.allowed) {
     return res.status(429).json({ error: connCheck.error, message: connCheck.message, active: connCheck.active, max: connCheck.max });
   }
@@ -344,7 +326,7 @@ app.post('/api/stream/live/:channelId', requireAuth, requirePremium, async (req,
   const xtreamMatch = rawId.match(/^xtream_live_(\d+)$/) || rawId.match(/^(\d+)$/);
   if (xtreamMatch) {
     const streamNumId = xtreamMatch[1];
-    const xch = db.prepare('SELECT id, name, logo, category, stream_id, base_url FROM xtream_channels WHERE stream_id = ? OR id = ?').get(Number(streamNumId), streamNumId);
+    const xch = await db.prepare('SELECT id, name, logo, category, stream_id, base_url FROM xtream_channels WHERE stream_id = ? OR id = ?').get(Number(streamNumId), streamNumId);
     if (xch) {
       const token = jwt.sign({ sid: String(xch.stream_id), t: 'xt' }, config.JWT_SECRET, { expiresIn: '6h' });
       return res.json({
@@ -358,11 +340,11 @@ app.post('/api/stream/live/:channelId', requireAuth, requirePremium, async (req,
       });
     }
   }
-  let ch = db.prepare('SELECT id, name, stream_url FROM channels WHERE id = ? AND is_enabled = 1').get(rawId);
+  let ch = await db.prepare('SELECT id, name, stream_url FROM channels WHERE id = ? AND is_enabled = 1').get(rawId);
   // Lazy sync: if channel not found locally, sync from backend PostgreSQL and retry
   if (!ch) {
     await syncChannelsFromBackend(true);
-    ch = db.prepare('SELECT id, name, stream_url FROM channels WHERE id = ? AND is_enabled = 1').get(rawId);
+    ch = await db.prepare('SELECT id, name, stream_url FROM channels WHERE id = ? AND is_enabled = 1').get(rawId);
   }
   if (!ch) return res.status(404).json({ error: 'القناة غير متاحة' });
   if (!ch.stream_url) return res.status(400).json({ error: 'القناة بدون رابط بث' });
@@ -435,9 +417,9 @@ app.get('/live-pipe/:channelId', requireAuth, async (req, res) => {
 
   // Local channels require premium
   const user = req.user;
-  if (!user || !user.is_premium) return res.status(403).json({ error: 'Premium required' });
+  if (!user || (user.plan !== 'premium' && !user.is_admin && user.role !== 'admin')) return res.status(403).json({ error: 'Premium required' });
 
-  const ch = db.prepare('SELECT id, name, stream_url FROM channels WHERE id = ? AND is_enabled = 1').get(rawId);
+  const ch = await db.prepare('SELECT id, name, stream_url FROM channels WHERE id = ? AND is_enabled = 1').get(rawId);
   if (!ch || !ch.stream_url) return res.status(404).end();
   console.log(`[LivePipe] ${ch.name}`);
   await liveProxy.streamToClient(ch.id, ch.stream_url, req, res);
@@ -453,42 +435,42 @@ app.post('/api/stream/vod/:id', requireAuth, requirePremium, async (req, res) =>
   const paramId = decodeURIComponent(req.params.id);
 
   // ═══ Connection limit check ═══
-  const connCheck = checkConnectionLimit(req.user.id, `vod_${paramId}`, 'vod');
+  const connCheck = await checkConnectionLimit(req.user.id, `vod_${paramId}`, 'vod');
   if (!connCheck.allowed) {
     return res.status(429).json({ error: connCheck.error, message: connCheck.message, active: connCheck.active, max: connCheck.max });
   }
 
-  // Ø¨Ø­Ø« Ø¨Ø§Ù„Ù€ id Ø£Ùˆ stream_token â€” Ø£ÙˆÙ„ÙˆÙŠØ©: episodes Ø«Ù… vod
+  // Ø¨Ø­Ø« Ø¨Ø§Ù„Ù€ id Ø£Ùˆ stream_token — Ø£ÙˆÙ„ÙˆÙŠØ©: episodes Ø«Ù… vod
   let item = null;
   let itemType = 'vod';
   let parentVod = null;
 
-  // 1. Ø¨Ø­Ø« ÙÙŠ episodes Ø¨Ø§Ù„Ù€ id
-  item = db.prepare('SELECT id, title, stream_token, container_ext, xtream_id, vod_id, season, episode_num FROM episodes WHERE id = ?').get(paramId);
+  // 1. Ø¨Ø­Ø« ÙÙŠ episodes Ø¨Ø§Ù„Ù€ id
+  item = await db.prepare('SELECT id, title, stream_token, container_ext, xtream_id, vod_id, season, episode_num FROM episodes WHERE id = ?').get(paramId);
   if (item) { itemType = 'episode'; }
 
-  // 2. Ø¨Ø­Ø« ÙÙŠ vod Ø¨Ø§Ù„Ù€ id
+  // 2. Ø¨Ø­Ø« ÙÙŠ vod Ø¨Ø§Ù„Ù€ id
   if (!item) {
-    item = db.prepare('SELECT id, title, stream_token, vod_type, xtream_id, container_ext, tmdb_id AS tmdb FROM vod WHERE id = ?').get(paramId);
+    item = await db.prepare('SELECT id, title, stream_token, vod_type, xtream_id, container_ext, tmdb_id AS tmdb FROM vod WHERE id = ?').get(paramId);
     itemType = 'vod';
   }
 
   // 3. Ø¨Ø­Ø« Ø¨Ø§Ù„Ù€ stream_token
   if (!item) {
-    item = db.prepare('SELECT id, title, stream_token, container_ext, xtream_id, vod_id, season, episode_num FROM episodes WHERE stream_token = ?').get(paramId);
+    item = await db.prepare('SELECT id, title, stream_token, container_ext, xtream_id, vod_id, season, episode_num FROM episodes WHERE stream_token = ?').get(paramId);
     if (item) itemType = 'episode';
   }
   if (!item) {
-    item = db.prepare('SELECT id, title, stream_token, vod_type, xtream_id, container_ext, tmdb_id AS tmdb FROM vod WHERE stream_token = ?').get(paramId);
+    item = await db.prepare('SELECT id, title, stream_token, vod_type, xtream_id, container_ext, tmdb_id AS tmdb FROM vod WHERE stream_token = ?').get(paramId);
     if (item) itemType = 'vod';
   }
 
   if (!item) return res.status(404).json({ error: 'Ø§Ù„Ù…Ø­ØªÙˆÙ‰ ØºÙŠØ± Ù…ÙˆØ¬ÙˆØ¯' });
 
-  // Ø¥Ø°Ø§ ÙƒØ§Ù† Ù…Ø³Ù„Ø³Ù„ â†’ Ø´ØºÙ‘Ù„ Ø£ÙˆÙ„ Ø­Ù„Ù‚Ø© Ø¨Ø¯Ù„Ø§Ù‹ Ù…Ù† Ø§Ù„Ù…Ø³Ù„Ø³Ù„ Ù†ÙØ³Ù‡
+  // Ø¥Ø°Ø§ ÙƒØ§Ù† Ù…Ø³Ù„Ø³Ù„ → Ø´ØºÙ'Ù„ Ø£ÙˆÙ„ Ø­Ù„Ù‚Ø© Ø¨Ø¯Ù„Ø§Ù‹ Ù…Ù† Ø§Ù„Ù…Ø³Ù„Ø³Ù„ Ù†ÙØ³Ù‡
   if (itemType === 'vod' && item.vod_type === 'series') {
     parentVod = item;
-    const episode = db.prepare('SELECT id, title, stream_token, container_ext, xtream_id, vod_id, season, episode_num FROM episodes WHERE vod_id = ? ORDER BY season ASC, episode_num ASC LIMIT 1').get(item.id);
+    const episode = await db.prepare('SELECT id, title, stream_token, container_ext, xtream_id, vod_id, season, episode_num FROM episodes WHERE vod_id = ? ORDER BY season ASC, episode_num ASC LIMIT 1').get(item.id);
     if (episode) {
       item = episode;
       itemType = 'episode';
@@ -497,10 +479,10 @@ app.post('/api/stream/vod/:id', requireAuth, requirePremium, async (req, res) =>
     }
   }
 
-  // â•â•â• Ø¬Ù„Ø¨ TMDb ID â€” Ù„Ù„Ø­Ù„Ù‚Ø§Øª Ù†Ø¬Ù„Ø¨Ù‡ Ù…Ù† Ø§Ù„Ù…Ø³Ù„Ø³Ù„ Ø§Ù„Ø£Ø¨ â•â•â•
+  // ═══ Ø¬Ù„Ø¨ TMDb ID — Ù„Ù„Ø­Ù„Ù‚Ø§Øª Ù†Ø¬Ù„Ø¨Ù‡ Ù…Ù† Ø§Ù„Ù…Ø³Ù„Ø³Ù„ Ø§Ù„Ø£Ø¨ ═══
   let tmdbId = item.tmdb || null;
   if (!tmdbId && itemType === 'episode' && item.vod_id) {
-    const parent = parentVod || db.prepare('SELECT tmdb_id AS tmdb, vod_type FROM vod WHERE id = ?').get(item.vod_id);
+    const parent = parentVod || await db.prepare('SELECT tmdb_id AS tmdb, vod_type FROM vod WHERE id = ?').get(item.vod_id);
     if (parent) tmdbId = parent.tmdb;
   }
 
@@ -552,7 +534,7 @@ app.post('/api/stream/vod/:id', requireAuth, requirePremium, async (req, res) =>
   // â•â•â• Ø§Ø­ØªÙŠØ§Ø·ÙŠ: IPTV (Ø¥Ø°Ø§ Ù„Ø§ ÙŠÙˆØ¬Ø¯ TMDb ID Ø£Ùˆ ÙØ´Ù„ vidsrc) â•â•â•
   let sourceUrl = item.stream_token;
   if (item.xtream_id) {
-    const cfg = db.prepare('SELECT server_url, username, password FROM iptv_config WHERE id = 1').get();
+    const cfg = await db.prepare('SELECT server_url, username, password FROM iptv_config WHERE id = 1').get();
     if (cfg && cfg.server_url) {
       const ext = item.container_ext || 'mkv';
       const urlType = itemType === 'episode' ? 'series' : 'movie';
@@ -586,13 +568,13 @@ app.post('/api/stream/vod/:id', requireAuth, requirePremium, async (req, res) =>
  * POST /api/stream/release/:streamId
  * Ø¥Ù†Ù‡Ø§Ø¡ Ø§Ù„Ù…Ø´Ø§Ù‡Ø¯Ø©
  */
-app.post('/api/stream/release/:streamId', requireAuth, (req, res) => {
+app.post('/api/stream/release/:streamId', requireAuth, async (req, res) => {
   streamManager.releaseStream(req.params.streamId);
   vodProxy.releaseSession(req.params.streamId);
   // Release active session for this stream
-  releaseUserSession(req.user.id, `live_${req.params.streamId}`);
-  releaseUserSession(req.user.id, `vod_${req.params.streamId}`);
-  releaseUserSession(req.user.id, req.params.streamId);
+  await releaseUserSession(req.user.id, `live_${req.params.streamId}`);
+  await releaseUserSession(req.user.id, `vod_${req.params.streamId}`);
+  await releaseUserSession(req.user.id, req.params.streamId);
   res.json({ success: true });
 });
 
@@ -870,7 +852,7 @@ app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => 
 
   // ═══ Connection limit check ═══
   const vidsrcStreamId = `vidsrc_${type}_${tmdbId}${type === 'tv' ? `_s${season}e${episode}` : ''}`;
-  const connCheck = checkConnectionLimit(req.user.id, vidsrcStreamId, 'vod');
+  const connCheck = await checkConnectionLimit(req.user.id, vidsrcStreamId, 'vod');
   if (!connCheck.allowed) {
     return res.status(429).json({ error: connCheck.error, message: connCheck.message, active: connCheck.active, max: connCheck.max });
   }
@@ -890,7 +872,7 @@ app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => 
       // ØªØ³Ø¬ÙŠÙ„ ÙÙŠ Ø³Ø¬Ù„ Ø§Ù„Ù…Ø´Ø§Ù‡Ø¯Ø©
       try {
         const { randomUUID } = require('crypto');
-        db.prepare('INSERT OR IGNORE INTO watch_history (id, user_id, item_id, item_type) VALUES (?, ?, ?, ?)')
+        await db.prepare('INSERT INTO watch_history (id, user_id, item_id, item_type) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING')
           .run(randomUUID(), req.user.id, tmdbId, 'vod');
       } catch (_) {}
       return res.json({
@@ -1026,10 +1008,9 @@ async function finalizeDirectStream({ streamId, directResult }) {
   return buildDirectStreamResponse({ streamId, ...normalizedResult });
 }
 
-function recordWatchHistory(userId, itemId, itemType) {
+async function recordWatchHistory(userId, itemId, itemType) {
   try {
-    const { randomUUID } = require('crypto');
-    db.prepare('INSERT OR IGNORE INTO watch_history (id, user_id, item_id, item_type) VALUES (?, ?, ?, ?)')
+    await db.prepare('INSERT INTO watch_history (id, user_id, item_id, item_type) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING')
       .run(randomUUID(), userId, itemId, itemType);
   } catch {}
 }
@@ -1186,23 +1167,7 @@ function serveHlsFile(filePath, fileName, res) {
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // Xtream Channels DB
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-db.exec(`
-  CREATE TABLE IF NOT EXISTS xtream_channels (
-    id         TEXT PRIMARY KEY,
-    name       TEXT NOT NULL,
-    logo       TEXT DEFAULT '',
-    category   TEXT DEFAULT 'Ø¹Ø§Ù…',
-    raw_cat    TEXT DEFAULT '',
-    cat_id     TEXT DEFAULT '',
-    stream_id  INTEGER NOT NULL,
-    epg_id     TEXT DEFAULT '',
-    sort_order INTEGER DEFAULT 99,
-    base_url   TEXT DEFAULT '',
-    updated_at INTEGER DEFAULT 0
-  );
-  CREATE INDEX IF NOT EXISTS idx_xtream_cat ON xtream_channels(category);
-  CREATE INDEX IF NOT EXISTS idx_xtream_sort ON xtream_channels(sort_order);
-`);
+// xtream_channels table is created in db.init() — no sync db.exec() needed
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // Xtream Codes â€” Channel API
@@ -1213,7 +1178,7 @@ db.exec(`
  * List channels with optional category/search filter + pagination
  * Iraqi channels first, then sorted by priority
  */
-app.get('/api/xtream/channels', (req, res) => {
+app.get('/api/xtream/channels', async (req, res) => {
   try {
     const { category, search, limit, offset } = req.query;
     const lim = Math.min(parseInt(limit) || 50, 200);
@@ -1223,20 +1188,20 @@ app.get('/api/xtream/channels', (req, res) => {
     let params = [];
 
     if (category) { where.push('category = ?'); params.push(category); }
-    if (search)   { where.push('name LIKE ?'); params.push(`%${search}%`); }
+    if (search)   { where.push('name ILIKE ?'); params.push(`%${search}%`); }
 
     const whereStr = where.length ? 'WHERE ' + where.join(' AND ') : '';
 
-    const total = db.prepare(
+    const totalRow = await db.prepare(
       `SELECT COUNT(*) as c FROM xtream_channels ${whereStr}`
-    ).get(...params).c;
+    ).get(...params);
+    const total = totalRow ? totalRow.c : 0;
 
-    // sort: Iraqi-named channels first (name contains Ø¹Ø±Ø§Ù‚/iraq), then by sort_order, then name
-    const rows = db.prepare(`
+    const rows = await db.prepare(`
       SELECT id, name, logo, category, stream_id, epg_id, sort_order, base_url
       FROM xtream_channels ${whereStr}
       ORDER BY
-        CASE WHEN name LIKE '%Ø¹Ø±Ø§Ù‚%' OR name LIKE '%iraq%' OR name LIKE '%Iraqi%' THEN 0 ELSE 1 END,
+        CASE WHEN name ILIKE '%عراق%' OR name ILIKE '%iraq%' THEN 0 ELSE 1 END,
         sort_order,
         name
       LIMIT ${lim} OFFSET ${off}
@@ -1250,14 +1215,15 @@ app.get('/api/xtream/channels', (req, res) => {
       streamId : r.stream_id,
     }));
 
-    const categories = db.prepare(
+    const catRows = await db.prepare(
       'SELECT DISTINCT category, MIN(sort_order) as p FROM xtream_channels GROUP BY category ORDER BY p'
-    ).all().map(r => r.category);
+    ).all();
+    const categories = catRows.map(r => r.category);
 
     res.json({ success: true, channels, total, hasMore: off + lim < total, categories });
   } catch (e) {
     console.error('[Xtream] channels error:', e.message);
-    res.status(500).json({ error: 'ÙØ´Ù„ Ø¬Ù„Ø¨ Ø§Ù„Ù‚Ù†ÙˆØ§Øª' });
+    res.status(500).json({ error: 'فشل جلب القنوات' });
   }
 });
 
@@ -1266,9 +1232,9 @@ app.get('/api/xtream/channels', (req, res) => {
  * Returns the HLS proxy URL for a channel
  * The proxy handles viewer tracking + segment caching
  */
-app.get('/api/xtream/stream/:channelId', (req, res) => {
+app.get('/api/xtream/stream/:channelId', async (req, res) => {
   try {
-    const ch = db.prepare(
+    const ch = await db.prepare(
       'SELECT id, name, logo, category, stream_id, base_url FROM xtream_channels WHERE id = ?'
     ).get(req.params.channelId);
 
@@ -1289,7 +1255,7 @@ app.get('/api/xtream/stream/:channelId', (req, res) => {
     });
   } catch (e) {
     console.error('[Xtream] stream error:', e.message);
-    res.status(500).json({ error: 'ÙØ´Ù„ Ø¬Ù„Ø¨ Ø±Ø§Ø¨Ø· Ø§Ù„Ø¨Ø«' });
+    res.status(500).json({ error: 'فشل جلب رابط البث' });
   }
 });
 
@@ -1429,7 +1395,76 @@ app.get('/', (req, res) => {
       hls_live: '/hls/:streamId/stream.m3u8',
       hls_vod: '/hls/vod/:streamId/stream.m3u8',
       health: '/health',
+      sessions: 'GET /api/session/active (JWT)',
+      session_info: 'GET /api/session/subscription-info (JWT)',
     },
+  });
+});
+
+// ═══ Admin Session Management API ═══════════════════════════
+app.get('/api/admin/sessions', requireAuth, async (req, res) => {
+  if (!req.user.is_admin && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'admin required' });
+  }
+  await _cleanExpiredSessions();
+  const sessions = await db.prepare(`
+    SELECT s.*, u.username, u.plan, u.max_connections
+    FROM active_sessions s
+    LEFT JOIN users u ON s.user_id = u.id
+    ORDER BY s.started_at DESC
+  `).all();
+  const totalUsers = new Set(sessions.map(s => s.user_id)).size;
+  res.json({ sessions, total: sessions.length, totalUsers });
+});
+
+app.post('/api/admin/sessions/kill', requireAuth, async (req, res) => {
+  if (!req.user.is_admin && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'admin required' });
+  }
+  const { sessionId } = req.body;
+  if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
+  await _deleteSession(sessionId);
+  res.json({ success: true });
+});
+
+app.post('/api/admin/sessions/kill-user', requireAuth, async (req, res) => {
+  if (!req.user.is_admin && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'admin required' });
+  }
+  const { userId } = req.body;
+  if (!userId) return res.status(400).json({ error: 'userId required' });
+  await db.prepare('DELETE FROM active_sessions WHERE user_id = ?').run(userId);
+  res.json({ success: true });
+});
+
+app.post('/api/admin/sessions/kill-all', requireAuth, async (req, res) => {
+  if (!req.user.is_admin && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'admin required' });
+  }
+  await db.prepare('DELETE FROM active_sessions').run();
+  res.json({ success: true });
+});
+
+app.get('/api/admin/sessions/stats', requireAuth, async (req, res) => {
+  if (!req.user.is_admin && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'admin required' });
+  }
+  await _cleanExpiredSessions();
+  const total = await db.prepare('SELECT COUNT(*) as c FROM active_sessions').get();
+  const byType = await db.prepare('SELECT type, COUNT(*) as c FROM active_sessions GROUP BY type').all();
+  const byUser = await db.prepare(`
+    SELECT s.user_id, u.username, u.plan, u.max_connections, COUNT(*) as active_count
+    FROM active_sessions s
+    LEFT JOIN users u ON s.user_id = u.id
+    GROUP BY s.user_id
+    ORDER BY active_count DESC
+  `).all();
+  const overLimit = byUser.filter(u => u.active_count > (u.max_connections || 1));
+  res.json({
+    total: total.c,
+    byType: byType.reduce((acc, r) => { acc[r.type] = r.c; return acc; }, {}),
+    byUser,
+    overLimit,
   });
 });
 
@@ -1440,13 +1475,14 @@ app.use((err, req, res, next) => {
 });
 
 // â”€â”€â”€ Ø¨Ø¯Ø¡ Ø§Ù„Ø³ÙŠØ±ÙØ± + ØªØ­Ø¯ÙŠØ« ØªÙ„Ù‚Ø§Ø¦ÙŠ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+db.init().then(() => {
 const server = app.listen(config.PORT, config.HOST, async () => {
   console.log(`\n  â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—`);
   console.log(`  â•‘   IPTV Cloud Streaming Server v3.0               â•‘`);
   console.log(`  â•‘   Ø¨Ø« Ù…Ø¨Ø§Ø´Ø± + ØªØ­Ù‚Ù‚ JWT + ØªØ­Ø¯ÙŠØ« ØªÙ„Ù‚Ø§Ø¦ÙŠ             â•‘`);
   console.log(`  â• â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•£`);
   console.log(`  â•‘   http://localhost:${config.PORT}                         â•‘`);
-  console.log(`  â•‘   DB: ${path.basename(config.DB_PATH)}                       â•‘`);
+  console.log(`  â•‘   DB: PostgreSQL (shared)                       â•‘`);
   console.log(`  â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•\n`);
 
   streamManager.start();
@@ -1477,3 +1513,7 @@ const shutdown = async () => {
 };
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
+}).catch(err => {
+  console.error('[DB] Failed to initialize:', err.message);
+  process.exit(1);
+});

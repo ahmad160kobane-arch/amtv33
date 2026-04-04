@@ -4,10 +4,10 @@
  */
 
 const XTREAM = {
-  primary : 'http://ex2025.cc',
-  backup  : 'http://ex2025.cc',
-  user    : 'ledyxpro24',
-  pass    : '2943689',
+  primary : 'http://myhand.org:8080',
+  backup  : 'http://myhand.org:8080',
+  user    : '3302196097',
+  pass    : '2474044847',
 };
 
 // ── Filter: keywords that make a channel "wanted" (channel name OR category name) ──
@@ -63,7 +63,7 @@ function isWanted(chName, catName) {
 async function apiCall(baseUrl, action) {
   const u = `${baseUrl}/player_api.php?username=${XTREAM.user}&password=${XTREAM.pass}&action=${action}`;
   const res = await fetch(u, {
-    headers: { 'User-Agent': 'Mozilla/5.0' },
+    headers: { 'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20' },
     signal : AbortSignal.timeout(20000),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -128,20 +128,25 @@ async function syncXtreamChannels(db) {
   }
 
   // Persist — only delete after we have replacement data
-  db.prepare('DELETE FROM xtream_channels').run();
+  await db.prepare('DELETE FROM xtream_channels').run();
   const now = Date.now();
-  const ins = db.prepare(`
-    INSERT OR REPLACE INTO xtream_channels
-    (id, name, logo, category, raw_cat, cat_id, stream_id, epg_id, sort_order, base_url, updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)
-  `);
-  db.transaction(rows => {
-    for (const r of rows)
-      ins.run(r.id, r.name, r.logo, r.category, r.raw_cat, r.cat_id,
+  await db.runTransaction(async (prepare) => {
+    const ins = prepare(`
+      INSERT INTO xtream_channels
+      (id, name, logo, category, raw_cat, cat_id, stream_id, epg_id, sort_order, base_url, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET
+        name=EXCLUDED.name, logo=EXCLUDED.logo, category=EXCLUDED.category,
+        raw_cat=EXCLUDED.raw_cat, cat_id=EXCLUDED.cat_id, stream_id=EXCLUDED.stream_id,
+        epg_id=EXCLUDED.epg_id, sort_order=EXCLUDED.sort_order, base_url=EXCLUDED.base_url,
+        updated_at=EXCLUDED.updated_at
+    `);
+    for (const r of wanted)
+      await ins.run(r.id, r.name, r.logo, r.category, r.raw_cat, r.cat_id,
               r.stream_id, r.epg_id, r.sort_order, r.base_url, now);
-  })(wanted);
+  });
 
-  console.log(`[Xtream] ✓ Saved ${wanted.length} channels (server: ${server})`);
+  console.log(`[Xtream] \u2713 Saved ${wanted.length} channels (server: ${server})`);
   return { total: streams.length, saved: wanted.length, server };
 }
 

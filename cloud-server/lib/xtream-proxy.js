@@ -12,11 +12,11 @@
 
 const { XTREAM } = require('./xtream');
 
-const UA            = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+const UA            = 'VLC/3.0.20 LibVLC/3.0.20';
 const POLL_INTERVAL = 2000;   // 2s  — how often to refresh the manifest in background
 const SEG_TTL       = 20000;  // 20s — segment cache lifetime (slightly > typical HLS segment)
 const SESSION_TTL   = 60000;  // 60s — viewer session idle timeout
-const KEEP_WARM     = 300000; // 5min — keep poller alive after last viewer leaves
+const KEEP_WARM     = 15000;  // 15s — keep poller alive after last viewer leaves (max_connections=1)
 const GC_INTERVAL   = 15000;  // 15s — garbage collection interval
 
 const SERVERS = [XTREAM.primary, XTREAM.backup];
