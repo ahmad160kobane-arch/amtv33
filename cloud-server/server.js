@@ -37,15 +37,26 @@ db.pragma('foreign_keys = ON');
 // إنشاء الجداول المطلوبة محلياً
 db.exec(`
   CREATE TABLE IF NOT EXISTS users_cache (
-    id          TEXT PRIMARY KEY,
-    username    TEXT DEFAULT '',
-    plan        TEXT DEFAULT 'free',
-    expires_at  TEXT DEFAULT NULL,
-    role        TEXT DEFAULT 'user',
-    is_admin    INTEGER DEFAULT 0,
-    is_blocked  INTEGER DEFAULT 0,
-    cached_at   INTEGER DEFAULT 0
+    id              TEXT PRIMARY KEY,
+    username        TEXT DEFAULT '',
+    plan            TEXT DEFAULT 'free',
+    expires_at      TEXT DEFAULT NULL,
+    max_connections INTEGER DEFAULT 1,
+    role            TEXT DEFAULT 'user',
+    is_admin        INTEGER DEFAULT 0,
+    is_blocked      INTEGER DEFAULT 0,
+    cached_at       INTEGER DEFAULT 0
   );
+  CREATE TABLE IF NOT EXISTS active_sessions (
+    id         TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    stream_id  TEXT NOT NULL,
+    type       TEXT DEFAULT 'live',
+    started_at INTEGER NOT NULL,
+    last_seen  INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_sessions_user ON active_sessions(user_id);
+  CREATE INDEX IF NOT EXISTS idx_sessions_seen ON active_sessions(last_seen);
   CREATE TABLE IF NOT EXISTS channels (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
@@ -114,10 +125,11 @@ app.use((req, res, next) => {
 // --- User cache (5 min TTL) ---
 const USER_CACHE_TTL = 5 * 60 * 1000;
 const _upsertUser = db.prepare(`
-  INSERT INTO users_cache (id, username, plan, expires_at, role, is_admin, is_blocked, cached_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO users_cache (id, username, plan, expires_at, max_connections, role, is_admin, is_blocked, cached_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(id) DO UPDATE SET
     username=excluded.username, plan=excluded.plan, expires_at=excluded.expires_at,
+    max_connections=excluded.max_connections,
     role=excluded.role, is_admin=excluded.is_admin, is_blocked=excluded.is_blocked,
     cached_at=excluded.cached_at
 `);
@@ -133,9 +145,9 @@ async function _fetchUserFromBackend(token) {
     const u = data.user || data;
     if (!u || !u.id) return null;
     _upsertUser.run(u.id, u.username||'', u.plan||'free', u.expires_at||null,
-      u.role||'user', u.is_admin?1:0, u.is_blocked?1:0, Date.now());
+      u.max_connections||1, u.role||'user', u.is_admin?1:0, u.is_blocked?1:0, Date.now());
     return { id:u.id, username:u.username, plan:u.plan||'free', expires_at:u.expires_at,
-      role:u.role||'user', is_admin:u.is_admin?1:0, is_blocked:u.is_blocked?1:0 };
+      max_connections:u.max_connections||1, role:u.role||'user', is_admin:u.is_admin?1:0, is_blocked:u.is_blocked?1:0 };
   } catch (e) {
     console.log(`[Auth] Backend unreachable: ${e.message}`);
     return null;
@@ -239,8 +251,93 @@ function requirePremium(req, res, next) {
  * POST /api/stream/live/:channelId
  * Ø¨Ø¯Ø¡ Ø¨Ø« Ù‚Ù†Ø§Ø© Ù…Ø¨Ø§Ø´Ø±Ø©
  */
+// ═══ Session / Connection Limit Management ═══════════════════
+const SESSION_TIMEOUT = 5 * 60 * 1000; // 5 min — session expires if no heartbeat
+const { randomUUID } = require('crypto');
+
+const _insertSession = db.prepare('INSERT INTO active_sessions (id, user_id, stream_id, type, started_at, last_seen) VALUES (?, ?, ?, ?, ?, ?)');
+const _deleteSession = db.prepare('DELETE FROM active_sessions WHERE id = ?');
+const _deleteSessionByStream = db.prepare('DELETE FROM active_sessions WHERE user_id = ? AND stream_id = ?');
+const _updateHeartbeat = db.prepare('UPDATE active_sessions SET last_seen = ? WHERE id = ?');
+const _cleanExpired = db.prepare('DELETE FROM active_sessions WHERE last_seen < ?');
+const _getUserSessions = db.prepare('SELECT * FROM active_sessions WHERE user_id = ? ORDER BY started_at ASC');
+const _getSessionById = db.prepare('SELECT * FROM active_sessions WHERE id = ?');
+
+function checkConnectionLimit(userId, streamId, streamType) {
+  const user = db.prepare('SELECT * FROM users_cache WHERE id = ?').get(userId);
+  const maxConn = (user && user.max_connections) || 1;
+  const isAdmin = user && (user.is_admin || user.role === 'admin' || user.role === 'agent');
+  if (isAdmin) {
+    _deleteSessionByStream.run(userId, streamId);
+    const sid = randomUUID();
+    _insertSession.run(sid, userId, streamId, streamType, Date.now(), Date.now());
+    return { allowed: true, sessionId: sid };
+  }
+  _cleanExpired.run(Date.now() - SESSION_TIMEOUT);
+  const sessions = _getUserSessions.all(userId);
+  const existing = sessions.find(s => s.stream_id === streamId);
+  if (existing) {
+    _updateHeartbeat.run(Date.now(), existing.id);
+    return { allowed: true, sessionId: existing.id };
+  }
+  if (sessions.length >= maxConn) {
+    return {
+      allowed: false, error: 'connection_limit',
+      message: `\u0644\u0642\u062f \u0648\u0635\u0644\u062a \u0644\u0644\u062d\u062f \u0627\u0644\u0623\u0642\u0635\u0649 \u0645\u0646 \u0627\u0644\u0627\u062a\u0635\u0627\u0644\u0627\u062a \u0627\u0644\u0645\u062a\u0632\u0627\u0645\u0646\u0629 (${maxConn}). \u0623\u063a\u0644\u0642 \u0628\u062b\u0627\u064b \u0622\u062e\u0631 \u0623\u0648 \u0642\u0645 \u0628\u062a\u0631\u0642\u064a\u0629 \u0627\u0634\u062a\u0631\u0627\u0643\u0643.`,
+      active: sessions.length, max: maxConn,
+    };
+  }
+  const sid = randomUUID();
+  _insertSession.run(sid, userId, streamId, streamType, Date.now(), Date.now());
+  return { allowed: true, sessionId: sid };
+}
+
+function releaseUserSession(userId, streamId) { _deleteSessionByStream.run(userId, streamId); }
+function releaseSessionById(sessionId) { _deleteSession.run(sessionId); }
+function heartbeatSession(sessionId) { _updateHeartbeat.run(Date.now(), sessionId); }
+
+setInterval(() => {
+  const removed = _cleanExpired.run(Date.now() - SESSION_TIMEOUT);
+  if (removed.changes > 0) console.log(`[Sessions] Cleaned ${removed.changes} expired sessions`);
+}, 2 * 60 * 1000);
+
+// POST /api/session/heartbeat
+app.post('/api/session/heartbeat', requireAuth, (req, res) => {
+  const { sessionId } = req.body;
+  if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
+  const session = _getSessionById.get(sessionId);
+  if (!session || session.user_id !== req.user.id) return res.status(404).json({ error: 'session not found' });
+  heartbeatSession(sessionId);
+  res.json({ success: true });
+});
+
+// POST /api/session/release
+app.post('/api/session/release', requireAuth, (req, res) => {
+  const { sessionId, streamId } = req.body;
+  if (sessionId) releaseSessionById(sessionId);
+  else if (streamId) releaseUserSession(req.user.id, streamId);
+  res.json({ success: true });
+});
+
+// GET /api/session/active
+app.get('/api/session/active', requireAuth, (req, res) => {
+  _cleanExpired.run(Date.now() - SESSION_TIMEOUT);
+  const sessions = _getUserSessions.all(req.user.id);
+  const user = db.prepare('SELECT max_connections FROM users_cache WHERE id = ?').get(req.user.id);
+  res.json({ sessions, active: sessions.length, max: (user && user.max_connections) || 1 });
+});
+
+// ═══════════════════════════════════════════════════════════════
+
 app.post('/api/stream/live/:channelId', requireAuth, requirePremium, async (req, res) => {
   const rawId = req.params.channelId;
+
+  // ═══ Connection limit check ═══
+  const connCheck = checkConnectionLimit(req.user.id, `live_${rawId}`, 'live');
+  if (!connCheck.allowed) {
+    return res.status(429).json({ error: connCheck.error, message: connCheck.message, active: connCheck.active, max: connCheck.max });
+  }
+
   // -- Xtream live channel (xtream_live_<streamId> or bare numeric ID) --
   // Signed token redirect — credentials hidden from client, client connects directly to source
   // Signed token redirect — credentials hidden from client, client connects directly to source
@@ -255,6 +352,7 @@ app.post('/api/stream/live/:channelId', requireAuth, requirePremium, async (req,
         hlsUrl: `/xtream-play/${token}/index.m3u8`,
         ready: true,
         streamId: String(xch.stream_id),
+        sessionId: connCheck.sessionId,
         name: xch.name,
         logo: xch.logo,
       });
@@ -353,6 +451,12 @@ app.get('/live-pipe/:channelId', requireAuth, async (req, res) => {
  */
 app.post('/api/stream/vod/:id', requireAuth, requirePremium, async (req, res) => {
   const paramId = decodeURIComponent(req.params.id);
+
+  // ═══ Connection limit check ═══
+  const connCheck = checkConnectionLimit(req.user.id, `vod_${paramId}`, 'vod');
+  if (!connCheck.allowed) {
+    return res.status(429).json({ error: connCheck.error, message: connCheck.message, active: connCheck.active, max: connCheck.max });
+  }
 
   // Ø¨Ø­Ø« Ø¨Ø§Ù„Ù€ id Ø£Ùˆ stream_token â€” Ø£ÙˆÙ„ÙˆÙŠØ©: episodes Ø«Ù… vod
   let item = null;
@@ -485,6 +589,10 @@ app.post('/api/stream/vod/:id', requireAuth, requirePremium, async (req, res) =>
 app.post('/api/stream/release/:streamId', requireAuth, (req, res) => {
   streamManager.releaseStream(req.params.streamId);
   vodProxy.releaseSession(req.params.streamId);
+  // Release active session for this stream
+  releaseUserSession(req.user.id, `live_${req.params.streamId}`);
+  releaseUserSession(req.user.id, `vod_${req.params.streamId}`);
+  releaseUserSession(req.user.id, req.params.streamId);
   res.json({ success: true });
 });
 
@@ -759,6 +867,13 @@ app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => 
   const { tmdbId, imdbId, type = 'movie' } = req.body;
   const season = type === 'tv' ? (parseInt(req.body.season) || 1) : undefined;
   const episode = type === 'tv' ? (parseInt(req.body.episode) || 1) : undefined;
+
+  // ═══ Connection limit check ═══
+  const vidsrcStreamId = `vidsrc_${type}_${tmdbId}${type === 'tv' ? `_s${season}e${episode}` : ''}`;
+  const connCheck = checkConnectionLimit(req.user.id, vidsrcStreamId, 'vod');
+  if (!connCheck.allowed) {
+    return res.status(429).json({ error: connCheck.error, message: connCheck.message, active: connCheck.active, max: connCheck.max });
+  }
   
   if (!tmdbId) return res.status(400).json({ error: 'tmdbId Ù…Ø·Ù„ÙˆØ¨' });
 

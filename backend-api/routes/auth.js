@@ -53,7 +53,7 @@ router.post('/login', async (req, res) => {
     }
 
     const user = await db.prepare(
-      'SELECT id, username, email, password_hash, display_name, avatar_url, plan, expires_at, is_admin, is_blocked, role FROM users WHERE username = ? OR email = ?'
+      'SELECT id, username, email, password_hash, display_name, avatar_url, plan, expires_at, max_connections, is_admin, is_blocked, role FROM users WHERE username = ? OR email = ?'
     ).get(login.trim(), login.trim().toLowerCase());
 
     if (!user) {
@@ -78,6 +78,7 @@ router.post('/login', async (req, res) => {
         avatar_url: user.avatar_url,
         plan: user.plan,
         expires_at: user.expires_at,
+        max_connections: user.max_connections || 1,
         is_admin: !!user.is_admin,
         role: user.role || 'user',
       },
@@ -91,16 +92,16 @@ router.post('/login', async (req, res) => {
 // GET /api/auth/me — lightweight user info (used by cloud-server)
 router.get('/me', requireAuth, async (req, res) => {
   const user = await db.prepare(
-    'SELECT id, username, plan, expires_at, is_admin, is_blocked, role FROM users WHERE id = ?'
+    'SELECT id, username, plan, expires_at, max_connections, is_admin, is_blocked, role FROM users WHERE id = ?'
   ).get(req.user.id);
   if (!user) return res.status(404).json({ error: 'not found' });
-  res.json({ user: { ...user, is_admin: !!user.is_admin, is_blocked: !!user.is_blocked, role: user.role || 'user' } });
+  res.json({ user: { ...user, max_connections: user.max_connections || 1, is_admin: !!user.is_admin, is_blocked: !!user.is_blocked, role: user.role || 'user' } });
 });
 
 // GET /api/auth/profile
 router.get('/profile', requireAuth, async (req, res) => {
   const user = await db.prepare(
-    'SELECT id, username, email, display_name, avatar_url, plan, expires_at, is_admin, role, balance, created_at FROM users WHERE id = ?'
+    'SELECT id, username, email, display_name, avatar_url, plan, expires_at, max_connections, is_admin, role, balance, created_at FROM users WHERE id = ?'
   ).get(req.user.id);
 
   if (!user) return res.status(404).json({ error: 'المستخدم غير موجود' });
@@ -126,7 +127,7 @@ router.get('/profile', requireAuth, async (req, res) => {
 // GET /api/auth/subscription
 router.get('/subscription', requireAuth, async (req, res) => {
   const user = await db.prepare(
-    'SELECT id, plan, expires_at FROM users WHERE id = ?'
+    'SELECT id, plan, expires_at, max_connections FROM users WHERE id = ?'
   ).get(req.user.id);
 
   if (!user) return res.status(404).json({ error: 'المستخدم غير موجود' });
@@ -147,7 +148,7 @@ router.get('/subscription', requireAuth, async (req, res) => {
     daysLeft = Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
   }
 
-  res.json({ plan, expires_at, isPremium, daysLeft });
+  res.json({ plan, expires_at, isPremium, daysLeft, max_connections: user.max_connections || 1 });
 });
 
 // POST /api/auth/activate-code
@@ -156,7 +157,7 @@ router.post('/activate-code', requireAuth, async (req, res) => {
   if (!code) return res.status(400).json({ error: 'الكود مطلوب' });
 
   const activation = await db.prepare(`
-    SELECT ac.*, sp.duration_days, sp.name as plan_name
+    SELECT ac.*, sp.duration_days, sp.max_connections as plan_max_connections, sp.name as plan_name
     FROM activation_codes ac
     JOIN subscription_plans sp ON ac.plan_id = sp.id
     WHERE ac.code = ?
@@ -178,19 +179,22 @@ router.post('/activate-code', requireAuth, async (req, res) => {
   newExpiry.setDate(newExpiry.getDate() + activation.duration_days);
   const expiryStr = newExpiry.toISOString();
 
+  const maxConn = activation.max_connections || activation.plan_max_connections || 1;
+
   await db.runTransaction(async (prepare) => {
     await prepare(
       "UPDATE activation_codes SET status = 'used', activated_by = ?, activated_at = NOW() WHERE id = ?"
     ).run(req.user.id, activation.id);
     await prepare(
-      "UPDATE users SET plan = 'premium', expires_at = ? WHERE id = ?"
-    ).run(expiryStr, req.user.id);
+      "UPDATE users SET plan = 'premium', expires_at = ?, max_connections = ? WHERE id = ?"
+    ).run(expiryStr, maxConn, req.user.id);
   });
 
   res.json({
     success: true,
     plan: 'premium',
     expires_at: expiryStr,
+    max_connections: maxConn,
     plan_name: activation.plan_name,
     duration_days: activation.duration_days,
     message: `تم تفعيل الاشتراك ${activation.plan_name} بنجاح!`,

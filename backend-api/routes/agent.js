@@ -75,13 +75,14 @@ router.post('/create-code', requireAuth, requireAgent, async (req, res) => {
 
   // إنشاء الكودات
   const codes = [];
+  const planMaxConn = plan.max_connections || 1;
 
   await db.runTransaction(async (prepare) => {
     for (let i = 0; i < qty; i++) {
       const codeId = uuidv4();
       const rawCode = uuidv4().replace(/-/g, '').toUpperCase().substring(0, 12);
       const formattedCode = `MA-${rawCode.substring(0,4)}-${rawCode.substring(4,8)}-${rawCode.substring(8,12)}`;
-      await prepare('INSERT INTO activation_codes (id, code, plan_id, created_by) VALUES (?, ?, ?, ?)').run(codeId, formattedCode, plan_id, req.user.id);
+      await prepare('INSERT INTO activation_codes (id, code, plan_id, max_connections, created_by) VALUES (?, ?, ?, ?, ?)').run(codeId, formattedCode, plan_id, planMaxConn, req.user.id);
       codes.push({ id: codeId, code: formattedCode });
     }
     await prepare('UPDATE users SET balance = balance - ? WHERE id = ?').run(totalCost, req.user.id);
@@ -94,7 +95,7 @@ router.post('/create-code', requireAuth, requireAgent, async (req, res) => {
   res.json({
     success: true,
     codes,
-    plan: { name: plan.name, duration_days: plan.duration_days },
+    plan: { name: plan.name, duration_days: plan.duration_days, max_connections: planMaxConn },
     cost: totalCost,
     remaining_balance: updatedAgent.balance,
   });
@@ -106,8 +107,8 @@ router.get('/codes', requireAuth, requireAgent, async (req, res) => {
   const { status, limit = 50, offset = 0 } = req.query;
 
   let query = `
-    SELECT ac.id, ac.code, ac.status, ac.created_at, ac.activated_at,
-           sp.name as plan_name, sp.duration_days,
+    SELECT ac.id, ac.code, ac.status, ac.max_connections, ac.created_at, ac.activated_at,
+           sp.name as plan_name, sp.duration_days, sp.max_connections as plan_max_connections,
            u.username as activated_by_username
     FROM activation_codes ac
     JOIN subscription_plans sp ON ac.plan_id = sp.id
