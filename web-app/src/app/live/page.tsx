@@ -170,18 +170,18 @@ function LiveContent() {
 
       {/* Grid */}
       {loading ? (
-        <div className="grid grid-cols-3 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
           {Array.from({ length: 12 }).map((_, i) => <SkeletonChannelCard key={i} />)}
         </div>
       ) : filtered.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 gap-2">
-          <svg className="w-10 h-10 text-dark-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0" /></svg>
-          <p className="text-dark-muted text-sm">لا توجد قنوات</p>
+          <svg className="w-10 h-10 text-light-muted dark:text-dark-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0" /></svg>
+          <p className="text-light-muted dark:text-dark-muted text-sm">لا توجد قنوات</p>
         </div>
       ) : (
         <>
           <p className="text-xs text-light-muted dark:text-dark-muted mb-3">{filtered.length} قناة</p>
-          <div className="grid grid-cols-3 md:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
             {filtered.map(ch => (
               <button key={ch.id} onClick={() => selectChannel(ch)}
                 className={`flex flex-col items-center p-3 rounded-xl transition relative ${activeChannel?.id === ch.id ? 'bg-brand-primary/15 border border-brand-primary/40' : 'bg-light-card dark:bg-dark-card hover:bg-light-input dark:hover:bg-dark-input'}`}>
@@ -210,40 +210,12 @@ function LiveContent() {
           <div className="w-2 h-2 rounded-full bg-brand-success live-dot" />
         </div>
 
-        {/* ── Mobile layout: player FIRST (top), channels below ── */}
-        <div className="lg:hidden">
-          {activeChannel && (
-            <div className="rounded-xl overflow-hidden bg-black shadow-2xl mb-4">
-              <div className="relative w-full" style={{ paddingTop: '56.25%' }}>
-                {streamLoading && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-black">
-                    <div className="w-10 h-10 border-2 border-brand-primary border-t-transparent rounded-full animate-spin" />
-                  </div>
-                )}
-                {streamError && (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-black gap-2">
-                    <svg className="w-8 h-8 text-brand-error" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                    <p className="text-white/70 text-sm">{streamError}</p>
-                  </div>
-                )}
-                {streamUrl && !streamLoading && <HlsPlayer streamUrl={streamUrl} title={activeChannel.name} />}
-              </div>
-              <div className="px-4 py-3 flex items-center justify-between bg-black/80">
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-brand-success live-dot" />
-                  <span className="text-white font-bold text-sm">{activeChannel.name}</span>
-                  {activeChannel.group && <span className="text-xs text-white/40 bg-white/10 px-2 py-0.5 rounded">{activeChannel.group}</span>}
-                </div>
-                <button onClick={() => { setActiveChannel(null); setStreamUrl(''); }} className="text-white/60 hover:text-white text-xs transition">إغلاق</button>
-              </div>
-            </div>
-          )}
-          <ChannelGrid />
-        </div>
+        <div className="lg:flex lg:gap-6 lg:items-start">
 
-        {/* ── Desktop layout: player left, channels right ── */}
-        <div className="hidden lg:flex lg:gap-6 lg:items-start">
+          {/* LEFT — Player + channels below on mobile */}
           <div className="lg:flex-1 min-w-0">
+
+            {/* Player — always at top when a channel is active */}
             {activeChannel ? (
               <div className="rounded-xl overflow-hidden bg-black shadow-2xl mb-4">
                 <div className="relative w-full" style={{ paddingTop: '56.25%' }}>
@@ -270,21 +242,27 @@ function LiveContent() {
                 </div>
               </div>
             ) : (
-              <div className="rounded-xl bg-dark-card border border-dark-border mb-4" style={{ paddingTop: '56.25%', position: 'relative' }}>
+              <div className="hidden lg:flex rounded-xl bg-light-card dark:bg-dark-card border border-light-border dark:border-dark-border items-center justify-center mb-4" style={{ paddingTop: '56.25%', position: 'relative' }}>
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
-                  <svg className="w-14 h-14 text-dark-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className="w-14 h-14 text-light-muted dark:text-dark-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0" />
                   </svg>
-                  <p className="text-dark-muted text-sm">اختر قناة من القائمة</p>
+                  <p className="text-light-muted dark:text-dark-muted text-sm">اختر قناة من القائمة</p>
                 </div>
               </div>
             )}
+
+            {/* Mobile: channels BELOW player */}
+            <div className="lg:hidden"><ChannelGrid /></div>
           </div>
-          <div className="lg:w-80 xl:w-96 flex-shrink-0">
-            <div className="sticky top-4 max-h-[calc(100vh-5rem)] overflow-y-auto no-scrollbar">
+
+          {/* RIGHT — Channel list (desktop sidebar, sticky) */}
+          <div className="hidden lg:block lg:w-80 xl:w-96 flex-shrink-0">
+            <div className="sticky top-20 max-h-[calc(100vh-6rem)] overflow-y-auto no-scrollbar">
               <ChannelGrid />
             </div>
           </div>
+
         </div>
       </div>
     </div>

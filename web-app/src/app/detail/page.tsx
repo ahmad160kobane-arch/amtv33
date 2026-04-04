@@ -39,12 +39,12 @@ function DetailContent() {
         data = await fetchIptvMovieDetail(contentId);
       }
       setDetail(data);
-      const [logged, fav] = await Promise.all([
-        isLoggedIn(),
-        isLoggedIn().then(l => l ? checkFavorite(contentId) : false),
-      ]);
+      const logged = await isLoggedIn();
       setLoggedIn(logged);
-      setIsFav(fav);
+      if (logged) {
+        const fav = await checkFavorite(contentId);
+        setIsFav(fav);
+      }
     } catch (e) {
       console.error('Detail load error:', e);
     } finally {
@@ -133,7 +133,7 @@ function DetailContent() {
       {isSeries && (
         loading ? (
           <div className="mb-4">
-            <div className="h-3.5 w-16 rounded bg-light-input dark:bg-dark-input skeleton mb-2" />
+            <div className="h-3.5 w-16 rounded bg-dark-input skeleton mb-2" />
             <div className="flex gap-2">
               {[1, 2, 3].map(i => <div key={i} className="h-8 w-20 rounded-lg bg-light-input dark:bg-dark-input skeleton flex-shrink-0" />)}
             </div>
@@ -183,7 +183,7 @@ function DetailContent() {
                   {ep.poster ? (
                     <img src={ep.poster} alt={ep.title || ''} className="w-full h-full object-cover" loading="lazy" />
                   ) : (
-                    <span className={currentEpisode?.id === ep.id ? 'text-brand-primary' : 'text-dark-muted'}>{ep.episode}</span>
+                    <span className={currentEpisode?.id === ep.id ? 'text-brand-primary' : 'text-light-muted dark:text-dark-muted'}>{ep.episode}</span>
                   )}
                 </div>
                 <div className="flex-1 text-right">
@@ -209,9 +209,9 @@ function DetailContent() {
         )}
         <div className="absolute inset-0 bg-gradient-to-t from-light-bg dark:from-dark-bg via-light-bg/60 dark:via-dark-bg/60 to-transparent" />
         <button onClick={() => router.back()}
-          className="absolute top-4 right-4 w-10 h-10 rounded-full bg-black/50 dark:bg-white/50 flex items-center justify-center hover:bg-black/70 dark:hover:bg-white/70 transition">
-          <svg className="w-5 h-5 text-white dark:text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          className="absolute top-4 right-4 w-10 h-10 rounded-full bg-black/50 flex items-center justify-center hover:bg-black/70 transition">
+          <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
           </svg>
         </button>
       </div>
@@ -222,11 +222,11 @@ function DetailContent() {
           <div className={`flex-1 min-w-0 ${isSeries ? '' : 'lg:max-w-4xl'}`}>
 
             <div className="flex gap-4 items-end mb-4">
-              <div className="w-24 h-36 md:w-32 md:h-48 rounded-xl overflow-hidden flex-shrink-0 shadow-2xl border border-white/10 dark:border-white/5">
+              <div className="w-24 h-36 md:w-32 md:h-48 rounded-xl overflow-hidden flex-shrink-0 shadow-2xl border border-white/10">
                 {poster && !posterError ? (
                   <img src={poster} alt={title} className="w-full h-full object-cover" onError={() => setPosterError(true)} />
                 ) : (
-                  <div className="w-full h-full bg-light-card dark:bg-dark-card flex items-center justify-center">
+                  <div className="w-full h-full bg-dark-card flex items-center justify-center">
                     <svg className="w-8 h-8 text-dark-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.069A1 1 0 0121 8.82v6.36a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
                     </svg>
@@ -235,11 +235,11 @@ function DetailContent() {
               </div>
               <div className="flex-1 pb-2">
                 <MetaBadges />
-                <h1 className="text-lg md:text-2xl lg:text-3xl font-black text-light-text dark:text-dark-text leading-tight">{title}</h1>
+                <h1 className="text-lg md:text-2xl lg:text-3xl font-black text-light-text dark:text-white leading-tight">{title}</h1>
                 {detail?.genre && (
                   <div className="flex flex-wrap gap-1.5 mt-2">
                     {detail.genre.split(',').slice(0, 4).map((g: string) => (
-                      <span key={g.trim()} className="px-2 py-0.5 rounded-full bg-light-input dark:bg-white/10 text-light-muted dark:text-white/70 text-xs">{g.trim()}</span>
+                      <span key={g.trim()} className="px-2 py-0.5 rounded-full bg-white/10 text-white/70 text-xs">{g.trim()}</span>
                     ))}
                   </div>
                 )}
@@ -248,7 +248,7 @@ function DetailContent() {
 
             {description ? (
               <div className="mb-4">
-                <p className={`text-sm text-light-muted dark:text-dark-muted leading-relaxed ${descExpanded ? '' : 'line-clamp-3'}`}>{description}</p>
+                <p className={`text-sm text-dark-muted leading-relaxed ${descExpanded ? '' : 'line-clamp-3'}`}>{description}</p>
                 {description.length > 150 && (
                   <button onClick={() => setDescExpanded(v => !v)} className="text-xs text-brand-primary mt-1 hover:text-brand-dark transition">
                     {descExpanded ? 'عرض أقل' : 'قراءة المزيد'}
@@ -258,7 +258,7 @@ function DetailContent() {
             ) : null}
 
             <div className="flex gap-3 mb-4 flex-wrap">
-              {!isSeries && (
+              {!isSeries && !streamUrl && (
                 <button onClick={handleWatch} disabled={streamLoading}
                   className="flex-1 min-w-[140px] flex items-center justify-center gap-2 bg-brand-primary hover:bg-brand-dark text-black font-bold py-3 rounded-xl transition-all hover:scale-105 active:scale-95 shadow-lg shadow-brand-primary/20 disabled:opacity-50">
                   {streamLoading ? (
@@ -268,11 +268,11 @@ function DetailContent() {
                       <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
                     </svg>
                   )}
-                  {streamLoading ? 'جارٍ التحميل...' : streamUrl ? 'إعادة تشغيل' : 'مشاهدة الآن'}
+                  {streamLoading ? 'جارٍ التحميل...' : 'مشاهدة الآن'}
                 </button>
               )}
               <button onClick={handleFav}
-                className={`flex items-center gap-2 px-4 py-3 rounded-xl font-medium text-sm transition ${isFav ? 'bg-red-500/15 text-red-400' : 'bg-light-card dark:bg-dark-card text-dark-muted dark:text-dark-muted hover:bg-light-input dark:hover:bg-dark-input'}`}>
+                className={`flex items-center gap-2 px-4 py-3 rounded-xl font-medium text-sm transition ${isFav ? 'bg-red-500/15 text-red-400' : 'bg-light-card dark:bg-dark-card text-light-muted dark:text-dark-muted hover:bg-light-input dark:hover:bg-dark-input'}`}>
                 <svg className={`w-5 h-5 ${isFav ? 'fill-red-400 text-red-400' : ''}`} fill={isFav ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
                 </svg>
@@ -282,17 +282,17 @@ function DetailContent() {
 
             {/* Video Player */}
             {(streamUrl || streamLoading || streamError) && (
-              <div className="mb-6 rounded-xl overflow-hidden bg-black dark:bg-white shadow-2xl">
+              <div className="mb-6 rounded-xl overflow-hidden bg-black shadow-2xl">
                 <div className="relative w-full" style={{ paddingTop: '56.25%' }}>
                   {streamLoading && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-black dark:bg-white z-10">
+                    <div className="absolute inset-0 flex items-center justify-center bg-black z-10">
                       <div className="w-10 h-10 border-2 border-brand-primary border-t-transparent rounded-full animate-spin" />
                     </div>
                   )}
                   {streamError && (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-black dark:bg-white gap-2">
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-black gap-2">
                       <svg className="w-8 h-8 text-brand-error" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                      <p className="text-white/70 dark:text-black/70 text-sm">{streamError}</p>
+                      <p className="text-white/70 text-sm">{streamError}</p>
                     </div>
                   )}
                   {streamUrl && !streamLoading && (

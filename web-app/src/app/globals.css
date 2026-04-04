@@ -69,19 +69,27 @@ input, textarea {
   font-family: 'Tajawal', sans-serif;
 }
 
-/* Card hover */
+/* Card hover — desktop only, disable on touch devices */
 .card-hover {
   transition: transform 0.25s ease, box-shadow 0.25s ease;
 }
-.card-hover:hover {
-  transform: scale(1.04);
-  box-shadow: 0 8px 25px rgba(0,0,0,0.25);
-}
-.card-hover:hover img {
-  transform: scale(1.06);
+@media (hover: hover) {
+  .card-hover:hover {
+    transform: scale(1.04);
+    box-shadow: 0 8px 25px rgba(0,0,0,0.25);
+  }
+  .card-hover:hover img {
+    transform: scale(1.06);
+  }
 }
 .card-hover:active {
   transform: scale(0.97);
+}
+
+/* Mobile touch improvements */
+@media (max-width: 768px) {
+  html { -webkit-tap-highlight-color: transparent; }
+  button, a { -webkit-touch-callout: none; }
 }
 
 /* Focus visible */
@@ -89,29 +97,4 @@ input, textarea {
   outline: 2px solid var(--brand);
   outline-offset: 2px;
   border-radius: 4px;
-}
-
-/* Mobile safe areas (notch / home indicator) */
-.safe-pb { padding-bottom: env(safe-area-inset-bottom, 0px); }
-.safe-pt { padding-top: env(safe-area-inset-top, 0px); }
-
-/* Touch device tap highlight */
-* { -webkit-tap-highlight-color: transparent; }
-
-/* Video fill */
-video { object-fit: contain; background: #000; }
-
-/* Tablet / mobile grid helpers */
-@media (min-width: 480px) and (max-width: 767px) {
-  .sm-grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-}
-
-/* Prevent content from hiding under bottom nav on mobile */
-@media (max-width: 767px) {
-  .pb-mobile { padding-bottom: calc(4rem + env(safe-area-inset-bottom, 0px)); }
-}
-
-/* Bottom nav safe area */
-nav.bottom-nav {
-  padding-bottom: env(safe-area-inset-bottom, 0px);
 }

@@ -28,25 +28,15 @@ function AllContentContent() {
         setItems(prev => reset ? (data.items || []) : [...prev, ...(data.items || [])]);
         setHasMore(data.hasMore ?? false);
       } else if (activeType === 'series') {
-        const data = await fetchIptvSeries({ categoryId: activeCategoryId || undefined, page: p });
-        const newItems = data.items || [];
-        setItems(prev => reset ? newItems : [...prev, ...newItems]);
-        setHasMore(data.hasMore ?? newItems.length >= 20);
-      } else if (activeType === 'movie') {
-        const data = await fetchIptvMovies({ categoryId: activeCategoryId || undefined, page: p });
+        const data = await fetchIptvSeries({ categoryId: activeCategoryId || undefined, page: p, search: undefined });
         const newItems = data.items || [];
         setItems(prev => reset ? newItems : [...prev, ...newItems]);
         setHasMore(data.hasMore ?? newItems.length >= 20);
       } else {
-        // الكل — merge movies + series
-        const [movData, serData] = await Promise.all([
-          fetchIptvMovies({ page: p }),
-          fetchIptvSeries({ page: p }),
-        ]);
-        const merged = [...(movData.items || []), ...(serData.items || [])]
-          .sort(() => Math.random() - 0.5);
-        setItems(prev => reset ? merged : [...prev, ...merged]);
-        setHasMore((movData.hasMore ?? false) || (serData.hasMore ?? false));
+        const data = await fetchIptvMovies({ categoryId: activeCategoryId || undefined, page: p, search: undefined });
+        const newItems = data.items || [];
+        setItems(prev => reset ? newItems : [...prev, ...newItems]);
+        setHasMore(data.hasMore ?? newItems.length >= 20);
       }
     } catch (e) {
       console.error('Content load error:', e);
@@ -112,14 +102,14 @@ function AllContentContent() {
           <SkeletonGrid count={24} />
         ) : items.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 gap-3">
-            <svg className="w-14 h-14 text-dark-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-14 h-14 text-light-muted dark:text-dark-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
-            <p className="text-dark-muted font-medium">لا توجد نتائج</p>
+            <p className="text-light-muted dark:text-dark-muted font-medium">لا توجد نتائج</p>
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
               {items.map((item, i) => (
                 <ContentCard key={`${item.id}_${i}`} item={toCard(item) as any} />
               ))}
