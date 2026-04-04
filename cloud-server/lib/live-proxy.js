@@ -20,6 +20,7 @@ const RECONNECT_DELAY = 2000;
 const MAX_RECONNECTS = 10;
 const CONNECT_TIMEOUT = 12000;
 const IDLE_DESTROY_DELAY = 8000; // تأخير قبل إغلاق القناة بدون مشاهدين
+const MAX_UPSTREAM = 1; // حد أقصى لاتصالات المصدر المتزامنة (حد الاشتراك IPTV)
 
 class LiveProxy {
   constructor() {
@@ -101,7 +102,24 @@ class LiveProxy {
       return;
     }
 
-    // قناة جديدة — إنشاء بث مشترك
+    // قناة جديدة — تأكد من عدم تجاوز حد الاتصالات
+    // إذا وصلنا للحد الأقصى، أغلق القناة الأقل مشاهدين لتحرير اتصال
+    const activeUpstreams = [...this.channels.entries()].filter(([, c]) => !c.destroyed && c.upstream);
+    if (activeUpstreams.length >= MAX_UPSTREAM) {
+      // أغلق القناة الأقل مشاهدين (أو الأقدم)
+      const sorted = activeUpstreams.sort((a, b) => a[1].clients.size - b[1].clients.size);
+      for (let i = 0; i < sorted.length && activeUpstreams.length - i >= MAX_UPSTREAM; i++) {
+        const [oldId, oldCh] = sorted[i];
+        console.log(`[LiveProxy] إغلاق ${oldId} (${oldCh.clients.size} مشاهد) لتحرير اتصال لـ ${channelId}`);
+        // أعلم العملاء القدامى بانتهاء البث
+        for (const client of oldCh.clients) {
+          try { client.end(); } catch {}
+        }
+        this._destroyChannel(oldId);
+      }
+    }
+
+    // إنشاء بث مشترك
     let streamUrl = sourceUrl;
     if (streamUrl.includes('/live/') && streamUrl.endsWith('.m3u8')) {
       streamUrl = streamUrl.slice(0, -5) + '.ts';

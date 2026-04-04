@@ -21,6 +21,28 @@ const GC_INTERVAL   = 15000;  // 15s — garbage collection interval
 
 const SERVERS = [XTREAM.primary, XTREAM.backup];
 
+// ── Global request queue: serializes ALL HTTP requests to IPTV provider ──
+// Prevents concurrent connections that trigger HTTP 458 (connection limit)
+class RequestQueue {
+  constructor() { this._queue = []; this._running = false; }
+  enqueue(fn) {
+    return new Promise((resolve, reject) => {
+      this._queue.push({ fn, resolve, reject });
+      this._drain();
+    });
+  }
+  async _drain() {
+    if (this._running) return;
+    this._running = true;
+    while (this._queue.length > 0) {
+      const { fn, resolve, reject } = this._queue.shift();
+      try { resolve(await fn()); } catch (e) { reject(e); }
+    }
+    this._running = false;
+  }
+}
+const iptvQueue = new RequestQueue();
+
 class XtreamProxy {
   constructor() {
     this.segCache  = new Map(); // segUrl  → { buf, contentType, ts }
@@ -193,16 +215,19 @@ class XtreamProxy {
 
   async _prefetchSeg(segUrl) {
     if (this.segCache.has(segUrl)) return;
-    try {
-      const res = await fetch(segUrl, {
-        headers: { 'User-Agent': UA },
-        signal: AbortSignal.timeout(15000),
-      });
-      if (!res.ok) return;
-      const buf         = Buffer.from(await res.arrayBuffer());
-      const contentType = res.headers.get('content-type') || 'video/mp2t';
-      this.segCache.set(segUrl, { buf, contentType, ts: Date.now() });
-    } catch { /* ignore */ }
+    return iptvQueue.enqueue(async () => {
+      if (this.segCache.has(segUrl)) return; // re-check after queue wait
+      try {
+        const res = await fetch(segUrl, {
+          headers: { 'User-Agent': UA },
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!res.ok) return;
+        const buf         = Buffer.from(await res.arrayBuffer());
+        const contentType = res.headers.get('content-type') || 'video/mp2t';
+        this.segCache.set(segUrl, { buf, contentType, ts: Date.now() });
+      } catch { /* ignore */ }
+    });
   }
 
   _stopPoller(streamId) {
@@ -217,43 +242,47 @@ class XtreamProxy {
   // Low-level fetchers
   // ─────────────────────────────────────────────────────────────
   async _fetchManifest(streamId, preferredBase) {
-    const servers = [preferredBase, ...SERVERS.filter(s => s !== preferredBase)];
-    let lastErr = null;
-    for (const srv of servers) {
-      const url = `${srv}/live/${XTREAM.user}/${XTREAM.pass}/${streamId}.m3u8`;
-      try {
-        const res = await fetch(url, {
-          headers: { 'User-Agent': UA, 'Referer': `${srv}/` },
-          signal: AbortSignal.timeout(8000),
-        });
-        if (!res.ok) { lastErr = new Error(`HTTP ${res.status} from ${srv}`); continue; }
-        const content = await res.text();
-        return { content, srv };
-      } catch (e) {
-        lastErr = new Error(`${e.message} (${srv})`);
+    return iptvQueue.enqueue(async () => {
+      const servers = [preferredBase, ...SERVERS.filter(s => s !== preferredBase)];
+      let lastErr = null;
+      for (const srv of servers) {
+        const url = `${srv}/live/${XTREAM.user}/${XTREAM.pass}/${streamId}.m3u8`;
+        try {
+          const res = await fetch(url, {
+            headers: { 'User-Agent': UA, 'Referer': `${srv}/` },
+            signal: AbortSignal.timeout(8000),
+          });
+          if (!res.ok) { lastErr = new Error(`HTTP ${res.status} from ${srv}`); continue; }
+          const content = await res.text();
+          return { content, srv };
+        } catch (e) {
+          lastErr = new Error(`${e.message} (${srv})`);
+        }
       }
-    }
-    throw lastErr || new Error('All servers unreachable');
+      throw lastErr || new Error('All servers unreachable');
+    });
   }
 
   async _fetchSegment(cacheKey, candidates) {
-    let lastErr = null;
-    for (const segUrl of candidates) {
-      try {
-        const res = await fetch(segUrl, {
-          headers: { 'User-Agent': UA },
-          signal: AbortSignal.timeout(15000),
-        });
-        if (!res.ok) { lastErr = new Error(`Segment HTTP ${res.status}`); continue; }
-        const buf         = Buffer.from(await res.arrayBuffer());
-        const contentType = res.headers.get('content-type') || 'video/mp2t';
-        this.segCache.set(cacheKey, { buf, contentType, ts: Date.now() });
-        return { buf, contentType };
-      } catch (e) {
-        lastErr = new Error(`Segment fetch failed: ${e.message}`);
+    return iptvQueue.enqueue(async () => {
+      let lastErr = null;
+      for (const segUrl of candidates) {
+        try {
+          const res = await fetch(segUrl, {
+            headers: { 'User-Agent': UA },
+            signal: AbortSignal.timeout(15000),
+          });
+          if (!res.ok) { lastErr = new Error(`Segment HTTP ${res.status}`); continue; }
+          const buf         = Buffer.from(await res.arrayBuffer());
+          const contentType = res.headers.get('content-type') || 'video/mp2t';
+          this.segCache.set(cacheKey, { buf, contentType, ts: Date.now() });
+          return { buf, contentType };
+        } catch (e) {
+          lastErr = new Error(`Segment fetch failed: ${e.message}`);
+        }
       }
-    }
-    throw lastErr || new Error('Segment unavailable from all servers');
+      throw lastErr || new Error('Segment unavailable from all servers');
+    });
   }
 
   // ─────────────────────────────────────────────────────────────

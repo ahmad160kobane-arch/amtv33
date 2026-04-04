@@ -127,8 +127,8 @@ async function syncXtreamChannels(db) {
     return { total: streams.length, saved: 0, server };
   }
 
-  // Persist — only delete after we have replacement data
-  await db.prepare('DELETE FROM xtream_channels').run();
+  // Persist — UPSERT all channels first, THEN delete stale ones
+  // Never delete before insert — keeps channels available during sync
   const now = Date.now();
   await db.runTransaction(async (prepare) => {
     const ins = prepare(`
@@ -146,7 +146,9 @@ async function syncXtreamChannels(db) {
               r.stream_id, r.epg_id, r.sort_order, r.base_url, now);
   });
 
-  console.log(`[Xtream] \u2713 Saved ${wanted.length} channels (server: ${server})`);
+  // Delete stale channels that were NOT in this sync (old data)
+  const deleted = await db.prepare('DELETE FROM xtream_channels WHERE updated_at < ?').run(now);
+  console.log(`[Xtream] ✓ Saved ${wanted.length} channels, removed ${deleted?.changes || 0} stale (server: ${server})`);
   return { total: streams.length, saved: wanted.length, server };
 }
 

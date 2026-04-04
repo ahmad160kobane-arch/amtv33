@@ -1242,14 +1242,18 @@ app.get('/api/xtream/stream/:channelId', async (req, res) => {
 
     const token = jwt.sign({ sid: String(ch.stream_id), t: 'xt' }, config.JWT_SECRET, { expiresIn: '6h' });
 
+    const sid = `web_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const base = encodeURIComponent(ch.base_url || XTREAM.primary);
     res.json({
       success  : true,
       name     : ch.name,
       logo     : ch.logo,
       category : ch.category,
+      // hlsUrl: HLS proxy — segment caching, no persistent connections, multi-channel safe
+      hlsUrl   : `/proxy/live/${ch.stream_id}/index.m3u8?sid=${sid}&base=${base}`,
       // directUrl: mobile/ExoPlayer follows 302 redirect directly to IPTV
       directUrl: `/xtream-play/${token}/index.m3u8`,
-      // proxyUrl: web browser gets raw TS piped through cloud server (no CORS/mixed-content)
+      // proxyUrl: raw TS pipe (legacy, persistent connection — avoid for multi-channel)
       proxyUrl : `/xtream-pipe/${token}`,
       streamId : ch.stream_id,
     });
@@ -1491,13 +1495,27 @@ const server = app.listen(config.PORT, config.HOST, async () => {
   liveProxy.start();
 
 
-  // Ù…Ø²Ø§Ù…Ù†Ø© Ù‚Ù†ÙˆØ§Øª Xtream Ø¹Ù†Ø¯ Ø§Ù„ØªØ´ØºÙŠÙ„
-  syncXtreamChannels(db).catch(e => console.error('[Xtream] Ø®Ø·Ø£ ÙÙŠ Ø§Ù„Ù…Ø²Ø§Ù…Ù†Ø© Ø¹Ù†Ø¯ Ø§Ù„ØªØ´ØºÙŠÙ„:', e.message));
+  // Xtream channel sync on startup (await so channels are ready)
+  try {
+    await syncXtreamChannels(db);
+  } catch (e) {
+    console.error('[Xtream] Sync startup error:', e.message);
+  }
   xtreamProxy.start();
+
+  // Periodic Xtream channel sync every 30 minutes
+  setInterval(() => syncXtreamChannels(db).catch(e => console.error('[Xtream] Periodic sync error:', e.message)), 30 * 60 * 1000);
+
+  // Pre-warm VOD cache on startup
+  try {
+    const home = await xtreamVod.getHome();
+    console.log(`[VOD] Pre-warmed: ${home.latestMovies?.length || 0} movies, ${home.latestSeries?.length || 0} series`);
+  } catch (e) {
+    console.error('[VOD] Pre-warm error:', e.message);
+  }
 
   // Sync channels from backend PostgreSQL on startup
   syncChannelsFromBackend(true).catch(e => console.error('[Sync] Startup error:', e.message));
-  // Periodic sync every 10 minutes
   setInterval(() => syncChannelsFromBackend(true).catch(() => {}), CHANNEL_SYNC_INTERVAL);
 });
 
