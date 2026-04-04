@@ -114,7 +114,7 @@ const NAV_ICONS: Record<string, React.FC<{ active: boolean }>> = {
 const NAV_ITEMS = [
   { href: '/', label: 'الرئيسية' },
   { href: '/live', label: 'مباشر' },
-  { href: '/entertainment', label: 'استكشف' },
+  { href: '/entertainment', label: 'ترفيه' },
   { href: '/mylist', label: 'قائمتي' },
   { href: '/account', label: 'حسابي' },
 ];
