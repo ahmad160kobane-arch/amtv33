@@ -12,12 +12,12 @@
 
 const { XTREAM } = require('./xtream');
 
-const UA            = 'VLC/3.0.20 LibVLC/3.0.20';
-const POLL_INTERVAL = 2000;   // 2s  — how often to refresh the manifest in background
-const SEG_TTL       = 20000;  // 20s — segment cache lifetime (slightly > typical HLS segment)
-const SESSION_TTL   = 60000;  // 60s — viewer session idle timeout
-const KEEP_WARM     = 15000;  // 15s — keep poller alive after last viewer leaves (max_connections=1)
-const GC_INTERVAL   = 15000;  // 15s — garbage collection interval
+const UA             = 'VLC/3.0.20 LibVLC/3.0.20';
+const MANIFEST_TTL   = 4000;   // 4s  — cache manifest (HLS segments are ~10s)
+const SEG_TTL        = 30000;  // 30s — segment cache lifetime
+const SESSION_TTL    = 60000;  // 60s — viewer session idle timeout
+const GC_INTERVAL    = 15000;  // 15s — garbage collection interval
+const RETRY_DELAY_458 = 3000;  // 3s  — wait before retrying after HTTP 458
 
 const SERVERS = [XTREAM.primary, XTREAM.backup];
 
@@ -64,24 +64,28 @@ class XtreamProxy {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // Public: Manifest proxy
+  // Public: Manifest proxy (on-demand, cached)
   // ─────────────────────────────────────────────────────────────
   async getManifest(streamId, baseUrl, proxyBase, sessionId) {
     this._touchSession(streamId, sessionId);
 
-    // Ensure background poller is running (starts/warms the stream)
-    this._ensurePoller(streamId, baseUrl);
-
-    const p = this.pollers.get(streamId);
-
-    // If we already have a fresh manifest from the background poller, serve it immediately
-    if (p && p.content && (Date.now() - p.ts) < 4000) {
-      return this._rewriteManifest(p.content, streamId, p.baseUrl, proxyBase);
+    // Check manifest cache first
+    const cacheKey = `manifest_${streamId}`;
+    const cached = this._manifestCache?.get(cacheKey);
+    if (cached && (Date.now() - cached.ts) < MANIFEST_TTL) {
+      return this._rewriteManifest(cached.content, streamId, cached.srv, proxyBase);
     }
 
-    // Cold start: fetch directly and wait
+    // On-demand fetch (serialized through queue)
     const result = await this._fetchManifest(streamId, baseUrl);
-    if (p) { p.content = result.content; p.baseUrl = result.srv; p.ts = Date.now(); }
+
+    // Cache the manifest
+    if (!this._manifestCache) this._manifestCache = new Map();
+    this._manifestCache.set(cacheKey, { content: result.content, srv: result.srv, ts: Date.now() });
+
+    // Pre-fetch new segments in background (serialized)
+    this._prefetchNewSegments(streamId, result.content, result.srv);
+
     return this._rewriteManifest(result.content, streamId, result.srv, proxyBase);
   }
 
@@ -156,61 +160,23 @@ class XtreamProxy {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // Background poller: keeps stream manifest + segments warm
+  // Segment pre-fetch (on-demand, triggered after manifest fetch)
   // ─────────────────────────────────────────────────────────────
-  _ensurePoller(streamId, baseUrl) {
-    if (this.pollers.has(streamId)) {
-      this.pollers.get(streamId).lastViewer = Date.now();
-      return;
-    }
-    const state = { baseUrl, content: null, ts: 0, knownSegs: new Set(), timer: null, lastViewer: Date.now() };
-    this.pollers.set(streamId, state);
-    this._schedulePoll(streamId, 0); // immediate first poll
-  }
+  _prefetchNewSegments(streamId, manifestContent, srv) {
+    if (!this._knownSegs) this._knownSegs = new Map();
+    if (!this._knownSegs.has(streamId)) this._knownSegs.set(streamId, new Set());
+    const known = this._knownSegs.get(streamId);
 
-  _schedulePoll(streamId, delay) {
-    const state = this.pollers.get(streamId);
-    if (!state) return;
-    if (state.timer) clearTimeout(state.timer);
-    state.timer = setTimeout(() => this._poll(streamId), delay);
-  }
-
-  async _poll(streamId) {
-    const state = this.pollers.get(streamId);
-    if (!state) return;
-
-    try {
-      const result = await this._fetchManifest(streamId, state.baseUrl);
-      state.content  = result.content;
-      state.baseUrl  = result.srv;
-      state.ts       = Date.now();
-      state.errCount = 0;
-
-      // Pre-fetch new segments seen in the manifest
-      for (const line of result.content.split('\n')) {
-        const t = line.trim();
-        if (!t || t.startsWith('#')) continue;
-        const segUrl = t.startsWith('http')
-          ? t
-          : `${result.srv}/live/${XTREAM.user}/${XTREAM.pass}/${t}`;
-
-        if (!state.knownSegs.has(segUrl)) {
-          state.knownSegs.add(segUrl);
-          if (state.knownSegs.size > 30) {
-            state.knownSegs.delete(state.knownSegs.values().next().value);
-          }
-          this._prefetchSeg(segUrl).catch(() => {});
-        }
-      }
-    } catch (e) {
-      state.errCount = (state.errCount || 0) + 1;
-      // Log every 5th error to avoid spam
-      if (state.errCount % 5 === 1) {
-        console.log(`[XtreamProxy] Poll error stream ${streamId}: ${e.message}`);
+    for (const line of manifestContent.split('\n')) {
+      const t = line.trim();
+      if (!t || t.startsWith('#')) continue;
+      const segUrl = t.startsWith('http') ? t : `${srv}/live/${XTREAM.user}/${XTREAM.pass}/${t}`;
+      if (!known.has(segUrl)) {
+        known.add(segUrl);
+        if (known.size > 20) known.delete(known.values().next().value);
+        this._prefetchSeg(segUrl).catch(() => {});
       }
     }
-
-    this._schedulePoll(streamId, POLL_INTERVAL);
   }
 
   async _prefetchSeg(segUrl) {
@@ -231,11 +197,7 @@ class XtreamProxy {
   }
 
   _stopPoller(streamId) {
-    const state = this.pollers.get(streamId);
-    if (!state) return;
-    if (state.timer) clearTimeout(state.timer);
-    this.pollers.delete(streamId);
-    console.log(`[XtreamProxy] Stopped poller: ${streamId}`);
+    // Legacy — no-op (no more background pollers)
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -333,18 +295,21 @@ class XtreamProxy {
       if (map.size === 0) this.sessions.delete(id);
     }
 
-    // Stop pollers for streams with no viewers for > KEEP_WARM
-    for (const [id, state] of this.pollers) {
-      if (now - state.lastViewer > KEEP_WARM) {
-        this._stopPoller(id);
-      }
+    // Clean manifest cache
+    if (this._manifestCache) {
+      for (const [k, v] of this._manifestCache)
+        if (now - v.ts > 30000) this._manifestCache.delete(k);
+    }
+    // Clean known segments tracker
+    if (this._knownSegs) {
+      for (const [id] of this._knownSegs)
+        if (!this.sessions.has(id)) this._knownSegs.delete(id);
     }
 
     const segs    = this.segCache.size;
     const viewers = this.getTotalViewers();
-    const active  = this.pollers.size;
-    if (viewers > 0 || active > 0) {
-      console.log(`[XtreamProxy] Viewers: ${viewers} | Active streams: ${active} | Cached segs: ${segs}`);
+    if (viewers > 0) {
+      console.log(`[XtreamProxy] Viewers: ${viewers} | Cached segs: ${segs}`);
     }
   }
 }

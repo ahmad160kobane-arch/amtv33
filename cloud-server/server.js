@@ -386,14 +386,16 @@ app.get(['/xtream-play/:token', '/xtream-play/:token/index.m3u8'], (req, res) =>
   }
 });
 
-// Xtream TS Pipe — for web browsers (pipes raw .ts stream through cloud server, no CORS/mixed-content issues)
+// Xtream Pipe — redirect to HLS proxy (no persistent connections, multi-channel safe)
 app.get('/xtream-pipe/:token', async (req, res) => {
   try {
     const payload = jwt.verify(req.params.token, config.JWT_SECRET);
     if (payload.t !== 'xt' || !payload.sid) return res.status(403).end();
-    const sourceUrl = `${XTREAM.primary}/live/${XTREAM.user}/${XTREAM.pass}/${payload.sid}.m3u8`;
-    console.log(`[Xtream-pipe] #${payload.sid} — بث مباشر للويب`);
-    await liveProxy.streamToClient(`web_xt_${payload.sid}`, sourceUrl, req, res);
+    const sid = `pipe_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const base = encodeURIComponent(XTREAM.primary);
+    const hlsUrl = `/proxy/live/${payload.sid}/index.m3u8?sid=${sid}&base=${base}`;
+    console.log(`[Xtream-pipe] #${payload.sid} → HLS proxy`);
+    res.redirect(302, hlsUrl);
   } catch (e) {
     console.error('[Xtream-pipe] error:', e.message);
     res.status(403).json({ error: 'Invalid or expired token' });
@@ -1302,7 +1304,8 @@ app.get('/api/xtream/viewers', requireAuth, (req, res) => {
 app.get('/proxy/live/:streamId/index.m3u8', async (req, res) => {
   const { streamId } = req.params;
   const sessionId = req.query.sid || req.ip || 'anon';
-  const baseUrl   = req.query.base ? decodeURIComponent(req.query.base) : XTREAM.primary;
+  let baseUrl = XTREAM.primary;
+  try { if (req.query.base) baseUrl = decodeURIComponent(req.query.base); } catch {}
   const proxyBase = `${req.protocol}://${req.get('host')}`;
 
   try {
@@ -1326,7 +1329,8 @@ app.get('/proxy/live/:streamId/index.m3u8', async (req, res) => {
 app.get('/proxy/live/:streamId/seg/:encodedPath(*)', async (req, res) => {
   const { streamId, encodedPath } = req.params;
   const sessionId = req.query.sid || req.ip || 'anon';
-  const baseUrl   = req.query.base ? decodeURIComponent(req.query.base) : XTREAM.primary;
+  let baseUrl = XTREAM.primary;
+  try { if (req.query.base) baseUrl = decodeURIComponent(req.query.base); } catch {}
 
   try {
     const { buf, contentType } = await xtreamProxy.getSegment(streamId, encodedPath, baseUrl, sessionId);
