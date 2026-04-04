@@ -1,4 +1,4 @@
-import React, { memo, useCallback } from 'react';
+import React, { memo, useCallback, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -7,15 +7,17 @@ import {
   TouchableOpacity,
   StyleSheet,
   Dimensions,
+  Animated,
+  Platform,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons } from '@expo/vector-icons';
+import { FilmIcon, StarIcon, ChevronIcon } from '@/components/AppIcons';
 import { useColorScheme } from '@/hooks/useColorScheme';
 import Colors from '@/constants/Colors';
 
 const { width } = Dimensions.get('window');
-const CARD_WIDTH = width * 0.34;
-const CARD_HEIGHT = CARD_WIDTH * 1.52;
+const CARD_WIDTH = width * 0.37;
+const CARD_HEIGHT = CARD_WIDTH * 1.5;
 
 export interface ContentItem {
   id: string;
@@ -52,17 +54,24 @@ interface CardProps {
 
 const ContentCard = memo(({ item, cardWidth, cardHeight, showBadge, onItemPress, inputBg, textSecondary }: CardProps) => {
   const ratingVal = item.rating ? parseFloat(item.rating) : 0;
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+  const [imgError, setImgError] = useState(false);
+  const onPressIn = () => Animated.spring(scaleAnim, { toValue: 0.96, useNativeDriver: true, speed: 50, bounciness: 4 }).start();
+  const onPressOut = () => Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, speed: 30, bounciness: 6 }).start();
   return (
+    <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
     <TouchableOpacity
       style={[styles.card, { width: cardWidth, height: cardHeight }]}
-      activeOpacity={0.75}
+      activeOpacity={0.9}
       onPress={() => onItemPress?.(item)}
+      onPressIn={onPressIn}
+      onPressOut={onPressOut}
     >
-      {item.poster ? (
-        <Image source={{ uri: item.poster }} style={styles.poster} resizeMode="cover" />
+      {item.poster && !imgError ? (
+        <Image source={{ uri: item.poster }} style={styles.poster} resizeMode="cover" onError={() => setImgError(true)} />
       ) : (
         <View style={[styles.noPoster, { backgroundColor: inputBg }]}>
-          <Ionicons name="film-outline" size={28} color={textSecondary} />
+          <FilmIcon size={28} color={textSecondary} />
         </View>
       )}
 
@@ -82,7 +91,7 @@ const ContentCard = memo(({ item, cardWidth, cardHeight, showBadge, onItemPress,
 
       {ratingVal > 0 && (
         <View style={styles.ratingBadge}>
-          <Ionicons name="star" size={8} color="#FFB800" />
+          <StarIcon size={8} color="#FFB800" />
           <Text style={styles.ratingBadgeText}>{ratingVal.toFixed(1)}</Text>
         </View>
       )}
@@ -92,6 +101,7 @@ const ContentCard = memo(({ item, cardWidth, cardHeight, showBadge, onItemPress,
         {item.year ? <Text style={styles.cardYear}>{item.year}</Text> : null}
       </View>
     </TouchableOpacity>
+    </Animated.View>
   );
 });
 
@@ -131,7 +141,7 @@ function ContentRow({
         {onSeeAll && (
           <TouchableOpacity onPress={onSeeAll} style={styles.seeAllBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
             <Text style={styles.seeAllText}>المزيد</Text>
-            <Ionicons name="chevron-back" size={13} color={Colors.brand.primary} />
+            <ChevronIcon size={13} color={Colors.brand.primary} />
           </TouchableOpacity>
         )}
       </View>
@@ -173,7 +183,14 @@ const styles = StyleSheet.create({
   seeAllBtn: { flexDirection: 'row', alignItems: 'center', gap: 1 },
   seeAllText: { fontFamily: Colors.fonts.medium, fontSize: 13, color: Colors.brand.primary },
   list: { paddingHorizontal: 12, gap: 8 },
-  card: { borderRadius: 12, overflow: 'hidden' },
+  card: {
+    borderRadius: 14,
+    overflow: 'hidden',
+    ...Platform.select({
+      ios: { shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.22, shadowRadius: 8 },
+      android: { elevation: 6 },
+    }),
+  },
   poster: { width: '100%', height: '100%', position: 'absolute' },
   noPoster: { width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center' },
   posterGradient: {
@@ -185,49 +202,49 @@ const styles = StyleSheet.create({
   },
   typeBadge: {
     position: 'absolute',
-    top: 7,
-    right: 7,
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 6,
+    top: 8,
+    right: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
   },
-  typeBadgeText: { fontFamily: Colors.fonts.bold, color: '#fff', fontSize: 9, letterSpacing: 0.3 },
+  typeBadgeText: { fontFamily: Colors.fonts.bold, color: '#fff', fontSize: 10, letterSpacing: 0.3 },
   ratingBadge: {
     position: 'absolute',
-    top: 7,
-    left: 7,
+    top: 8,
+    left: 8,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 3,
-    backgroundColor: 'rgba(0,0,0,0.68)',
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    borderRadius: 6,
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    borderRadius: 8,
   },
-  ratingBadgeText: { fontFamily: Colors.fonts.bold, color: '#FFB800', fontSize: 9 },
+  ratingBadgeText: { fontFamily: Colors.fonts.bold, color: '#FFB800', fontSize: 10 },
   cardBottom: {
     position: 'absolute',
     bottom: 0,
     left: 0,
     right: 0,
-    padding: 8,
-    paddingBottom: 10,
+    padding: 10,
+    paddingBottom: 12,
   },
   cardTitle: {
     fontFamily: Colors.fonts.bold,
     color: '#fff',
-    fontSize: 11,
+    fontSize: 12,
     textAlign: 'right',
-    lineHeight: 16,
-    textShadowColor: 'rgba(0,0,0,0.6)',
+    lineHeight: 17,
+    textShadowColor: 'rgba(0,0,0,0.7)',
     textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 3,
+    textShadowRadius: 4,
   },
   cardYear: {
     fontFamily: Colors.fonts.regular,
-    color: 'rgba(255,255,255,0.55)',
-    fontSize: 10,
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 11,
     textAlign: 'right',
-    marginTop: 2,
+    marginTop: 3,
   },
 });

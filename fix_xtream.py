@@ -1,0 +1,8 @@
+f=open('/root/cloud-server/lib/xtream.js','r');c=f.read();f.close()
+c=c.replace('http://proxpanel.cc:80','http://ex2025.cc')
+c=c.replace('http://proxpanel.fans:8080','http://ex2025.cc')
+c=c.replace("'8691274970'","'ledyxpro24'")
+c=c.replace("'5595837537'","'2943689'")
+f=open('/root/cloud-server/lib/xtream.js','w');f.write(c);f.close()
+print('OK - updated xtream.js')
+f=open('/root/cloud-server/lib/xtream.js','r');print(f.read()[:200]);f.close()

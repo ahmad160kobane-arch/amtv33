@@ -1,22 +1,23 @@
 import React, { useEffect, useRef } from 'react';
 import { Tabs } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
 import { useColorScheme } from '@/hooks/useColorScheme';
 import Colors from '@/constants/Colors';
 import { View, Text, Pressable, StyleSheet, Platform, Animated } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { HomeIcon, LiveIcon, ExploreIcon, KidsIcon, AccountIcon, BookmarkIcon } from '@/components/AppIcons';
 
-type IoniconsName = React.ComponentProps<typeof Ionicons>['name'];
-
-const TAB_ICONS: Record<string, { active: IoniconsName; inactive: IoniconsName }> = {
-  index: { active: 'home', inactive: 'home-outline' },
-  live: { active: 'radio', inactive: 'radio-outline' },
-  sports: { active: 'football', inactive: 'football-outline' },
-  kids: { active: 'balloon', inactive: 'balloon-outline' },
-  entertainment: { active: 'film', inactive: 'film-outline' },
-  mylist: { active: 'bookmark', inactive: 'bookmark-outline' },
-  account: { active: 'person-circle', inactive: 'person-circle-outline' },
-};
+function renderTabIcon(routeName: string, color: string, filled: boolean) {
+  const size = 22;
+  switch (routeName) {
+    case 'index': return <HomeIcon size={size} color={color} filled={filled} />;
+    case 'live': return <LiveIcon size={size} color={color} filled={filled} />;
+    case 'entertainment': return <ExploreIcon size={size} color={color} filled={filled} />;
+    case 'kids': return <KidsIcon size={size} color={color} filled={filled} />;
+    case 'mylist': return <BookmarkIcon size={size} color={color} filled={filled} />;
+    case 'account': return <AccountIcon size={size} color={color} filled={filled} />;
+    default: return <HomeIcon size={size} color={color} filled={filled} />;
+  }
+}
 
 function TabItem({
   routeName,
@@ -35,7 +36,6 @@ function TabItem({
   activeColor: string;
   inactiveColor: string;
 }) {
-  const icons = TAB_ICONS[routeName] || TAB_ICONS.index;
   const anim = useRef(new Animated.Value(isFocused ? 1 : 0)).current;
 
   useEffect(() => {
@@ -68,11 +68,7 @@ function TabItem({
           ]}
         />
         <Animated.View style={{ transform: [{ scale: iconScale }] }}>
-          <Ionicons
-            name={isFocused ? icons.active : icons.inactive}
-            size={22}
-            color={isFocused ? activeColor : inactiveColor}
-          />
+          {renderTabIcon(routeName, isFocused ? activeColor : inactiveColor, isFocused)}
         </Animated.View>
         <Animated.Text
           style={[
@@ -155,10 +151,9 @@ export default function TabLayout() {
       screenOptions={{ headerShown: false }}
     >
       <Tabs.Screen name="index" options={{ title: 'الرئيسية' }} />
-      <Tabs.Screen name="live" options={{ title: 'بث مباشر' }} />
-      <Tabs.Screen name="sports" options={{ title: 'رياضة' }} />
-      <Tabs.Screen name="kids" options={{ title: 'أطفال' }} />
+      <Tabs.Screen name="live" options={{ title: 'مباشر' }} />
       <Tabs.Screen name="entertainment" options={{ title: 'ترفيه' }} />
+      <Tabs.Screen name="kids" options={{ title: 'أطفال' }} />
       <Tabs.Screen name="mylist" options={{ title: 'قائمتي' }} />
       <Tabs.Screen name="account" options={{ title: 'حسابي' }} />
     </Tabs>

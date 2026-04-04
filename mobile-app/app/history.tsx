@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { View, Text, StyleSheet, FlatList, Image, TouchableOpacity, RefreshControl, Animated } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import { ArrowBackIcon, PersonIcon, ClockIcon, FilmIcon, ChevronIcon } from '@/components/AppIcons';
 import { useRouter } from 'expo-router';
 import { useColorScheme } from '@/hooks/useColorScheme';
 import Colors from '@/constants/Colors';
@@ -58,7 +58,7 @@ export default function HistoryScreen() {
   useEffect(() => { loadData(); }, [loadData]);
 
   const handlePress = useCallback((item: WatchHistoryItem) => {
-    router.push({ pathname: '/detail', params: { tmdbId: item.item_id, type: item.content_type || 'movie', title: item.title, poster: item.poster } });
+    router.push({ pathname: '/detail', params: { xtreamId: item.item_id, vodType: item.content_type === 'series' || item.content_type === 'tv' ? 'series' : 'movie', title: item.title, poster: item.poster } });
   }, [router]);
 
   const formatDate = (d: string) => new Date(d).toLocaleDateString('ar-SA', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -70,7 +70,7 @@ export default function HistoryScreen() {
           <Image source={{ uri: item.poster }} style={styles.poster} resizeMode="cover" />
         ) : (
           <View style={[styles.noPoster, { backgroundColor: colors.inputBackground }]}>
-            <Ionicons name="film-outline" size={22} color={colors.textSecondary} />
+            <FilmIcon size={22} color={colors.textSecondary} />
           </View>
         )}
         <LinearGradient colors={['transparent', 'rgba(0,0,0,0.75)']} style={styles.posterGrad} />
@@ -81,11 +81,11 @@ export default function HistoryScreen() {
       <View style={styles.rowInfo}>
         <Text style={[styles.rowTitle, { color: colors.text }]} numberOfLines={2}>{item.title || item.item_id}</Text>
         <View style={styles.rowMeta}>
-          <Ionicons name="time-outline" size={11} color={colors.textSecondary} />
+          <ClockIcon size={11} color={colors.textSecondary} />
           <Text style={[styles.rowDate, { color: colors.textSecondary }]}>{formatDate(item.watched_at)}</Text>
         </View>
       </View>
-      <Ionicons name="chevron-back" size={16} color={colors.textSecondary} />
+      <ChevronIcon size={16} color={colors.textSecondary} />
     </TouchableOpacity>
   ), [handlePress, colors.cardBackground, colors.inputBackground, colors.textSecondary, colors.text]);
 
@@ -93,7 +93,7 @@ export default function HistoryScreen() {
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-          <Ionicons name="arrow-forward" size={24} color={colors.text} />
+          <ArrowBackIcon size={24} color={colors.text} />
         </TouchableOpacity>
         <Text style={[styles.headerTitle, { color: colors.text }]}>سجل المشاهدة</Text>
         <View style={{ width: 40 }} />
@@ -103,12 +103,12 @@ export default function HistoryScreen() {
         <SkeletonHistory colors={colors} />
       ) : !loggedIn ? (
         <View style={styles.center}>
-          <Ionicons name="person-outline" size={56} color={colors.textSecondary} />
+          <PersonIcon size={56} color={colors.textSecondary} />
           <Text style={[styles.emptyText, { color: colors.textSecondary }]}>سجل الدخول لعرض سجلك</Text>
         </View>
       ) : items.length === 0 ? (
         <View style={styles.center}>
-          <Ionicons name="time-outline" size={56} color={colors.textSecondary} />
+          <ClockIcon size={56} color={colors.textSecondary} />
           <Text style={[styles.emptyText, { color: colors.textSecondary }]}>سجل المشاهدة فارغ</Text>
           <Text style={[styles.emptySubText, { color: colors.textSecondary }]}>سيظهر هنا ما تشاهده</Text>
         </View>

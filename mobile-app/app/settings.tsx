@@ -1,12 +1,29 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Switch, ScrollView } from 'react-native';
+import React, { useState, useCallback } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, Switch, ScrollView, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useColorScheme } from '@/hooks/useColorScheme';
 import Colors from '@/constants/Colors';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  ArrowBackIcon, NotificationIcon, LiveIcon, VideoIcon, TrashIcon,
+  InfoIcon, ShieldIcon, DocumentIcon, ChevronIcon,
+} from '@/components/AppIcons';
 
-type IoniconsName = React.ComponentProps<typeof Ionicons>['name'];
+type SettingIconKey = 'notification' | 'autoplay' | 'hd' | 'trash' | 'info' | 'shield' | 'document';
+
+function renderSettingIcon(key: SettingIconKey, size: number, color: string) {
+  switch (key) {
+    case 'notification': return <NotificationIcon size={size} color={color} />;
+    case 'autoplay': return <LiveIcon size={size} color={color} />;
+    case 'hd': return <VideoIcon size={size} color={color} />;
+    case 'trash': return <TrashIcon size={size} color={color} />;
+    case 'info': return <InfoIcon size={size} color={color} />;
+    case 'shield': return <ShieldIcon size={size} color={color} />;
+    case 'document': return <DocumentIcon size={size} color={color} />;
+    default: return <InfoIcon size={size} color={color} />;
+  }
+}
 
 export default function SettingsScreen() {
   const colorScheme = useColorScheme();
@@ -17,8 +34,25 @@ export default function SettingsScreen() {
   const [autoPlay, setAutoPlay] = useState(true);
   const [hdQuality, setHdQuality] = useState(true);
 
+  const clearCache = useCallback(async () => {
+    Alert.alert('مسح الكاش', 'سيتم حذف البيانات المؤقتة. هل تريد المتابعة؟', [
+      { text: 'إلغاء', style: 'cancel' },
+      {
+        text: 'مسح', style: 'destructive',
+        onPress: async () => {
+          try {
+            const keys = await AsyncStorage.getAllKeys();
+            const cacheKeys = keys.filter(k => k.startsWith('cache_') || k.startsWith('img_'));
+            if (cacheKeys.length > 0) await AsyncStorage.multiRemove(cacheKeys);
+            Alert.alert('تم', 'تم مسح الكاش بنجاح');
+          } catch { Alert.alert('خطأ', 'فشل مسح الكاش'); }
+        },
+      },
+    ]);
+  }, []);
+
   interface SettingItem {
-    icon: IoniconsName;
+    icon: SettingIconKey;
     label: string;
     subtitle?: string;
     toggle?: boolean;
@@ -30,16 +64,23 @@ export default function SettingsScreen() {
     {
       title: 'عام',
       items: [
-        { icon: 'notifications-outline', label: 'الإشعارات', toggle: true, value: notifications, onToggle: setNotifications },
-        { icon: 'play-circle-outline', label: 'تشغيل تلقائي', toggle: true, value: autoPlay, onToggle: setAutoPlay },
-        { icon: 'videocam-outline', label: 'جودة عالية', toggle: true, value: hdQuality, onToggle: setHdQuality },
+        { icon: 'notification', label: 'الإشعارات', toggle: true, value: notifications, onToggle: setNotifications },
+        { icon: 'autoplay', label: 'تشغيل تلقائي', toggle: true, value: autoPlay, onToggle: setAutoPlay },
+        { icon: 'hd', label: 'جودة عالية', subtitle: 'تفعيل HD عند توفره', toggle: true, value: hdQuality, onToggle: setHdQuality },
       ],
     },
     {
-      title: 'حول',
+      title: 'التخزين',
       items: [
-        { icon: 'information-circle-outline', label: 'الإصدار', subtitle: '1.0.0' },
-        { icon: 'document-text-outline', label: 'الشروط والأحكام', onPress: () => {} },
+        { icon: 'trash', label: 'مسح الكاش', subtitle: 'حذف البيانات المؤقتة', onPress: clearCache },
+      ],
+    },
+    {
+      title: 'حول التطبيق',
+      items: [
+        { icon: 'info', label: 'الإصدار', subtitle: '1.0.0' },
+        { icon: 'shield', label: 'سياسة الخصوصية', onPress: () => {} },
+        { icon: 'document', label: 'الشروط والأحكام', onPress: () => {} },
       ],
     },
   ];
@@ -48,7 +89,7 @@ export default function SettingsScreen() {
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
         <TouchableOpacity onPress={() => router.back()}>
-          <Ionicons name="arrow-forward" size={24} color={colors.text} />
+          <ArrowBackIcon size={24} color={colors.text} />
         </TouchableOpacity>
         <Text style={[styles.headerTitle, { color: colors.text }]}>الإعدادات</Text>
         <View style={{ width: 24 }} />
@@ -60,13 +101,16 @@ export default function SettingsScreen() {
             <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>{section.title}</Text>
             <View style={[styles.sectionCard, { backgroundColor: colors.cardBackground }]}>
               {section.items.map((item, ii) => (
-                <View
+                <TouchableOpacity
                   key={ii}
                   style={[styles.row, ii < section.items.length - 1 && { borderBottomWidth: 0.5, borderBottomColor: colors.divider }]}
+                  onPress={item.onPress}
+                  activeOpacity={item.onPress ? 0.55 : 1}
+                  disabled={!item.onPress && !item.toggle}
                 >
                   <View style={styles.rowLeft}>
                     <View style={[styles.iconWrap, { backgroundColor: colors.inputBackground }]}>
-                      <Ionicons name={item.icon} size={18} color={Colors.brand.primary} />
+                      {renderSettingIcon(item.icon, 18, Colors.brand.primary)}
                     </View>
                     <View>
                       <Text style={[styles.rowLabel, { color: colors.text }]}>{item.label}</Text>
@@ -81,11 +125,9 @@ export default function SettingsScreen() {
                       thumbColor="#fff"
                     />
                   ) : item.onPress ? (
-                    <TouchableOpacity onPress={item.onPress}>
-                      <Ionicons name="chevron-back" size={18} color={colors.textSecondary} />
-                    </TouchableOpacity>
+                    <ChevronIcon size={18} color={colors.textSecondary} />
                   ) : null}
-                </View>
+                </TouchableOpacity>
               ))}
             </View>
           </View>

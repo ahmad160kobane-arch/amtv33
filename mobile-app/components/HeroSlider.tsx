@@ -8,13 +8,13 @@ import {
   StyleSheet,
   Dimensions,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { VideoIcon, TvIcon, StarIcon, PlayIcon } from '@/components/AppIcons';
 import { LinearGradient } from 'expo-linear-gradient';
 import Colors from '@/constants/Colors';
 import { useColorScheme } from '@/hooks/useColorScheme';
 
 const { width } = Dimensions.get('window');
-const HERO_HEIGHT = width * 0.58;
+const HERO_HEIGHT = width * 0.64;
 
 export interface HeroItem {
   id: string;
@@ -57,8 +57,8 @@ function HeroSlider({ items, onItemPress }: HeroSliderProps) {
       <TouchableOpacity activeOpacity={0.92} onPress={() => onItemPress?.(item)} style={styles.heroItem}>
         <Image source={{ uri: item.poster }} style={styles.heroImage} resizeMode="cover" />
         <LinearGradient
-          colors={['rgba(0,0,0,0.08)', 'rgba(0,0,0,0.18)', colors.background]}
-          locations={[0, 0.45, 1]}
+          colors={['rgba(0,0,0,0.0)', 'rgba(0,0,0,0.15)', 'rgba(0,0,0,0.7)', colors.background]}
+          locations={[0, 0.3, 0.7, 1]}
           style={styles.gradient}
         />
         <View style={styles.heroInfo}>
@@ -66,7 +66,7 @@ function HeroSlider({ items, onItemPress }: HeroSliderProps) {
           <View style={styles.metaPills}>
             {item.vod_type && (
               <View style={[styles.pill, { backgroundColor: item.vod_type === 'movie' ? 'rgba(255,184,0,0.18)' : 'rgba(99,102,241,0.18)', borderColor: item.vod_type === 'movie' ? 'rgba(255,184,0,0.5)' : 'rgba(99,102,241,0.5)' }]}>
-                <Ionicons name={item.vod_type === 'movie' ? 'videocam' : 'tv'} size={10} color={item.vod_type === 'movie' ? Colors.brand.primary : '#6366F1'} />
+                {item.vod_type === 'movie' ? <VideoIcon size={10} color={Colors.brand.primary} /> : <TvIcon size={10} color="#6366F1" />}
                 <Text style={[styles.pillText, { color: item.vod_type === 'movie' ? Colors.brand.primary : '#6366F1' }]}>
                   {item.vod_type === 'movie' ? 'فيلم' : 'مسلسل'}
                 </Text>
@@ -74,7 +74,7 @@ function HeroSlider({ items, onItemPress }: HeroSliderProps) {
             )}
             {ratingVal > 0 && (
               <View style={[styles.pill, { backgroundColor: 'rgba(255,184,0,0.12)', borderColor: 'rgba(255,184,0,0.4)' }]}>
-                <Ionicons name="star" size={10} color="#FFB800" />
+                <StarIcon size={10} color="#FFB800" />
                 <Text style={[styles.pillText, { color: '#FFB800' }]}>{ratingVal.toFixed(1)}</Text>
               </View>
             )}
@@ -97,7 +97,7 @@ function HeroSlider({ items, onItemPress }: HeroSliderProps) {
           {/* Play button */}
           <TouchableOpacity style={styles.playBtn} onPress={() => onItemPress?.(item)} activeOpacity={0.85}>
             <LinearGradient colors={Colors.brand.gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.playBtnGradient}>
-              <Ionicons name="play" size={14} color="#fff" />
+              <PlayIcon size={14} color="#fff" />
               <Text style={styles.playBtnText}>شاهد الآن</Text>
             </LinearGradient>
           </TouchableOpacity>
@@ -152,14 +152,14 @@ const styles = StyleSheet.create({
     bottom: 18,
     right: 16,
     left: 16,
-    alignItems: 'flex-end',
+    alignItems: 'flex-start',
   },
   metaPills: {
     flexDirection: 'row',
     gap: 6,
     marginBottom: 10,
     flexWrap: 'wrap',
-    justifyContent: 'flex-end',
+    justifyContent: 'flex-start',
   },
   pill: {
     flexDirection: 'row',
@@ -173,15 +173,15 @@ const styles = StyleSheet.create({
   pillText: { fontFamily: Colors.fonts.bold, fontSize: 10 },
   heroTitle: {
     fontFamily: Colors.fonts.extraBold,
-    fontSize: 22,
+    fontSize: 24,
     color: '#fff',
     textAlign: 'right',
-    textShadowColor: 'rgba(0,0,0,0.7)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 8,
-    marginBottom: 6,
+    textShadowColor: 'rgba(0,0,0,0.8)',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 10,
+    marginBottom: 8,
     alignSelf: 'stretch',
-    lineHeight: 30,
+    lineHeight: 32,
   },
   heroGenres: {
     fontFamily: Colors.fonts.regular,
@@ -190,16 +190,16 @@ const styles = StyleSheet.create({
     textAlign: 'right',
     marginBottom: 14,
   },
-  playBtn: { alignSelf: 'flex-end', borderRadius: 22, overflow: 'hidden' },
+  playBtn: { alignSelf: 'flex-start', borderRadius: 22, overflow: 'hidden' },
   playBtnGradient: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 22,
+    gap: 7,
+    paddingHorizontal: 22,
+    paddingVertical: 12,
+    borderRadius: 24,
   },
-  playBtnText: { fontFamily: Colors.fonts.bold, color: '#fff', fontSize: 13 },
+  playBtnText: { fontFamily: Colors.fonts.bold, color: '#fff', fontSize: 14 },
   pagination: {
     flexDirection: 'row',
     justifyContent: 'center',

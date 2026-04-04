@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { StarIcon } from '@/components/AppIcons';
 import Colors from '@/constants/Colors';
 import { useColorScheme } from '@/hooks/useColorScheme';
 import { fetchRating, submitRating, RatingInfo, isLoggedIn } from '@/constants/Api';
@@ -34,7 +34,7 @@ export default function RatingStars({ vodId, compact }: Props) {
   if (compact) {
     return (
       <View style={styles.compactRow}>
-        <Ionicons name="star" size={12} color="#FFB800" />
+        <StarIcon size={12} color="#FFB800" />
         <Text style={[styles.compactText, { color: colors.textSecondary }]}>
           {info.average > 0 ? info.average.toFixed(1) : '—'}
         </Text>
@@ -47,10 +47,9 @@ export default function RatingStars({ vodId, compact }: Props) {
       <View style={styles.starsRow}>
         {[1, 2, 3, 4, 5].map((s) => (
           <TouchableOpacity key={s} onPress={() => handleRate(s)} activeOpacity={0.6} hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}>
-            <Ionicons
-              name={s <= info.userScore ? 'star' : s <= Math.round(info.average) ? 'star-half' : 'star-outline'}
+            <StarIcon
               size={20}
-              color={s <= info.userScore ? '#FFB800' : '#FFB800'}
+              color={s <= info.userScore ? '#FFB800' : s <= Math.round(info.average) ? '#FFB800' : 'rgba(255,184,0,0.3)'}
             />
           </TouchableOpacity>
         ))}

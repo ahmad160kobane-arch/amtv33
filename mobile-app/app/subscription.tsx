@@ -4,7 +4,10 @@ import {
   ActivityIndicator, Alert, ScrollView, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import {
+  ArrowBackIcon, PersonIcon, DiamondIcon, CalendarIcon, TvIcon,
+  FilmIcon, ShieldIcon, LockIcon, CloseCircleIcon, KeyIcon, StarIcon,
+} from '@/components/AppIcons';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useColorScheme } from '@/hooks/useColorScheme';
@@ -60,7 +63,7 @@ export default function SubscriptionScreen() {
         {/* Header */}
         <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
           <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-            <Ionicons name="arrow-forward" size={22} color={colors.text} />
+            <ArrowBackIcon size={22} color={colors.text} />
           </TouchableOpacity>
           <Text style={[styles.headerTitle, { color: colors.text }]}>اشتراكي</Text>
           <View style={{ width: 40 }} />
@@ -71,7 +74,7 @@ export default function SubscriptionScreen() {
             <ActivityIndicator size="large" color={Colors.brand.primary} style={{ marginTop: 60 }} />
           ) : !loggedIn ? (
             <View style={styles.center}>
-              <Ionicons name="person-outline" size={56} color={colors.textSecondary} />
+              <PersonIcon size={56} color={colors.textSecondary} />
               <Text style={[styles.emptyText, { color: colors.textSecondary }]}>سجل الدخول أولاً</Text>
               <TouchableOpacity onPress={() => router.push('/(tabs)/account' as any)} activeOpacity={0.82}>
                 <LinearGradient colors={Colors.brand.gradient} style={styles.loginBtn}>
@@ -90,7 +93,7 @@ export default function SubscriptionScreen() {
                 >
                   <View style={styles.premiumTop}>
                     <View style={styles.crownWrap}>
-                      <Ionicons name="diamond" size={28} color="#FFD700" />
+                      <DiamondIcon size={28} color="#FFD700" />
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.premiumLabel}>اشتراك بريميوم</Text>
@@ -102,7 +105,7 @@ export default function SubscriptionScreen() {
                   </View>
                   {sub.expires_at && (
                     <View style={styles.expiryRow}>
-                      <Ionicons name="calendar-outline" size={16} color="rgba(255,255,255,0.8)" />
+                      <CalendarIcon size={16} color="rgba(255,255,255,0.8)" />
                       <Text style={styles.expiryText}>ينتهي: {formatDate(sub.expires_at)}</Text>
                       {sub.daysLeft !== null && (
                         <View style={styles.daysLeftBadge}>
@@ -115,13 +118,13 @@ export default function SubscriptionScreen() {
                   {/* مميزات البريميوم */}
                   <View style={styles.featuresGrid}>
                     {[
-                      { icon: 'tv-outline', label: 'قنوات HD' },
-                      { icon: 'film-outline', label: 'جميع الأفلام' },
-                      { icon: 'infinite-outline', label: 'بث غير محدود' },
-                      { icon: 'shield-checkmark-outline', label: 'بدون إعلانات' },
+                      { key: 'tv', label: 'قنوات HD' },
+                      { key: 'film', label: 'جميع الأفلام' },
+                      { key: 'star', label: 'بث غير محدود' },
+                      { key: 'shield', label: 'بدون إعلانات' },
                     ].map((f) => (
                       <View key={f.label} style={styles.featureItem}>
-                        <Ionicons name={f.icon as any} size={18} color="#FFD700" />
+                        {f.key === 'tv' ? <TvIcon size={18} color="#FFD700" /> : f.key === 'film' ? <FilmIcon size={18} color="#FFD700" /> : f.key === 'star' ? <StarIcon size={18} color="#FFD700" /> : <ShieldIcon size={18} color="#FFD700" />}
                         <Text style={styles.featureItemText}>{f.label}</Text>
                       </View>
                     ))}
@@ -131,7 +134,7 @@ export default function SubscriptionScreen() {
                 <View style={[styles.freeCard, { backgroundColor: colors.cardBackground }]}>
                   <View style={styles.freeTop}>
                     <View style={[styles.crownWrap, { backgroundColor: 'rgba(150,150,150,0.15)' }]}>
-                      <Ionicons name="person-outline" size={26} color={colors.textSecondary} />
+                      <PersonIcon size={26} color={colors.textSecondary} />
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={[styles.freeLabel, { color: colors.text }]}>اشتراك مجاني</Text>
@@ -139,7 +142,7 @@ export default function SubscriptionScreen() {
                     </View>
                   </View>
                   <View style={[styles.limitedBanner, { backgroundColor: 'rgba(239,68,68,0.12)' }]}>
-                    <Ionicons name="lock-closed-outline" size={16} color="#EF4444" />
+                    <LockIcon size={16} color="#EF4444" />
                     <Text style={[styles.limitedText, { color: '#EF4444' }]}>
                       القنوات والأفلام والمسلسلات تتطلب اشتراكاً بريميوم
                     </Text>
@@ -167,7 +170,7 @@ export default function SubscriptionScreen() {
                   />
                   {code.length > 0 && (
                     <TouchableOpacity onPress={() => setCode('')} style={{ padding: 8 }}>
-                      <Ionicons name="close-circle" size={20} color={colors.textSecondary} />
+                      <CloseCircleIcon size={20} color={colors.textSecondary} />
                     </TouchableOpacity>
                   )}
                 </View>
@@ -181,7 +184,7 @@ export default function SubscriptionScreen() {
                       <ActivityIndicator size="small" color="#fff" />
                     ) : (
                       <>
-                        <Ionicons name="key-outline" size={18} color="#fff" />
+                        <KeyIcon size={18} color="#fff" />
                         <Text style={styles.activateBtnText}>تفعيل الكود</Text>
                       </>
                     )}
@@ -192,13 +195,13 @@ export default function SubscriptionScreen() {
               {/* خطط الاشتراك */}
               <Text style={[styles.plansTitle, { color: colors.text }]}>خطط الاشتراك</Text>
               {[
-                { label: 'أسبوعي', price: '$2.99', days: '7 أيام', icon: 'flash-outline' as const, color: '#F59E0B' },
-                { label: 'شهري', price: '$7.99', days: '30 يوماً', icon: 'calendar-outline' as const, color: Colors.brand.primary },
-                { label: 'سنوي', price: '$59.99', days: '365 يوماً', icon: 'star-outline' as const, color: '#10B981', badge: 'الأفضل قيمة' },
+                { label: 'أسبوعي', price: '$2.99', days: '7 أيام', iconType: 'star' as const, color: '#F59E0B' },
+                { label: 'شهري', price: '$7.99', days: '30 يوماً', iconType: 'calendar' as const, color: Colors.brand.primary },
+                { label: 'سنوي', price: '$59.99', days: '365 يوماً', iconType: 'diamond' as const, color: '#10B981', badge: 'الأفضل قيمة' },
               ].map((p) => (
                 <View key={p.label} style={[styles.planRow, { backgroundColor: colors.cardBackground }]}>
                   <View style={[styles.planIcon, { backgroundColor: p.color + '22' }]}>
-                    <Ionicons name={p.icon} size={22} color={p.color} />
+                    {p.iconType === 'star' ? <StarIcon size={22} color={p.color} /> : p.iconType === 'calendar' ? <CalendarIcon size={22} color={p.color} /> : <DiamondIcon size={22} color={p.color} />}
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={[styles.planName, { color: colors.text }]}>{p.label}</Text>

@@ -7,6 +7,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useColorScheme } from '@/hooks/useColorScheme';
 import Colors from '@/constants/Colors';
+import { AppAlertProvider } from '@/components/AppAlert';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -37,6 +38,7 @@ export default function RootLayout() {
 
   return (
     <SafeAreaProvider>
+      <AppAlertProvider>
       <StatusBar style="light" />
       <Stack
         screenOptions={{
@@ -75,7 +77,9 @@ export default function RootLayout() {
         <Stack.Screen name="settings" options={{ headerShown: false, animation: 'slide_from_left' }} />
         <Stack.Screen name="privacy" options={{ headerShown: false, animation: 'slide_from_left' }} />
         <Stack.Screen name="support" options={{ headerShown: false, animation: 'slide_from_left' }} />
+        <Stack.Screen name="agent" options={{ headerShown: false, animation: 'slide_from_left' }} />
       </Stack>
+      </AppAlertProvider>
     </SafeAreaProvider>
   );
 }

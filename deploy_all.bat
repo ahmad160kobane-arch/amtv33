@@ -1,0 +1,6 @@
+@echo off
+echo Step 1: Applying order fix...
+type deploy_order_fix.js | ssh root@62.171.153.204 "node -"
+echo.
+echo Step 2: Restarting cloud-server...
+ssh root@62.171.153.204 "pm2 restart cloud-server && sleep 3 && pm2 logs cloud-server --lines 10 --nostream"

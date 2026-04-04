@@ -927,7 +927,9 @@ export async function requestFreeStream(channelId: string): Promise<FreeStreamRe
       return { success: false, error: data.error || 'القناة غير متاحة' };
     }
     const data = await res.json();
-    let streamUrl = data.directUrl || data.proxyUrl || '';
+    // Prefer hlsUrl (HLS proxy) — shares one IPTV connection for all users
+    // Fallback: directUrl (302 redirect to IPTV) or proxyUrl (legacy TS pipe)
+    let streamUrl = data.hlsUrl || data.directUrl || data.proxyUrl || '';
     // Prepend server base URL for relative proxy paths
     if (streamUrl && !streamUrl.startsWith('http')) {
       streamUrl = `${CLOUD_SERVER_URL}${streamUrl}`;
@@ -1195,12 +1197,17 @@ export async function requestPremiumStream(channelId: string): Promise<PremiumSt
     const res = await cloudFetch(`/api/xtream/stream/${encodeURIComponent(channelId)}`);
     const data = await res.json();
     if (!res.ok) return { success: false, error: data.error };
+    // Prefer hlsUrl (HLS proxy) — shares one IPTV connection for all users
+    let streamUrl = data.hlsUrl || data.directUrl || data.proxyUrl || '';
+    if (streamUrl && !streamUrl.startsWith('http')) {
+      streamUrl = `${CLOUD_SERVER_URL}${streamUrl}`;
+    }
     return {
       success: true,
       name: data.name,
       logo: data.logo,
       group: data.category,
-      streamUrl: data.directUrl || data.proxyUrl,
+      streamUrl,
     };
   } catch (err: any) {
     return { success: false, error: err.message || 'خطأ في الاتصال' };

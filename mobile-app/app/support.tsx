@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, TextInput, ScrollView, Alert } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import { ArrowBackIcon, ChatIcon, SendIcon } from '@/components/AppIcons';
 import { useRouter } from 'expo-router';
 import { useColorScheme } from '@/hooks/useColorScheme';
 import Colors from '@/constants/Colors';
@@ -24,7 +24,7 @@ export default function SupportScreen() {
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
         <TouchableOpacity onPress={() => router.back()}>
-          <Ionicons name="arrow-forward" size={24} color={colors.text} />
+          <ArrowBackIcon size={24} color={colors.text} />
         </TouchableOpacity>
         <Text style={[styles.headerTitle, { color: colors.text }]}>الدعم</Text>
         <View style={{ width: 24 }} />
@@ -32,7 +32,7 @@ export default function SupportScreen() {
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
         <View style={[styles.contactCard, { backgroundColor: colors.cardBackground }]}>
-          <Ionicons name="chatbubble-ellipses" size={28} color={Colors.brand.primary} />
+          <ChatIcon size={28} color={Colors.brand.primary} />
           <Text style={[styles.contactTitle, { color: colors.text }]}>تحتاج مساعدة؟</Text>
           <Text style={[styles.contactSub, { color: colors.textSecondary }]}>أرسل لنا رسالة وسنرد عليك</Text>
         </View>
@@ -70,7 +70,7 @@ export default function SupportScreen() {
           activeOpacity={0.82}
         >
           <LinearGradient colors={Colors.brand.gradient} style={styles.sendBtn}>
-            <Ionicons name="send" size={16} color="#fff" />
+            <SendIcon size={16} color="#fff" />
             <Text style={styles.sendText}>إرسال</Text>
           </LinearGradient>
         </TouchableOpacity>
@@ -95,7 +95,7 @@ const styles = StyleSheet.create({
   faqQ: { fontFamily: Colors.fonts.bold, fontSize: 13 },
   faqA: { fontFamily: Colors.fonts.regular, fontSize: 12, lineHeight: 18 },
   inputBox: { borderRadius: 12, padding: 12 },
-  textArea: { fontFamily: Colors.fonts.regular, fontSize: 14, minHeight: 80 },
+  textArea: { fontFamily: Colors.fonts.regular, fontSize: 14, minHeight: 80, writingDirection: 'rtl' },
   sendBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     borderRadius: 12, paddingVertical: 14, overflow: 'hidden',

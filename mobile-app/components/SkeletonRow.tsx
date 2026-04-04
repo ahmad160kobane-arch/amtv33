@@ -91,7 +91,7 @@ const styles = StyleSheet.create({
   // Hero skeleton
   hero: { width, height: HERO_H, position: 'relative' },
   heroBg: { ...StyleSheet.absoluteFillObject },
-  heroContent: { position: 'absolute', bottom: 18, right: 16, left: 16, alignItems: 'flex-end' },
+  heroContent: { position: 'absolute', bottom: 18, right: 16, left: 16, alignItems: 'flex-start' },
   heroPills: { flexDirection: 'row', gap: 6, marginBottom: 10 },
   heroPill: { height: 22, width: 48, borderRadius: 20 },
   heroTitle: { height: 18, width: '75%', borderRadius: 9 },

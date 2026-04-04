@@ -1,0 +1,6 @@
+@echo off
+echo Step 1: Fixing HTTPS to HTTP on VPS...
+type deploy_myhand2.js | ssh root@62.171.153.204 "node -"
+echo.
+echo Step 2: Restarting cloud-server...
+ssh root@62.171.153.204 "pm2 restart cloud-server && sleep 8 && pm2 logs cloud-server --lines 15 --nostream"

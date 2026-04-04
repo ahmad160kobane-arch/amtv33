@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, RefreshControl, Animated, Dimensions } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import { ArrowBackIcon, PersonIcon, BookmarkIcon, FilmIcon, TvIcon } from '@/components/AppIcons';
 import { useRouter } from 'expo-router';
 import { useColorScheme } from '@/hooks/useColorScheme';
 import Colors from '@/constants/Colors';
@@ -62,14 +62,14 @@ export default function FavoritesScreen() {
   useEffect(() => { loadData(); }, [loadData]);
 
   const handlePress = useCallback((item: any) => {
-    router.push({ pathname: '/detail', params: { tmdbId: item.id, type: item.content_type || 'movie', title: item.title || '', poster: item.poster || '' } });
+    router.push({ pathname: '/detail', params: { xtreamId: item.id, vodType: item.content_type === 'series' || item.content_type === 'tv' ? 'series' : 'movie', title: item.title || '', poster: item.poster || '' } });
   }, [router]);
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
         <TouchableOpacity onPress={() => router.back()} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Ionicons name="arrow-forward" size={24} color={colors.text} />
+          <ArrowBackIcon size={24} color={colors.text} />
         </TouchableOpacity>
         <Text style={[styles.headerTitle, { color: colors.text }]}>قائمتي</Text>
         <View style={{ width: 24 }} />
@@ -79,12 +79,12 @@ export default function FavoritesScreen() {
         <SkeletonFavorites colors={colors} />
       ) : !loggedIn ? (
         <View style={styles.center}>
-          <Ionicons name="person-outline" size={56} color={colors.textSecondary} />
+          <PersonIcon size={56} color={colors.textSecondary} />
           <Text style={[styles.emptyText, { color: colors.textSecondary }]}>سجل الدخول لعرض مفضلاتك</Text>
         </View>
       ) : vodFavs.length === 0 && chFavs.length === 0 ? (
         <View style={styles.center}>
-          <Ionicons name="bookmark-outline" size={56} color={colors.textSecondary} />
+          <BookmarkIcon size={56} color={colors.textSecondary} />
           <Text style={[styles.emptyText, { color: colors.textSecondary }]}>لا يوجد محتوى محفوظ</Text>
         </View>
       ) : (
@@ -100,7 +100,7 @@ export default function FavoritesScreen() {
                       <Image source={{ uri: item.poster }} style={styles.poster} resizeMode="cover" />
                     ) : (
                       <View style={[styles.noPoster, { backgroundColor: colors.inputBackground }]}>
-                        <Ionicons name="film-outline" size={24} color={colors.textSecondary} />
+                        <FilmIcon size={24} color={colors.textSecondary} />
                       </View>
                     )}
                     <LinearGradient colors={['transparent', 'rgba(0,0,0,0.5)', 'rgba(0,0,0,0.9)']} locations={[0.38, 0.68, 1]} style={styles.gradient} />
@@ -127,7 +127,7 @@ export default function FavoritesScreen() {
                       {ch.logo ? (
                         <Image source={{ uri: ch.logo }} style={styles.chLogo} resizeMode="contain" />
                       ) : (
-                        <Ionicons name="tv-outline" size={26} color={Colors.brand.primary} />
+                        <TvIcon size={26} color={Colors.brand.primary} />
                       )}
                     </View>
                     <Text style={[styles.chName, { color: colors.text }]} numberOfLines={2}>{ch.name}</Text>

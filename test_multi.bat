@@ -1,0 +1,2 @@
+@echo off
+ssh root@62.171.153.204 "echo '=== ch 475197 ===' && curl -s --max-time 4 http://ex2025.cc/live/ledyxpro24/2943689/475197.ts 2>/dev/null | wc -c && echo '=== ch 475131 ===' && curl -s --max-time 4 http://ex2025.cc/live/ledyxpro24/2943689/475131.ts 2>/dev/null | wc -c && echo '=== ch 412051 ===' && curl -s --max-time 4 http://ex2025.cc/live/ledyxpro24/2943689/412051.ts 2>/dev/null | wc -c && echo '=== API info ===' && curl -s http://ex2025.cc/player_api.php?username=ledyxpro24^&password=2943689 | grep -o is_trial......."

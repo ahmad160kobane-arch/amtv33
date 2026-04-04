@@ -1,0 +1,6 @@
+@echo off
+echo Deploying resource conservation fixes...
+type deploy_final.js | ssh root@62.171.153.204 "node -"
+echo.
+echo Restarting cloud-server...
+ssh root@62.171.153.204 "pm2 restart cloud-server && sleep 3 && pm2 logs cloud-server --lines 8 --nostream"

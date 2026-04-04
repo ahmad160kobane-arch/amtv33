@@ -11,7 +11,11 @@ import {
   Dimensions,
   GestureResponderEvent,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import {
+  ArrowBackIcon, PlayIcon, PauseIcon, SkipBackIcon, SkipForwardIcon,
+  ExpandIcon, ContractIcon, RotateIcon, PersonIcon, LogoutIcon,
+  DiamondIcon, InfoIcon,
+} from '@/components/AppIcons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Video, ResizeMode, AVPlaybackStatus } from 'expo-av';
 import * as ScreenOrientation from 'expo-screen-orientation';
@@ -25,9 +29,12 @@ import {
   getCloudServerUrl,
   requestFreeStream,
   requestPremiumStream,
+  requestIptvVodStream,
+  requestIptvSeriesStream,
   fetchSubscription,
   getSavedUser,
   isLoggedIn,
+  addWatchHistory,
 } from '@/constants/Api';
 
 // JavaScript to inject BEFORE page loads - NUCLEAR MAXIMUM ad blocking
@@ -698,6 +705,9 @@ export default function PlayerScreen() {
     vidsrcType?: string;
     season?: string;
     episode?: string;
+    xtreamVodId?: string;
+    xtreamEpisodeId?: string;
+    xtreamExt?: string;
   }>();
 
   const videoRef = useRef<Video>(null);
@@ -741,10 +751,14 @@ export default function PlayerScreen() {
   const vidsrcType = (Array.isArray(params.vidsrcType) ? params.vidsrcType[0] : params.vidsrcType) as 'movie' | 'tv' | undefined;
   const seasonNum = params.season ? parseInt(Array.isArray(params.season) ? params.season[0] : params.season, 10) : undefined;
   const episodeNum = params.episode ? parseInt(Array.isArray(params.episode) ? params.episode[0] : params.episode, 10) : undefined;
+  const xtreamVodId = Array.isArray(params.xtreamVodId) ? params.xtreamVodId[0] : params.xtreamVodId;
+  const xtreamEpisodeId = Array.isArray(params.xtreamEpisodeId) ? params.xtreamEpisodeId[0] : params.xtreamEpisodeId;
+  const xtreamExt = (Array.isArray(params.xtreamExt) ? params.xtreamExt[0] : params.xtreamExt) || 'mp4';
+  const isIptvVod = !!xtreamVodId || !!xtreamEpisodeId;
   const isLive = !!channelId || !!freeChannelId || !!premiumChannelId;
   const isFreeChannel = !!freeChannelId;
   const isPremiumChannel = !!premiumChannelId;
-  const isVidsrc = !!tmdbId && !channelId && !freeChannelId && !premiumChannelId;
+  const isVidsrc = !!tmdbId && !channelId && !freeChannelId && !premiumChannelId && !isIptvVod;
 
   useEffect(() => {
     ScreenOrientation.unlockAsync().catch(() => {});
@@ -828,6 +842,13 @@ export default function PlayerScreen() {
             const hdrs: Record<string, string> = {};
             if (result.headers) Object.assign(hdrs, result.headers);
 
+            // Add auth header only for live-pipe (server-proxied) — NOT for token redirects
+            // Token redirect (/xtream-play/) goes to IPTV directly; sending JWT there breaks playback
+            if (result.streamUrl.includes('/live-pipe/')) {
+              const token = await getToken();
+              if (token) hdrs.Authorization = `Bearer ${token}`;
+            }
+
             setCloudStreamId(freeChannelId);
             cloudStreamIdRef.current = freeChannelId;
             setStreamHeaders(hdrs);
@@ -836,7 +857,34 @@ export default function PlayerScreen() {
             return;
           }
 
-          setError(result?.error || 'فشل جلب البث');
+          setError('تعذّر تحميل البث — تحقق من اتصالك');
+          setLoadingStream(false);
+          return;
+        }
+
+        // IPTV VOD — فيلم أو حلقة مسلسل من Xtream
+        if (xtreamVodId || xtreamEpisodeId) {
+          console.log('[Player] IPTV VOD:', xtreamVodId || xtreamEpisodeId);
+          const result = xtreamEpisodeId
+            ? await requestIptvSeriesStream(xtreamEpisodeId, xtreamExt)
+            : await requestIptvVodStream(xtreamVodId!, xtreamExt);
+          if (cancelled) return;
+
+          if (result?.success && result.streamUrl) {
+            console.log('[Player] IPTV VOD URL:', result.streamUrl);
+            setStreamUrl(result.streamUrl);
+            setLoadingStream(false);
+            // Record watch history
+            addWatchHistory({
+              item_id: xtreamVodId || xtreamEpisodeId || '',
+              item_type: 'vod',
+              title: titleParam || '',
+              content_type: xtreamEpisodeId ? 'series' : 'movie',
+            }).catch(() => {});
+            return;
+          }
+
+          setError(result?.error || 'تعذّر تحميل الفيلم');
           setLoadingStream(false);
           return;
         }
@@ -852,8 +900,8 @@ export default function PlayerScreen() {
             const hdrs: Record<string, string> = {};
             if (result.headers) Object.assign(hdrs, result.headers);
 
-            const cloudBase = getCloudServerUrl();
-            if (playUrl.startsWith(cloudBase) || playUrl.startsWith('/')) {
+            // Only add auth for live-pipe (server-proxied); token redirects go directly to IPTV
+            if (playUrl.includes('/live-pipe/')) {
               const token = await getToken();
               if (token) hdrs.Authorization = `Bearer ${token}`;
             }
@@ -932,7 +980,7 @@ export default function PlayerScreen() {
       if (controlsTimer.current) clearTimeout(controlsTimer.current);
       if (cloudStreamIdRef.current) releaseStream(cloudStreamIdRef.current).catch(() => {});
     };
-  }, [channelId, freeChannelId, premiumChannelId, tmdbId, vidsrcType, seasonNum, episodeNum, retryKey, sourceIndex]);
+  }, [channelId, freeChannelId, premiumChannelId, tmdbId, vidsrcType, seasonNum, episodeNum, xtreamVodId, xtreamEpisodeId, xtreamExt, retryKey, sourceIndex]);
 
   // دالة للتبديل إلى المصدر الاحتياطي التالي
   const tryNextSource = useCallback(() => {
@@ -1224,14 +1272,13 @@ export default function PlayerScreen() {
         <View style={styles.embedTopBarWrapper} pointerEvents="box-none">
           <View style={styles.embedTopBar}>
             <TouchableOpacity style={styles.ctrlCircle} onPress={handleBack}>
-              <Ionicons name="arrow-forward" size={22} color="#fff" />
+              <ArrowBackIcon size={22} color="#fff" />
             </TouchableOpacity>
             <Text style={styles.embedTitle} numberOfLines={1}>
               {titleParam || 'مشغل'}
             </Text>
             <TouchableOpacity style={styles.ctrlCircle} onPress={toggleOrientation}>
-              <Ionicons
-                name={isLandscape ? 'phone-portrait-outline' : 'phone-landscape-outline'}
+              <RotateIcon
                 size={18}
                 color="#fff"
               />
@@ -1250,17 +1297,17 @@ export default function PlayerScreen() {
           <View style={styles.centerOverlay}>
             {error === 'login_required' ? (
               <>
-                <Ionicons name="person-circle-outline" size={52} color="rgba(255,255,255,0.7)" />
+                <PersonIcon size={52} color="rgba(255,255,255,0.7)" />
                 <Text style={styles.premiumGateTitle}>يجب تسجيل الدخول</Text>
                 <Text style={styles.premiumGateDesc}>سجّل دخولك واشترك ببريميوم لمشاهدة هذا المحتوى</Text>
                 <TouchableOpacity style={styles.subscribeBtn} onPress={() => { router.back(); router.push('/(tabs)/account' as any); }}>
-                  <Ionicons name="log-in-outline" size={16} color="#fff" />
+                  <LogoutIcon size={16} color="#fff" />
                   <Text style={styles.subscribeBtnText}>تسجيل الدخول</Text>
                 </TouchableOpacity>
               </>
             ) : (
               <>
-                <Ionicons name="diamond" size={52} color="#FFD700" />
+                <DiamondIcon size={52} color="#FFD700" />
                 <Text style={styles.premiumGateTitle}>اشتراك بريميوم مطلوب</Text>
                 <Text style={styles.premiumGateDesc}>
                   {error === 'انتهى اشتراكك'
@@ -1268,7 +1315,7 @@ export default function PlayerScreen() {
                     : 'هذا المحتوى حصري للمشتركين بريميوم'}
                 </Text>
                 <TouchableOpacity style={styles.subscribeBtn} onPress={() => { router.back(); router.push('/subscription' as any); }}>
-                  <Ionicons name="diamond-outline" size={16} color="#fff" />
+                  <DiamondIcon size={16} color="#fff" />
                   <Text style={styles.subscribeBtnText}>اشترك الآن</Text>
                 </TouchableOpacity>
               </>
@@ -1279,7 +1326,7 @@ export default function PlayerScreen() {
           </View>
         ) : (error || webViewError) ? (
           <View style={styles.centerOverlay}>
-            <Ionicons name="alert-circle-outline" size={48} color="#EF4444" />
+            <InfoIcon size={48} color="#EF4444" />
             <Text style={styles.errorText}>{error || 'فشل تحميل الفيديو'}</Text>
             <Text style={styles.sourceText}>المصدر: {currentSourceName || getSourceName(sourceIndex)}</Text>
             <View style={styles.errorBtns}>
@@ -1318,6 +1365,7 @@ export default function PlayerScreen() {
             source={{
               uri: streamUrl,
               headers: Object.keys(streamHeaders).length > 0 ? streamHeaders : undefined,
+              overrideFileExtensionAndroid: isLive ? 'm3u8' : (isIptvVod ? xtreamExt : undefined),
             }}
             style={styles.video}
             resizeMode={resizeMode}
@@ -1333,17 +1381,17 @@ export default function PlayerScreen() {
           <View style={styles.centerOverlay}>
             {error === 'login_required' ? (
               <>
-                <Ionicons name="person-circle-outline" size={52} color="rgba(255,255,255,0.7)" />
+                <PersonIcon size={52} color="rgba(255,255,255,0.7)" />
                 <Text style={styles.premiumGateTitle}>يجب تسجيل الدخول</Text>
                 <Text style={styles.premiumGateDesc}>سجّل دخولك واشترك ببريميوم لمشاهدة هذا المحتوى</Text>
                 <TouchableOpacity style={styles.subscribeBtn} onPress={() => { router.back(); router.push('/(tabs)/account' as any); }}>
-                  <Ionicons name="log-in-outline" size={16} color="#fff" />
+                  <LogoutIcon size={16} color="#fff" />
                   <Text style={styles.subscribeBtnText}>تسجيل الدخول</Text>
                 </TouchableOpacity>
               </>
             ) : (
               <>
-                <Ionicons name="diamond" size={52} color="#FFD700" />
+                <DiamondIcon size={52} color="#FFD700" />
                 <Text style={styles.premiumGateTitle}>اشتراك بريميوم مطلوب</Text>
                 <Text style={styles.premiumGateDesc}>
                   {error === 'انتهى اشتراكك'
@@ -1351,7 +1399,7 @@ export default function PlayerScreen() {
                     : 'هذا المحتوى حصري للمشتركين بريميوم'}
                 </Text>
                 <TouchableOpacity style={styles.subscribeBtn} onPress={() => { router.back(); router.push('/subscription' as any); }}>
-                  <Ionicons name="diamond-outline" size={16} color="#fff" />
+                  <DiamondIcon size={16} color="#fff" />
                   <Text style={styles.subscribeBtnText}>اشترك الآن</Text>
                 </TouchableOpacity>
               </>
@@ -1362,7 +1410,7 @@ export default function PlayerScreen() {
           </View>
         ) : error ? (
           <View style={styles.centerOverlay}>
-            <Ionicons name="alert-circle-outline" size={48} color="#EF4444" />
+            <InfoIcon size={48} color="#EF4444" />
             <Text style={styles.errorText}>{error}</Text>
             <TouchableOpacity style={styles.retryBtn} onPress={handleRetry}>
               <Text style={styles.retryText}>إعادة المحاولة</Text>
@@ -1381,7 +1429,7 @@ export default function PlayerScreen() {
 
         {seekIndicator && (
           <View style={[styles.seekIndicator, seekIndicator.side === 'left' ? styles.seekLeft : styles.seekRight]}>
-            <Ionicons name={seekIndicator.side === 'left' ? 'play-back' : 'play-forward'} size={32} color="#fff" />
+            {seekIndicator.side === 'left' ? <SkipBackIcon size={32} color="#fff" /> : <SkipForwardIcon size={32} color="#fff" />}
             <Text style={styles.seekText}>{seekIndicator.seconds} ثانية</Text>
           </View>
         )}
@@ -1390,15 +1438,14 @@ export default function PlayerScreen() {
           <View style={styles.overlay} pointerEvents="box-none">
             <View style={styles.topBar}>
               <TouchableOpacity style={styles.ctrlCircle} onPress={handleBack}>
-                <Ionicons name="arrow-forward" size={22} color="#fff" />
+                <ArrowBackIcon size={22} color="#fff" />
               </TouchableOpacity>
               <Text style={styles.topTitle} numberOfLines={1}>
                 {titleParam || (isLive ? 'مباشر' : 'مشغل')}
               </Text>
               <View style={styles.topActions}>
                 <TouchableOpacity style={styles.ctrlCircle} onPress={toggleOrientation}>
-                  <Ionicons
-                    name={isLandscape ? 'phone-portrait-outline' : 'phone-landscape-outline'}
+                  <RotateIcon
                     size={18}
                     color="#fff"
                   />
@@ -1409,62 +1456,71 @@ export default function PlayerScreen() {
                     prev === ResizeMode.CONTAIN ? ResizeMode.COVER : ResizeMode.CONTAIN
                   )}
                 >
-                  <Ionicons
-                    name={resizeMode === ResizeMode.CONTAIN ? 'expand-outline' : 'contract-outline'}
-                    size={18}
-                    color="#fff"
-                  />
+                  {resizeMode === ResizeMode.CONTAIN ? <ExpandIcon size={18} color="#fff" /> : <ContractIcon size={18} color="#fff" />}
                 </TouchableOpacity>
               </View>
             </View>
 
             <View style={styles.centerControls}>
-              <TouchableOpacity style={styles.skipBtn} onPress={() => seekBy(-10)}>
-                <Ionicons name="play-back" size={28} color="#fff" />
-              </TouchableOpacity>
+              {!isLive && (
+                <TouchableOpacity style={styles.skipBtn} onPress={() => seekBy(-10)}>
+                  <SkipBackIcon size={28} color="#fff" />
+                </TouchableOpacity>
+              )}
               <TouchableOpacity style={styles.playPauseBtn} onPress={togglePlayPause}>
-                <Ionicons name={isPlaying ? 'pause' : 'play'} size={36} color="#fff" />
+                {isPlaying ? <PauseIcon size={38} color="#fff" /> : <PlayIcon size={38} color="#fff" />}
               </TouchableOpacity>
-              <TouchableOpacity style={styles.skipBtn} onPress={() => seekBy(10)}>
-                <Ionicons name="play-forward" size={28} color="#fff" />
-              </TouchableOpacity>
+              {!isLive && (
+                <TouchableOpacity style={styles.skipBtn} onPress={() => seekBy(10)}>
+                  <SkipForwardIcon size={28} color="#fff" />
+                </TouchableOpacity>
+              )}
             </View>
 
             <View style={styles.bottomBar}>
-              <View style={styles.timeRow}>
-                <Text style={styles.timeText}>{formatTime(position)}</Text>
-                <Text style={styles.timeText}>{formatTime(duration)}</Text>
-              </View>
-              <TouchableOpacity
-                style={styles.progressBarContainer}
-                activeOpacity={1}
-                onPress={handleProgressBarSeek}
-              >
-                <View style={styles.progressBar}>
-                  {bufferedPosition > 0 && duration > 0 && (
-                    <View
-                      style={[
-                        styles.bufferedFill,
-                        { width: `${Math.min((bufferedPosition / duration) * 100, 100)}%` },
-                      ]}
-                    />
-                  )}
-                  <View
-                    style={[
-                      styles.progressFill,
-                      { width: duration > 0 ? `${Math.min((position / duration) * 100, 100)}%` : '0%' },
-                    ]}
-                  />
-                  {duration > 0 && (
-                    <View
-                      style={[
-                        styles.progressThumb,
-                        { left: `${Math.min((position / duration) * 100, 100)}%` },
-                      ]}
-                    />
-                  )}
+              {isLive ? (
+                <View style={styles.liveBadgeRow}>
+                  <View style={styles.liveDot} />
+                  <Text style={styles.liveLabel}>بث مباشر</Text>
                 </View>
-              </TouchableOpacity>
+              ) : (
+                <>
+                  <View style={styles.timeRow}>
+                    <Text style={styles.timeText}>{formatTime(position)}</Text>
+                    <Text style={styles.timeText}>{formatTime(duration)}</Text>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.progressBarContainer}
+                    activeOpacity={1}
+                    onPress={handleProgressBarSeek}
+                  >
+                    <View style={[styles.progressBar, { direction: 'ltr' }]}>
+                      {bufferedPosition > 0 && duration > 0 && (
+                        <View
+                          style={[
+                            styles.bufferedFill,
+                            { width: `${Math.min((bufferedPosition / duration) * 100, 100)}%` },
+                          ]}
+                        />
+                      )}
+                      <View
+                        style={[
+                          styles.progressFill,
+                          { width: duration > 0 ? `${Math.min((position / duration) * 100, 100)}%` : '0%' },
+                        ]}
+                      />
+                      {duration > 0 && (
+                        <View
+                          style={[
+                            styles.progressThumb,
+                            { left: `${Math.min((position / duration) * 100, 100)}%` },
+                          ]}
+                        />
+                      )}
+                    </View>
+                  </TouchableOpacity>
+                </>
+              )}
             </View>
           </View>
         )}
@@ -1514,6 +1570,7 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     justifyContent: 'space-between',
     backgroundColor: 'rgba(0,0,0,0.28)',
+    direction: 'ltr',
   },
   topBar: {
     flexDirection: 'row',
@@ -1574,6 +1631,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     marginBottom: 8,
+    direction: 'ltr',
   },
   timeText: {
     fontFamily: Colors.fonts.medium,
@@ -1583,11 +1641,29 @@ const styles = StyleSheet.create({
   progressBarContainer: {
     paddingVertical: 10,
   },
+  liveBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    paddingBottom: 4,
+  },
+  liveDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#EF4444',
+  },
+  liveLabel: {
+    fontFamily: Colors.fonts.bold,
+    color: '#EF4444',
+    fontSize: 13,
+    letterSpacing: 0.5,
+  },
   progressBar: {
-    height: 4,
-    borderRadius: 2,
+    height: 5,
+    borderRadius: 3,
     overflow: 'visible',
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: 'rgba(255,255,255,0.22)',
     position: 'relative',
   },
   bufferedFill: {
@@ -1609,7 +1685,7 @@ const styles = StyleSheet.create({
     height: 12,
     borderRadius: 6,
     backgroundColor: Colors.brand.primary,
-    marginLeft: -6,
+    transform: [{ translateX: -6 }],
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.3,
@@ -1631,6 +1707,7 @@ const styles = StyleSheet.create({
     borderRadius: 50,
     padding: 16,
     minWidth: 80,
+    direction: 'ltr',
   },
   seekLeft: {
     left: '15%',

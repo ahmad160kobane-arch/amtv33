@@ -1,9 +1,16 @@
 node_modules/
-.next/
+
 data/
+
 .env
+
 *.db
+
 *.db-shm
+
 *.db-wal
+
 uploads/
+
 logs/
+

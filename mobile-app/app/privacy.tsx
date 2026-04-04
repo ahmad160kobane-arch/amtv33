@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import { ArrowBackIcon, ShieldIcon } from '@/components/AppIcons';
 import { useRouter } from 'expo-router';
 import { useColorScheme } from '@/hooks/useColorScheme';
 import Colors from '@/constants/Colors';
@@ -24,7 +24,7 @@ export default function PrivacyScreen() {
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
         <TouchableOpacity onPress={() => router.back()}>
-          <Ionicons name="arrow-forward" size={24} color={colors.text} />
+          <ArrowBackIcon size={24} color={colors.text} />
         </TouchableOpacity>
         <Text style={[styles.headerTitle, { color: colors.text }]}>الخصوصية</Text>
         <View style={{ width: 24 }} />
@@ -32,7 +32,7 @@ export default function PrivacyScreen() {
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
         <View style={[styles.iconBox, { backgroundColor: colors.cardBackground }]}>
-          <Ionicons name="shield-checkmark" size={32} color={Colors.brand.primary} />
+          <ShieldIcon size={32} color={Colors.brand.primary} />
           <Text style={[styles.iconTitle, { color: colors.text }]}>خصوصيتك مهمة لنا</Text>
         </View>
 

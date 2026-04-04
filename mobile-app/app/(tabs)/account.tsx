@@ -7,14 +7,19 @@ import {
   ScrollView,
   TextInput,
   ActivityIndicator,
-  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import {
+  PersonIcon, MailIcon, LockIcon, ShieldIcon, BookmarkIcon,
+  DiamondIcon, ClockIcon, SettingsIcon, ChatIcon, ChevronIcon, LogoutIcon,
+  StarIcon, LiveIcon, InfoIcon,
+} from '@/components/AppIcons';
 import { useColorScheme } from '@/hooks/useColorScheme';
 import Colors from '@/constants/Colors';
 import { useRouter } from 'expo-router';
+import AppLogo from '@/components/AppLogo';
+import { useAppAlert } from '@/components/AppAlert';
 import {
   login,
   register,
@@ -25,10 +30,23 @@ import {
   UserProfile,
 } from '@/constants/Api';
 
-type IoniconsName = React.ComponentProps<typeof Ionicons>['name'];
+type IconKey = 'shield' | 'bookmark' | 'diamond' | 'clock' | 'settings' | 'shieldCheck' | 'chat';
+
+function renderMenuIcon(key: IconKey, size: number, color: string) {
+  switch (key) {
+    case 'shield': return <ShieldIcon size={size} color={color} />;
+    case 'bookmark': return <BookmarkIcon size={size} color={color} />;
+    case 'diamond': return <DiamondIcon size={size} color={color} />;
+    case 'clock': return <ClockIcon size={size} color={color} />;
+    case 'settings': return <SettingsIcon size={size} color={color} />;
+    case 'shieldCheck': return <ShieldIcon size={size} color={color} />;
+    case 'chat': return <ChatIcon size={size} color={color} />;
+    default: return <InfoIcon size={size} color={color} />;
+  }
+}
 
 interface MenuItem {
-  icon: IoniconsName;
+  icon: IconKey;
   label: string;
   subtitle?: string;
   onPress: () => void;
@@ -38,6 +56,7 @@ export default function AccountScreen() {
   const colorScheme = useColorScheme();
   const colors = Colors[colorScheme];
   const router = useRouter();
+  const { show: showAlert } = useAppAlert();
 
   const [user, setUser] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
@@ -89,10 +108,14 @@ export default function AccountScreen() {
   };
 
   const handleLogout = () => {
-    Alert.alert('تسجيل الخروج', 'هل تريد تسجيل الخروج؟', [
-      { text: 'إلغاء', style: 'cancel' },
-      { text: 'خروج', style: 'destructive', onPress: async () => { await logout(); setUser(null); } },
-    ]);
+    showAlert({
+      title: 'تسجيل الخروج',
+      message: 'هل تريد تسجيل الخروج من حسابك؟',
+      buttons: [
+        { text: 'إلغاء', style: 'cancel' },
+        { text: 'خروج', style: 'destructive', onPress: async () => { await logout(); setUser(null); } },
+      ],
+    });
   };
 
   if (loading) {
@@ -111,10 +134,7 @@ export default function AccountScreen() {
       <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.authScroll}>
           <View style={styles.authHeader}>
-            <View style={styles.logoRow}>
-              <Ionicons name="wifi" size={20} color={Colors.brand.primary} style={{ transform: [{ rotate: '45deg' }] }} />
-              <Text style={styles.logoText}>MA</Text>
-            </View>
+            <AppLogo size="lg" showTagline />
             <Text style={[styles.authTitle, { color: colors.text }]}>
               {isLogin ? 'تسجيل الدخول' : 'إنشاء حساب جديد'}
             </Text>
@@ -125,7 +145,7 @@ export default function AccountScreen() {
 
           {error ? (
             <View style={styles.errorBox}>
-              <Ionicons name="alert-circle" size={16} color={Colors.brand.error} />
+              <InfoIcon size={16} color={Colors.brand.error} />
               <Text style={styles.errorText}>{error}</Text>
             </View>
           ) : null}
@@ -134,7 +154,7 @@ export default function AccountScreen() {
             {!isLogin && (
               <>
                 <View style={[styles.inputWrap, { backgroundColor: colors.inputBackground }]}>
-                  <Ionicons name="person-outline" size={18} color={colors.textSecondary} />
+                  <PersonIcon size={18} color={colors.textSecondary} />
                   <TextInput
                     style={[styles.input, { color: colors.text }]}
                     placeholder="اسم المستخدم"
@@ -145,7 +165,7 @@ export default function AccountScreen() {
                   />
                 </View>
                 <View style={[styles.inputWrap, { backgroundColor: colors.inputBackground }]}>
-                  <Ionicons name="mail-outline" size={18} color={colors.textSecondary} />
+                  <MailIcon size={18} color={colors.textSecondary} />
                   <TextInput
                     style={[styles.input, { color: colors.text }]}
                     placeholder="البريد الإلكتروني"
@@ -157,7 +177,7 @@ export default function AccountScreen() {
                   />
                 </View>
                 <View style={[styles.inputWrap, { backgroundColor: colors.inputBackground }]}>
-                  <Ionicons name="text-outline" size={18} color={colors.textSecondary} />
+                  <PersonIcon size={18} color={colors.textSecondary} />
                   <TextInput
                     style={[styles.input, { color: colors.text }]}
                     placeholder="الاسم الظاهر (اختياري)"
@@ -171,7 +191,7 @@ export default function AccountScreen() {
 
             {isLogin && (
               <View style={[styles.inputWrap, { backgroundColor: colors.inputBackground }]}>
-                <Ionicons name="person-outline" size={18} color={colors.textSecondary} />
+                <PersonIcon size={18} color={colors.textSecondary} />
                 <TextInput
                   style={[styles.input, { color: colors.text }]}
                   placeholder="اسم المستخدم أو البريد"
@@ -184,7 +204,7 @@ export default function AccountScreen() {
             )}
 
             <View style={[styles.inputWrap, { backgroundColor: colors.inputBackground }]}>
-              <Ionicons name="lock-closed-outline" size={18} color={colors.textSecondary} />
+              <LockIcon size={18} color={colors.textSecondary} />
               <TextInput
                 style={[styles.input, { color: colors.text }]}
                 placeholder="كلمة المرور"
@@ -240,12 +260,13 @@ export default function AccountScreen() {
   };
 
   const menuItems: MenuItem[] = [
-    ...(isAgent ? [{ icon: 'shield-outline' as IoniconsName, label: 'لوحة الوكيل', subtitle: `الرصيد: $${(user.balance || 0).toFixed(2)}`, onPress: () => router.push('/agent' as any) }] : []),
-    { icon: 'diamond-outline', label: 'اشتراكي', subtitle: getPlanLabel(), onPress: () => router.push('/subscription') },
-    { icon: 'time-outline', label: 'السجل', subtitle: 'سجل المشاهدة', onPress: () => router.push('/history') },
-    { icon: 'settings-outline', label: 'الإعدادات', subtitle: 'تخصيص التطبيق', onPress: () => router.push('/settings') },
-    { icon: 'shield-checkmark-outline', label: 'الخصوصية', subtitle: 'سياسة الخصوصية', onPress: () => router.push('/privacy') },
-    { icon: 'chatbubble-ellipses-outline', label: 'الدعم', subtitle: 'تواصل معنا', onPress: () => router.push('/support') },
+    ...(isAgent ? [{ icon: 'shield' as IconKey, label: 'لوحة الوكيل', subtitle: `الرصيد: $${(user.balance || 0).toFixed(2)}`, onPress: () => router.push('/agent' as any) }] : []),
+    { icon: 'bookmark' as IconKey, label: 'قائمتي', subtitle: 'الأفلام والمسلسلات المحفوظة', onPress: () => router.push('/favorites') },
+    { icon: 'diamond' as IconKey, label: 'اشتراكي', subtitle: getPlanLabel(), onPress: () => router.push('/subscription') },
+    { icon: 'clock' as IconKey, label: 'السجل', subtitle: 'سجل المشاهدة', onPress: () => router.push('/history') },
+    { icon: 'settings' as IconKey, label: 'الإعدادات', subtitle: 'تخصيص التطبيق', onPress: () => router.push('/settings') },
+    { icon: 'shieldCheck' as IconKey, label: 'الخصوصية', subtitle: 'سياسة الخصوصية', onPress: () => router.push('/privacy') },
+    { icon: 'chat' as IconKey, label: 'الدعم', subtitle: 'تواصل معنا', onPress: () => router.push('/support') },
   ];
 
   return (
@@ -255,34 +276,32 @@ export default function AccountScreen() {
           <LinearGradient colors={Colors.brand.gradient} style={styles.avatarWrap}>
             <Text style={styles.avatarLetter}>{(user.display_name || user.username)[0]}</Text>
           </LinearGradient>
-          <View style={styles.profileInfo}>
-            <Text style={[styles.profileName, { color: colors.text }]}>{user.display_name || user.username}</Text>
-            <Text style={[styles.profileSub, { color: colors.textSecondary }]}>{user.email}</Text>
-            <View style={styles.badgesRow}>
-              <View style={[styles.planBadge, { backgroundColor: user.plan === 'free' ? colors.inputBackground : 'rgba(255,184,0,0.15)' }]}>
-                <Ionicons name={user.plan === 'free' ? 'star-outline' : 'diamond'} size={12} color={Colors.brand.primary} />
-                <Text style={styles.planText}>{user.plan === 'free' ? 'مجاني' : 'بريميوم'}</Text>
-              </View>
-              {(user.role === 'agent' || user.role === 'admin') && (
-                <View style={[styles.roleBadge, { backgroundColor: 'rgba(99,102,241,0.15)' }]}>
-                  <Ionicons name="shield-checkmark" size={12} color="#6366F1" />
-                  <Text style={[styles.planText, { color: '#6366F1' }]}>
-                    {user.role === 'admin' ? 'مشرف' : 'وكيل'}
-                  </Text>
-                </View>
-              )}
+          <Text style={[styles.profileName, { color: colors.text }]}>{user.display_name || user.username}</Text>
+          <Text style={[styles.profileSub, { color: colors.textSecondary }]}>{user.email}</Text>
+          <View style={styles.badgesRow}>
+            <View style={[styles.planBadge, { backgroundColor: user.plan === 'free' ? colors.inputBackground : 'rgba(255,184,0,0.15)' }]}>
+              {user.plan === 'free' ? <StarIcon size={12} color={Colors.brand.primary} /> : <DiamondIcon size={12} color={Colors.brand.primary} />}
+              <Text style={styles.planText}>{user.plan === 'free' ? 'مجاني' : 'بريميوم'}</Text>
             </View>
+            {(user.role === 'agent' || user.role === 'admin') && (
+              <View style={[styles.roleBadge, { backgroundColor: 'rgba(99,102,241,0.15)' }]}>
+                <ShieldIcon size={12} color="#6366F1" />
+                <Text style={[styles.planText, { color: '#6366F1' }]}>
+                  {user.role === 'admin' ? 'مشرف' : 'وكيل'}
+                </Text>
+              </View>
+            )}
           </View>
         </View>
 
         <View style={styles.statsRow}>
           <View style={[styles.statCard, { backgroundColor: colors.cardBackground }]}>
-            <Ionicons name="play-circle-outline" size={22} color={Colors.brand.primary} />
+            <LiveIcon size={22} color={Colors.brand.primary} />
             <Text style={[styles.statValue, { color: colors.text }]}>{user.stats?.watched ?? 0}</Text>
             <Text style={[styles.statLabel, { color: colors.textSecondary }]}>مشاهدة</Text>
           </View>
           <View style={[styles.statCard, { backgroundColor: colors.cardBackground }]}>
-            <Ionicons name="bookmark-outline" size={22} color={Colors.brand.accent} />
+            <BookmarkIcon size={22} color={Colors.brand.accent} />
             <Text style={[styles.statValue, { color: colors.text }]}>{user.stats?.favorites ?? 0}</Text>
             <Text style={[styles.statLabel, { color: colors.textSecondary }]}>محفوظ</Text>
           </View>
@@ -294,24 +313,22 @@ export default function AccountScreen() {
               key={index}
               style={[styles.menuItem, index < menuItems.length - 1 && { borderBottomWidth: 0.5, borderBottomColor: colors.divider }]}
               onPress={item.onPress}
-              activeOpacity={0.6}
+              activeOpacity={0.55}
             >
-              <View style={styles.menuContent}>
-                <View style={[styles.menuIconWrap, { backgroundColor: colors.inputBackground }]}>
-                  <Ionicons name={item.icon} size={18} color={Colors.brand.primary} />
-                </View>
-                <View style={styles.menuTextWrap}>
-                  <Text style={[styles.menuLabel, { color: colors.text }]}>{item.label}</Text>
-                  {item.subtitle && <Text style={[styles.menuSub, { color: colors.textSecondary }]}>{item.subtitle}</Text>}
-                </View>
+              <View style={[styles.menuIconWrap, { backgroundColor: colors.inputBackground }]}>
+                {renderMenuIcon(item.icon, 18, Colors.brand.primary)}
               </View>
-              <Ionicons name="chevron-back" size={16} color={colors.textSecondary} />
+              <View style={styles.menuTextWrap}>
+                <Text style={[styles.menuLabel, { color: colors.text }]}>{item.label}</Text>
+                {item.subtitle && <Text style={[styles.menuSub, { color: colors.textSecondary }]}>{item.subtitle}</Text>}
+              </View>
+              <ChevronIcon size={16} color={colors.textSecondary} />
             </TouchableOpacity>
           ))}
         </View>
 
         <TouchableOpacity style={[styles.logoutBtn, { backgroundColor: 'rgba(255,59,48,0.08)' }]} onPress={handleLogout} activeOpacity={0.6}>
-          <Ionicons name="log-out-outline" size={18} color={Colors.brand.error} />
+          <LogoutIcon size={18} color={Colors.brand.error} />
           <Text style={styles.logoutText}>تسجيل الخروج</Text>
         </TouchableOpacity>
 
@@ -327,9 +344,7 @@ const styles = StyleSheet.create({
 
   // ─── Auth Form ──────────────────
   authScroll: { paddingHorizontal: 24, paddingTop: 40 },
-  authHeader: { alignItems: 'center', marginBottom: 28 },
-  logoRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 16 },
-  logoText: { fontFamily: Colors.fonts.extraBold, color: Colors.brand.primary, fontSize: 28 },
+  authHeader: { alignItems: 'center', marginBottom: 28, gap: 12 },
   authTitle: { fontFamily: Colors.fonts.bold, fontSize: 22, marginBottom: 6 },
   authSub: { fontFamily: Colors.fonts.regular, fontSize: 13 },
   errorBox: {
@@ -354,18 +369,19 @@ const styles = StyleSheet.create({
 
   // ─── Profile ────────────────────
   profileSection: {
-    flexDirection: 'row', alignItems: 'center', gap: 14,
-    paddingHorizontal: 20, paddingTop: 20, paddingBottom: 16,
+    alignItems: 'center',
+    paddingHorizontal: 20, paddingTop: 28, paddingBottom: 20,
+    gap: 6,
   },
   avatarWrap: {
-    width: 56, height: 56, borderRadius: 28,
+    width: 80, height: 80, borderRadius: 40,
     alignItems: 'center', justifyContent: 'center',
+    marginBottom: 8,
   },
-  avatarLetter: { fontFamily: Colors.fonts.extraBold, color: '#fff', fontSize: 22 },
-  profileInfo: { flex: 1, alignItems: 'flex-start' },
-  profileName: { fontFamily: Colors.fonts.bold, fontSize: 18, marginBottom: 2 },
-  profileSub: { fontFamily: Colors.fonts.regular, fontSize: 12, marginBottom: 6 },
-  badgesRow: { flexDirection: 'row', gap: 6, flexWrap: 'wrap', marginTop: 2 },
+  avatarLetter: { fontFamily: Colors.fonts.extraBold, color: '#fff', fontSize: 32 },
+  profileName: { fontFamily: Colors.fonts.bold, fontSize: 20, textAlign: 'center' },
+  profileSub: { fontFamily: Colors.fonts.regular, fontSize: 13, textAlign: 'center', marginBottom: 4 },
+  badgesRow: { flexDirection: 'row', gap: 6, flexWrap: 'wrap', justifyContent: 'center', marginTop: 4 },
   planBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8,
@@ -382,10 +398,9 @@ const styles = StyleSheet.create({
   menuCard: { marginHorizontal: 16, borderRadius: 14, overflow: 'hidden' },
   menuItem: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingVertical: 14, paddingHorizontal: 16,
+    paddingVertical: 15, paddingHorizontal: 16, gap: 12,
   },
-  menuContent: { flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 },
-  menuIconWrap: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  menuIconWrap: { width: 38, height: 38, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
   menuTextWrap: { flex: 1 },
   menuLabel: { fontFamily: Colors.fonts.medium, fontSize: 15 },
   menuSub: { fontFamily: Colors.fonts.regular, fontSize: 11, marginTop: 1 },

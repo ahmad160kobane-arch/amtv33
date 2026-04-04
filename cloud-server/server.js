@@ -1306,10 +1306,9 @@ app.get('/proxy/live/:streamId/index.m3u8', async (req, res) => {
   const sessionId = req.query.sid || req.ip || 'anon';
   let baseUrl = XTREAM.primary;
   try { if (req.query.base) baseUrl = decodeURIComponent(req.query.base); } catch {}
-  const proxyBase = `${req.protocol}://${req.get('host')}`;
 
   try {
-    const manifest = await xtreamProxy.getManifest(streamId, baseUrl, proxyBase, sessionId);
+    const manifest = await xtreamProxy.getManifest(streamId, baseUrl, sessionId);
     res.set({
       'Content-Type'                : 'application/vnd.apple.mpegurl',
       'Cache-Control'               : 'no-cache, no-store',
@@ -1354,10 +1353,9 @@ app.get('/proxy/live/:streamId/seg/:encodedPath(*)', async (req, res) => {
 app.get('/proxy/live/:streamId/sub/:encodedUrl(*)', async (req, res) => {
   const { streamId, encodedUrl } = req.params;
   const sessionId = req.query.sid || req.ip || 'anon';
-  const proxyBase = `${req.protocol}://${req.get('host')}`;
 
   try {
-    const manifest = await xtreamProxy.getSubManifest(streamId, encodedUrl, proxyBase, sessionId);
+    const manifest = await xtreamProxy.getSubManifest(streamId, encodedUrl, sessionId);
     res.set({
       'Content-Type'                : 'application/vnd.apple.mpegurl',
       'Cache-Control'               : 'no-cache, no-store',

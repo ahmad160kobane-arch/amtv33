@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "MA",
+    "name": "AM",
     "slug": "ma-streaming",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -44,6 +44,12 @@
       "eas": {
         "projectId": "67e31792-494d-47b9-8a68-5b682b1295d6"
       }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/67e31792-494d-47b9-8a68-5b682b1295d6"
     }
   }
 }

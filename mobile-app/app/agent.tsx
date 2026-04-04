@@ -4,7 +4,11 @@ import {
   ActivityIndicator, Alert, TextInput, RefreshControl, Clipboard,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import {
+  ArrowBackIcon, ShieldIcon, InfoIcon, WalletIcon, KeyIcon, CheckCircleIcon,
+  ClockIcon, TagIcon, GridIcon, PlusIcon, ListIcon, ReceiptIcon, CopyIcon,
+  MinusIcon, CloseCircleIcon, ArrowDownCircleIcon, ArrowUpCircleIcon,
+} from '@/components/AppIcons';
 import { useRouter } from 'expo-router';
 import { useColorScheme } from '@/hooks/useColorScheme';
 import Colors from '@/constants/Colors';
@@ -176,13 +180,13 @@ export default function AgentScreen() {
       <View style={[styles.container, { backgroundColor: colors.background }]}>
         <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
           <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-            <Ionicons name="arrow-forward" size={22} color={colors.text} />
+            <ArrowBackIcon size={22} color={colors.text} />
           </TouchableOpacity>
           <Text style={[styles.headerTitle, { color: colors.text }]}>لوحة الوكيل</Text>
           <View style={{ width: 40 }} />
         </View>
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 14 }}>
-          <Ionicons name="alert-circle-outline" size={56} color={colors.textSecondary} />
+          <InfoIcon size={56} color={colors.textSecondary} />
           <Text style={[styles.emptyText, { color: colors.textSecondary }]}>غير مصرح لك بالوصول</Text>
         </View>
       </View>
@@ -194,11 +198,11 @@ export default function AgentScreen() {
       {/* Header */}
       <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-          <Ionicons name="arrow-forward" size={22} color={colors.text} />
+          <ArrowBackIcon size={22} color={colors.text} />
         </TouchableOpacity>
         <Text style={[styles.headerTitle, { color: colors.text }]}>لوحة الوكيل</Text>
         <View style={[styles.agentBadge]}>
-          <Ionicons name="shield-checkmark" size={14} color={Colors.brand.primary} />
+          <ShieldIcon size={14} color={Colors.brand.primary} />
           <Text style={[styles.agentBadgeText, { color: Colors.brand.primary }]}>وكيل</Text>
         </View>
       </View>
@@ -206,17 +210,17 @@ export default function AgentScreen() {
       {/* Tabs */}
       <View style={[styles.tabBar, { backgroundColor: colors.cardBackground }]}>
         {([
-          { key: 'dashboard', label: 'الرئيسية', icon: 'grid-outline' },
-          { key: 'create', label: 'إنشاء كود', icon: 'add-circle-outline' },
-          { key: 'codes', label: 'الكودات', icon: 'list-outline' },
-          { key: 'transactions', label: 'المعاملات', icon: 'receipt-outline' },
-        ] as { key: Tab; label: string; icon: any }[]).map(t => (
+          { key: 'dashboard', label: 'الرئيسية', iconKey: 'grid' },
+          { key: 'create', label: 'إنشاء كود', iconKey: 'plus' },
+          { key: 'codes', label: 'الكودات', iconKey: 'list' },
+          { key: 'transactions', label: 'المعاملات', iconKey: 'receipt' },
+        ] as { key: Tab; label: string; iconKey: string }[]).map(t => (
           <TouchableOpacity
             key={t.key}
             style={[styles.tabItem, tab === t.key && { borderBottomColor: Colors.brand.primary, borderBottomWidth: 2 }]}
             onPress={() => setTab(t.key)}
           >
-            <Ionicons name={t.icon} size={18} color={tab === t.key ? Colors.brand.primary : colors.textSecondary} />
+            {t.iconKey === 'grid' ? <GridIcon size={18} color={tab === t.key ? Colors.brand.primary : colors.textSecondary} /> : t.iconKey === 'plus' ? <PlusIcon size={18} color={tab === t.key ? Colors.brand.primary : colors.textSecondary} /> : t.iconKey === 'list' ? <ListIcon size={18} color={tab === t.key ? Colors.brand.primary : colors.textSecondary} /> : <ReceiptIcon size={18} color={tab === t.key ? Colors.brand.primary : colors.textSecondary} />}
             <Text style={[styles.tabLabel, { color: tab === t.key ? Colors.brand.primary : colors.textSecondary }]}>{t.label}</Text>
           </TouchableOpacity>
         ))}
@@ -233,7 +237,7 @@ export default function AgentScreen() {
             {/* بطاقة الرصيد */}
             <View style={styles.balanceCard}>
               <View style={styles.balanceTop}>
-                <Ionicons name="wallet-outline" size={22} color="#FFD700" />
+                <WalletIcon size={22} color="#FFD700" />
                 <Text style={styles.balanceLabel}>رصيدك الحالي</Text>
               </View>
               <Text style={styles.balanceAmount}>${(info.agent.balance || 0).toFixed(2)}</Text>
@@ -243,12 +247,12 @@ export default function AgentScreen() {
             {/* إحصائيات */}
             <View style={styles.statsRow}>
               {[
-                { label: 'إجمالي الكودات', value: info.stats.totalCodes, color: Colors.brand.primary, icon: 'key-outline' },
-                { label: 'مستخدم', value: info.stats.usedCodes, color: '#22C55E', icon: 'checkmark-circle-outline' },
-                { label: 'غير مستخدم', value: info.stats.unusedCodes, color: '#F59E0B', icon: 'time-outline' },
+                { label: 'إجمالي الكودات', value: info.stats.totalCodes, color: Colors.brand.primary, iconKey: 'key' },
+                { label: 'مستخدم', value: info.stats.usedCodes, color: '#22C55E', iconKey: 'check' },
+                { label: 'غير مستخدم', value: info.stats.unusedCodes, color: '#F59E0B', iconKey: 'clock' },
               ].map(s => (
                 <View key={s.label} style={[styles.statCard, { backgroundColor: colors.cardBackground }]}>
-                  <Ionicons name={s.icon as any} size={20} color={s.color} />
+                  {s.iconKey === 'key' ? <KeyIcon size={20} color={s.color} /> : s.iconKey === 'check' ? <CheckCircleIcon size={20} color={s.color} /> : <ClockIcon size={20} color={s.color} />}
                   <Text style={[styles.statValue, { color: s.color }]}>{s.value}</Text>
                   <Text style={[styles.statLabel, { color: colors.textSecondary }]}>{s.label}</Text>
                 </View>
@@ -260,7 +264,7 @@ export default function AgentScreen() {
             {plans.map(p => (
               <View key={p.id} style={[styles.priceRow, { backgroundColor: colors.cardBackground }]}>
                 <View style={[styles.planDot, { backgroundColor: Colors.brand.primary + '33' }]}>
-                  <Ionicons name="pricetag-outline" size={18} color={Colors.brand.primary} />
+                  <TagIcon size={18} color={Colors.brand.primary} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.planRowName, { color: colors.text }]}>{p.name}</Text>
@@ -271,7 +275,7 @@ export default function AgentScreen() {
             ))}
 
             <View style={[styles.noticeCard, { backgroundColor: 'rgba(99,102,241,0.1)' }]}>
-              <Ionicons name="information-circle-outline" size={18} color={Colors.brand.primary} />
+              <InfoIcon size={18} color={Colors.brand.primary} />
               <Text style={[styles.noticeText, { color: colors.textSecondary }]}>
                 يُخصم سعر الكود من رصيدك عند الإنشاء. يمكن إلغاء الكودات غير المستخدمة واسترجاع الرصيد.
               </Text>
@@ -301,7 +305,7 @@ export default function AgentScreen() {
                 <Text style={[styles.planSelectPrice, { color: Colors.brand.primary }]}>${p.price_usd.toFixed(2)}</Text>
                 {selectedPlan === p.id && (
                   <View style={styles.selectedCheck}>
-                    <Ionicons name="checkmark-circle" size={22} color={Colors.brand.primary} />
+                    <CheckCircleIcon size={22} color={Colors.brand.primary} />
                   </View>
                 )}
               </TouchableOpacity>
@@ -313,7 +317,7 @@ export default function AgentScreen() {
                 onPress={() => setQuantity(q => String(Math.max(1, parseInt(q || '1') - 1)))}
                 style={styles.qtyBtn}
               >
-                <Ionicons name="remove" size={22} color={colors.text} />
+                <MinusIcon size={22} color={colors.text} />
               </TouchableOpacity>
               <TextInput
                 style={[styles.qtyInput, { color: colors.text }]}
@@ -326,7 +330,7 @@ export default function AgentScreen() {
                 onPress={() => setQuantity(q => String(Math.min(50, parseInt(q || '1') + 1)))}
                 style={styles.qtyBtn}
               >
-                <Ionicons name="add" size={22} color={colors.text} />
+                <PlusIcon size={22} color={colors.text} />
               </TouchableOpacity>
             </View>
 
@@ -363,7 +367,7 @@ export default function AgentScreen() {
                 <ActivityIndicator size="small" color="#fff" />
               ) : (
                 <>
-                  <Ionicons name="add-circle-outline" size={20} color="#fff" />
+                  <PlusIcon size={20} color="#fff" />
                   <Text style={styles.createBtnText}>إنشاء الكودات</Text>
                 </>
               )}
@@ -377,7 +381,7 @@ export default function AgentScreen() {
                   <View key={c.id} style={[styles.newCodeRow, { backgroundColor: colors.cardBackground }]}>
                     <Text style={[styles.newCodeText, { color: Colors.brand.primary }]}>{c.code}</Text>
                     <TouchableOpacity onPress={() => handleCopy(c.code)} style={styles.copyBtn}>
-                      <Ionicons name="copy-outline" size={18} color={colors.textSecondary} />
+                      <CopyIcon size={18} color={colors.textSecondary} />
                     </TouchableOpacity>
                   </View>
                 ))}
@@ -396,18 +400,14 @@ export default function AgentScreen() {
               </View>
             ) : transactions.length === 0 ? (
               <View style={styles.emptyState}>
-                <Ionicons name="receipt-outline" size={48} color={colors.textSecondary} />
+                <ReceiptIcon size={48} color={colors.textSecondary} />
                 <Text style={[styles.emptyText, { color: colors.textSecondary }]}>لا توجد معاملات بعد</Text>
               </View>
             ) : transactions.map(tx => (
               <View key={tx.id} style={[styles.txCard, { backgroundColor: colors.cardBackground }]}>
                 <View style={styles.txRow}>
                   <View style={[styles.txIcon, { backgroundColor: tx.type === 'credit' ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.1)' }]}>
-                    <Ionicons
-                      name={tx.type === 'credit' ? 'arrow-down-circle-outline' : 'arrow-up-circle-outline'}
-                      size={20}
-                      color={tx.type === 'credit' ? '#22C55E' : '#EF4444'}
-                    />
+                    {tx.type === 'credit' ? <ArrowDownCircleIcon size={20} color="#22C55E" /> : <ArrowUpCircleIcon size={20} color="#EF4444" />}
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={[styles.txDesc, { color: colors.text }]} numberOfLines={1}>{tx.description}</Text>
@@ -450,7 +450,7 @@ export default function AgentScreen() {
 
             {codes.length === 0 ? (
               <View style={styles.emptyState}>
-                <Ionicons name="key-outline" size={48} color={colors.textSecondary} />
+                <KeyIcon size={48} color={colors.textSecondary} />
                 <Text style={[styles.emptyText, { color: colors.textSecondary }]}>لا توجد كودات</Text>
               </View>
             ) : codes.map(c => (
@@ -478,11 +478,11 @@ export default function AgentScreen() {
                 {c.status === 'unused' && (
                   <View style={styles.codeActions}>
                     <TouchableOpacity onPress={() => handleCopy(c.code)} style={[styles.codeAction, { backgroundColor: 'rgba(99,102,241,0.12)' }]}>
-                      <Ionicons name="copy-outline" size={15} color={Colors.brand.primary} />
+                      <CopyIcon size={15} color={Colors.brand.primary} />
                       <Text style={[styles.codeActionText, { color: Colors.brand.primary }]}>نسخ</Text>
                     </TouchableOpacity>
                     <TouchableOpacity onPress={() => handleCancelCode(c.id, c.code)} style={[styles.codeAction, { backgroundColor: 'rgba(239,68,68,0.1)' }]}>
-                      <Ionicons name="close-circle-outline" size={15} color="#EF4444" />
+                      <CloseCircleIcon size={15} color="#EF4444" />
                       <Text style={[styles.codeActionText, { color: '#EF4444' }]}>إلغاء</Text>
                     </TouchableOpacity>
                   </View>

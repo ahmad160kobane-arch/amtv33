@@ -1,28 +1,29 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
-  View,
-  Text,
-  FlatList,
-  Image,
-  TouchableOpacity,
-  StyleSheet,
-  RefreshControl,
-  Dimensions,
-  ActivityIndicator,
-  Animated,
+  View, Text, FlatList, Image, TouchableOpacity, StyleSheet,
+  RefreshControl, Dimensions, ActivityIndicator, Animated, TextInput,
+  ScrollView,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import { FilmIcon, StarIcon, ArrowBackIcon, SearchIcon, CloseCircleIcon, InfoIcon } from '@/components/AppIcons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useColorScheme } from '@/hooks/useColorScheme';
 import Colors from '@/constants/Colors';
-import { fetchVidsrcBrowse, VidsrcItem } from '@/constants/Api';
+import {
+  fetchIptvMovies, fetchIptvSeries, fetchIptvSearch, fetchIptvHome,
+  IptvVodItem, IptvHomeData,
+} from '@/constants/Api';
 
 const { width } = Dimensions.get('window');
 const CARD_W = (width - 48) / 3;
 const CARD_H = CARD_W * 1.52;
-const PAGE_SIZE = 9;
+
+const TYPES = [
+  { id: '', label: 'الكل' },
+  { id: 'movie', label: 'أفلام' },
+  { id: 'series', label: 'مسلسلات' },
+];
 
 function SkeletonGrid({ colors }: { colors: any }) {
   const pulse = useRef(new Animated.Value(0.35)).current;
@@ -36,13 +37,12 @@ function SkeletonGrid({ colors }: { colors: any }) {
     anim.start();
     return () => anim.stop();
   }, [pulse]);
-  const bg = colors.inputBackground;
   return (
     <View style={{ flex: 1, paddingHorizontal: 12, paddingTop: 12 }}>
       {[0, 1, 2, 3].map((row) => (
         <View key={row} style={{ flexDirection: 'row', gap: 8, marginBottom: 10 }}>
           {[0, 1, 2].map((col) => (
-            <Animated.View key={col} style={{ width: CARD_W, height: CARD_H, borderRadius: 12, backgroundColor: bg, opacity: pulse }} />
+            <Animated.View key={col} style={{ width: CARD_W, height: CARD_H, borderRadius: 12, backgroundColor: colors.inputBackground, opacity: pulse }} />
           ))}
         </View>
       ))}
@@ -54,77 +54,112 @@ export default function AllContentScreen() {
   const colorScheme = useColorScheme();
   const colors = Colors[colorScheme];
   const router = useRouter();
-  const params = useLocalSearchParams<{ type?: string; category?: string }>();
-  const [items, setItems] = useState<VidsrcItem[]>([]);
-  const pageRef = useRef(1);
-  const [refreshing, setRefreshing] = useState(false);
+  const params = useLocalSearchParams<{ type?: string; categoryId?: string; title?: string }>();
+
+  const [activeType, setActiveType] = useState(params.type || '');
+  const [activeCategoryId, setActiveCategoryId] = useState(params.categoryId || '');
+  const [search, setSearch] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
+
+  const [items, setItems] = useState<IptvVodItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [hasMore, setHasMore] = useState(true);
-  const [total, setTotal] = useState(0);
+  const [error, setError] = useState('');
+  const pageRef = useRef(1);
+  const loadingMoreRef = useRef(false);
 
-  const loadData = useCallback(async (reset = true) => {
-    try {
-      if (!reset && loadingMore) return;
-      if (reset) { setItems([]); pageRef.current = 1; }
-      const page = reset ? 1 : pageRef.current;
-      const data = await fetchVidsrcBrowse({ type: params.type || undefined, category: params.category || undefined, page });
-      if (reset) {
-        setItems(data.items);
-        setTotal(data.total ?? data.items.length);
+  // Load IPTV categories for filter chips
+  useEffect(() => {
+    fetchIptvHome().then(home => {
+      const type = activeType;
+      if (type === 'series') {
+        setCategories(home.seriesCategories || []);
+      } else if (type === 'movie') {
+        setCategories(home.vodCategories || []);
       } else {
-        setItems(prev => {
-          const ids = new Set(prev.map(i => i.id));
-          return [...prev, ...data.items.filter(i => !ids.has(i.id))];
-        });
+        // Merge both
+        const all = [...(home.vodCategories || []), ...(home.seriesCategories || [])];
+        const seen = new Set<string>();
+        setCategories(all.filter(c => { if (seen.has(c.id)) return false; seen.add(c.id); return true; }));
       }
-      setHasMore(data.hasMore);
-      pageRef.current = data.page + 1;
-    } catch {} finally {
-      setRefreshing(false);
-      setLoadingMore(false);
-      setLoading(false);
-    }
-  }, [params.type, params.category]);
+    }).catch(() => {});
+  }, [activeType]);
 
-  useEffect(() => { loadData(true); }, [loadData]);
+  const load = useCallback(async (page: number, reset: boolean) => {
+    try {
+      setError('');
+      if (searchQuery.trim()) {
+        const data = await fetchIptvSearch(searchQuery, page);
+        const newItems = data.items || [];
+        if (reset) setItems(newItems); else setItems(prev => [...prev, ...newItems]);
+        setHasMore(data.hasMore ?? newItems.length >= 24);
+      } else if (activeType === 'series') {
+        const data = await fetchIptvSeries({ categoryId: activeCategoryId || undefined, page });
+        const newItems = data.items || [];
+        if (reset) setItems(newItems); else setItems(prev => [...prev, ...newItems]);
+        setHasMore(data.hasMore ?? newItems.length >= 24);
+      } else {
+        // 'movie' or '' (all) — fetch movies
+        const data = await fetchIptvMovies({ categoryId: activeCategoryId || undefined, page });
+        const newItems = data.items || [];
+        if (reset) setItems(newItems); else setItems(prev => [...prev, ...newItems]);
+        setHasMore(data.hasMore ?? newItems.length >= 24);
+      }
+      pageRef.current = page + 1;
+    } catch (e: any) {
+      setError(e?.message || 'خطأ في التحميل');
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
+    }
+  }, [activeType, activeCategoryId, searchQuery]);
+
+  useEffect(() => {
+    setItems([]);
+    setLoading(true);
+    setHasMore(true);
+    pageRef.current = 1;
+    load(1, true);
+  }, [activeType, activeCategoryId, searchQuery, load]);
+
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    setItems([]);
+    pageRef.current = 1;
+    load(1, true);
+  }, [load]);
 
   const loadMore = useCallback(() => {
-    if (!hasMore || loadingMore) return;
+    if (!hasMore || loadingMoreRef.current) return;
+    loadingMoreRef.current = true;
     setLoadingMore(true);
-    fetchVidsrcBrowse({ type: params.type || undefined, category: params.category || undefined, page: pageRef.current }).then(data => {
-      setItems(prev => {
-        const ids = new Set(prev.map(i => i.id));
-        return [...prev, ...data.items.filter(i => !ids.has(i.id))];
-      });
-      setHasMore(data.hasMore);
-      pageRef.current = data.page + 1;
-    }).finally(() => setLoadingMore(false));
-  }, [hasMore, loadingMore, params.type, params.category]);
+    load(pageRef.current, false);
+  }, [hasMore, load]);
 
-  const categoryLabels: Record<string, string> = {
-    action: 'أكشن', comedy: 'كوميدي', drama: 'دراما', horror: 'رعب',
-    animation: 'أنيميشن', family: 'عائلي', romance: 'رومانسي',
-    thriller: 'إثارة', 'science-fiction': 'خيال علمي', mystery: 'غموض', crime: 'جريمة',
-  };
-  const baseTitle = params.type === 'movie' ? 'أفلام' : params.type === 'tv' ? 'مسلسلات' : 'محتوى';
-  const catLabel = params.category ? (categoryLabels[params.category] || params.category) : '';
-  const title = catLabel ? `${catLabel} - ${baseTitle}` : `جميع ${baseTitle}`;
+  const handleSearch = useCallback(() => {
+    setSearchQuery(search);
+  }, [search]);
 
-  const handlePress = useCallback((item: VidsrcItem) => {
-    const type = item.vod_type === 'series' ? 'tv' : 'movie';
-    router.push({ pathname: '/detail', params: { tmdbId: item.tmdb_id || item.id, type, title: item.title, poster: item.poster } });
+  const handlePress = useCallback((item: IptvVodItem) => {
+    const type = item.vod_type === 'series' ? 'series' : 'movie';
+    router.push({ pathname: '/detail', params: { xtreamId: item.id, vodType: type, title: item.name, poster: item.poster } });
   }, [router]);
 
-  const renderItem = useCallback(({ item }: { item: VidsrcItem }) => {
+  const renderItem = useCallback(({ item }: { item: IptvVodItem }) => {
     const ratingVal = item.rating ? parseFloat(item.rating) : 0;
+    const isSeries = item.vod_type === 'series';
     return (
-      <TouchableOpacity style={[styles.card, { height: CARD_W * 1.52 }]} onPress={() => handlePress(item)} activeOpacity={0.75}>
+      <TouchableOpacity style={styles.card} onPress={() => handlePress(item)} activeOpacity={0.75}>
         {item.poster ? (
           <Image source={{ uri: item.poster }} style={styles.poster} resizeMode="cover" />
         ) : (
           <View style={[styles.noPoster, { backgroundColor: colors.inputBackground }]}>
-            <Ionicons name="film-outline" size={24} color={colors.textSecondary} />
+            <FilmIcon size={24} color={colors.textSecondary} />
           </View>
         )}
         <LinearGradient
@@ -132,17 +167,17 @@ export default function AllContentScreen() {
           locations={[0.38, 0.68, 1]}
           style={styles.gradient}
         />
-        <View style={[styles.badge, { backgroundColor: item.vod_type === 'movie' ? 'rgba(255,184,0,0.92)' : 'rgba(99,102,241,0.92)' }]}>
-          <Text style={styles.badgeText}>{item.vod_type === 'movie' ? 'فيلم' : 'مسلسل'}</Text>
+        <View style={[styles.badge, { backgroundColor: isSeries ? 'rgba(99,102,241,0.92)' : 'rgba(255,184,0,0.92)' }]}>
+          <Text style={styles.badgeText}>{isSeries ? 'مسلسل' : 'فيلم'}</Text>
         </View>
         {ratingVal > 0 && (
           <View style={styles.ratingBadge}>
-            <Ionicons name="star" size={8} color="#FFB800" />
+            <StarIcon size={8} color="#FFB800" />
             <Text style={styles.ratingText}>{ratingVal.toFixed(1)}</Text>
           </View>
         )}
         <View style={styles.cardBottom}>
-          <Text style={styles.cardTitle} numberOfLines={2}>{item.title}</Text>
+          <Text style={styles.cardTitle} numberOfLines={2}>{item.name}</Text>
           {item.year ? <Text style={styles.cardYear}>{item.year}</Text> : null}
         </View>
       </TouchableOpacity>
@@ -151,16 +186,88 @@ export default function AllContentScreen() {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+      {/* Header */}
       <View style={[styles.header, { backgroundColor: colors.headerBackground }]}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-          <Ionicons name="arrow-forward" size={22} color={colors.text} />
+          <ArrowBackIcon size={22} color={colors.text} />
         </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>{title} ({total})</Text>
+        <Text style={[styles.headerTitle, { color: colors.text }]} numberOfLines={1}>
+          {params.title || 'تصفح المحتوى'}
+        </Text>
         <View style={{ width: 40 }} />
       </View>
 
-      {loading ? (
+      {/* Search + Type filter in one row */}
+      <View style={styles.searchFilterRow}>
+        <View style={[styles.searchBox, { backgroundColor: colors.inputBackground }]}>
+          <SearchIcon size={14} color={colors.textSecondary} />
+          <TextInput
+            style={[styles.searchInput, { color: colors.text }]}
+            placeholder="بحث..."
+            placeholderTextColor={colors.textSecondary}
+            value={search}
+            onChangeText={setSearch}
+            onSubmitEditing={handleSearch}
+            returnKeyType="search"
+            textAlign="right"
+          />
+          {search.length > 0 && (
+            <TouchableOpacity onPress={() => { setSearch(''); setSearchQuery(''); }} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+              <CloseCircleIcon size={14} color={colors.textSecondary} />
+            </TouchableOpacity>
+          )}
+        </View>
+        {TYPES.map(t => (
+          <TouchableOpacity
+            key={t.id}
+            style={[styles.typeBtn, activeType === t.id && styles.typeBtnActive]}
+            onPress={() => { setActiveType(t.id); setActiveCategoryId(''); setSearchQuery(''); setSearch(''); }}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.typeBtnText, { color: activeType === t.id ? '#000' : colors.textSecondary }]}>{t.label}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {/* Category filter */}
+      {categories.length > 0 && (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.catRow}>
+          <TouchableOpacity
+            style={[styles.catChip, activeCategoryId === '' && styles.catChipActive]}
+            onPress={() => { setActiveCategoryId(''); setSearchQuery(''); setSearch(''); }}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.catChipText, { color: activeCategoryId === '' ? Colors.brand.primary : colors.textSecondary }]}>الكل</Text>
+          </TouchableOpacity>
+          {categories.map(c => (
+            <TouchableOpacity
+              key={c.id}
+              style={[styles.catChip, activeCategoryId === c.id && styles.catChipActive]}
+              onPress={() => { setActiveCategoryId(c.id); setSearchQuery(''); setSearch(''); }}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.catChipText, { color: activeCategoryId === c.id ? Colors.brand.primary : colors.textSecondary }]}>{c.name}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      )}
+
+      {/* Error state */}
+      {error ? (
+        <View style={styles.errorBox}>
+          <InfoIcon size={32} color="#e74c3c" />
+          <Text style={[styles.errorText, { color: colors.text }]}>{error}</Text>
+          <TouchableOpacity onPress={onRefresh} style={styles.retryBtn}>
+            <Text style={styles.retryText}>إعادة المحاولة</Text>
+          </TouchableOpacity>
+        </View>
+      ) : loading ? (
         <SkeletonGrid colors={colors} />
+      ) : items.length === 0 ? (
+        <View style={styles.errorBox}>
+          <FilmIcon size={40} color={colors.textSecondary} />
+          <Text style={[styles.errorText, { color: colors.textSecondary }]}>لا توجد نتائج</Text>
+        </View>
       ) : (
         <FlatList
           data={items}
@@ -174,7 +281,7 @@ export default function AllContentScreen() {
           maxToRenderPerBatch={9}
           windowSize={5}
           initialNumToRender={12}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); loadData(true); }} tintColor={Colors.brand.primary} />}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.brand.primary} />}
           onEndReached={loadMore}
           onEndReachedThreshold={0.5}
           ListFooterComponent={loadingMore ? (
@@ -199,7 +306,21 @@ const styles = StyleSheet.create({
   headerTitle: { fontFamily: Colors.fonts.bold, fontSize: 18 },
   grid: { paddingHorizontal: 12, paddingBottom: 30 },
   row: { justifyContent: 'flex-start', gap: 8, marginBottom: 10 },
-  card: { width: CARD_W, borderRadius: 12, overflow: 'hidden' },
+  searchFilterRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, marginBottom: 6 },
+  searchBox: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, height: 34, borderRadius: 10 },
+  searchInput: { flex: 1, fontFamily: Colors.fonts.regular, fontSize: 13, paddingVertical: 0, textAlign: 'right', writingDirection: 'rtl' },
+  typeBtn: { paddingHorizontal: 10, height: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: 'transparent' },
+  typeBtnActive: { backgroundColor: Colors.brand.primary },
+  typeBtnText: { fontFamily: Colors.fonts.bold, fontSize: 12 },
+  catRow: { paddingHorizontal: 12, gap: 6, paddingBottom: 8 },
+  catChip: { paddingHorizontal: 10, height: 28, borderRadius: 8, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'transparent' },
+  catChipActive: { backgroundColor: 'rgba(255,184,0,0.12)', borderColor: 'rgba(255,184,0,0.35)' },
+  catChipText: { fontFamily: Colors.fonts.medium, fontSize: 11 },
+  errorBox: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 14 },
+  errorText: { fontFamily: Colors.fonts.regular, fontSize: 14, textAlign: 'center' },
+  retryBtn: { backgroundColor: Colors.brand.primary, paddingHorizontal: 24, paddingVertical: 10, borderRadius: 20 },
+  retryText: { fontFamily: Colors.fonts.bold, fontSize: 14, color: '#000' },
+  card: { width: CARD_W, height: CARD_H, borderRadius: 12, overflow: 'hidden' },
   poster: { width: '100%', height: '100%', position: 'absolute' },
   noPoster: { width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center' },
   gradient: { position: 'absolute', bottom: 0, left: 0, right: 0, height: '68%' },

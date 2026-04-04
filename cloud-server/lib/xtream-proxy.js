@@ -13,7 +13,8 @@
 const { XTREAM } = require('./xtream');
 
 const UA             = 'VLC/3.0.20 LibVLC/3.0.20';
-const MANIFEST_TTL   = 4000;   // 4s  — cache manifest (HLS segments are ~10s)
+const MANIFEST_TTL   = 6000;   // 6s  — cache manifest (HLS segments are ~10s)
+const MANIFEST_STALE = 30000;  // 30s — serve stale manifest on fetch failure
 const SEG_TTL        = 30000;  // 30s — segment cache lifetime
 const SESSION_TTL    = 60000;  // 60s — viewer session idle timeout
 const GC_INTERVAL    = 15000;  // 15s — garbage collection interval
@@ -66,27 +67,47 @@ class XtreamProxy {
   // ─────────────────────────────────────────────────────────────
   // Public: Manifest proxy (on-demand, cached)
   // ─────────────────────────────────────────────────────────────
-  async getManifest(streamId, baseUrl, proxyBase, sessionId) {
+  async getManifest(streamId, baseUrl, sessionId) {
     this._touchSession(streamId, sessionId);
+    if (!this._manifestCache) this._manifestCache = new Map();
+    if (!this._pendingManifests) this._pendingManifests = new Map();
 
     // Check manifest cache first
     const cacheKey = `manifest_${streamId}`;
-    const cached = this._manifestCache?.get(cacheKey);
+    const cached = this._manifestCache.get(cacheKey);
     if (cached && (Date.now() - cached.ts) < MANIFEST_TTL) {
-      return this._rewriteManifest(cached.content, streamId, cached.srv, proxyBase);
+      return this._rewriteManifest(cached.content, streamId, cached.srv);
     }
 
-    // On-demand fetch (serialized through queue)
-    const result = await this._fetchManifest(streamId, baseUrl);
+    // Request coalescing: if another request is already fetching this manifest, wait for it
+    if (this._pendingManifests.has(streamId)) {
+      await this._pendingManifests.get(streamId);
+      const fresh = this._manifestCache.get(cacheKey);
+      if (fresh) return this._rewriteManifest(fresh.content, streamId, fresh.srv);
+    }
 
-    // Cache the manifest
-    if (!this._manifestCache) this._manifestCache = new Map();
-    this._manifestCache.set(cacheKey, { content: result.content, srv: result.srv, ts: Date.now() });
+    // This request does the actual fetch — all others wait above
+    const fetchPromise = this._fetchManifest(streamId, baseUrl)
+      .then(result => {
+        this._manifestCache.set(cacheKey, { content: result.content, srv: result.srv, ts: Date.now() });
+        this._prefetchNewSegments(streamId, result.content, result.srv);
+        return result;
+      })
+      .catch(err => {
+        // On failure (403/458), serve stale cache and refresh its timestamp
+        // to prevent re-fetching every second (IPTV blocks while session active)
+        if (cached && (Date.now() - cached.ts) < MANIFEST_STALE) {
+          cached.ts = Date.now(); // Prevent refetch loop
+          this._manifestCache.set(cacheKey, cached);
+          return cached;
+        }
+        throw err;
+      })
+      .finally(() => this._pendingManifests.delete(streamId));
 
-    // Pre-fetch new segments in background (serialized)
-    this._prefetchNewSegments(streamId, result.content, result.srv);
-
-    return this._rewriteManifest(result.content, streamId, result.srv, proxyBase);
+    this._pendingManifests.set(streamId, fetchPromise);
+    const result = await fetchPromise;
+    return this._rewriteManifest(result.content, streamId, result.srv);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -97,22 +118,31 @@ class XtreamProxy {
 
     const decoded = decodeURIComponent(encodedPath);
     const isAbs   = decoded.startsWith('http');
-    const srv     = (this.pollers.get(streamId) || {}).baseUrl || baseUrl;
 
-    const candidates = isAbs
-      ? [decoded, ...SERVERS.filter(s => !decoded.startsWith(s)).map(
-          s => `${s}/live/${XTREAM.user}/${XTREAM.pass}/${decoded.split('/live/')[1] || decoded.split('/').pop()}`
-        )]
-      : [
-          `${srv}/live/${XTREAM.user}/${XTREAM.pass}/${decoded}`,
-          ...SERVERS.filter(s => s !== srv).map(s => `${s}/live/${XTREAM.user}/${XTREAM.pass}/${decoded}`),
-        ];
+    // Build candidate URLs for fetching:
+    // - Absolute URLs (from redirect server with session token) → use as-is, no fallback needed
+    // - Relative paths → resolve against baseUrl and fallback servers
+    let candidates;
+    if (isAbs) {
+      candidates = [decoded];
+    } else if (decoded.startsWith('/')) {
+      // Absolute path like /hlsr/token/.../segment.ts — resolve against baseUrl origin
+      candidates = [
+        `${baseUrl}${decoded}`,
+        ...SERVERS.map(s => `${s}${decoded}`),
+      ];
+    } else {
+      candidates = [
+        `${baseUrl}/live/${XTREAM.user}/${XTREAM.pass}/${decoded}`,
+        ...SERVERS.filter(s => s !== baseUrl).map(s => `${s}/live/${XTREAM.user}/${XTREAM.pass}/${decoded}`),
+      ];
+    }
 
     const cacheKey = candidates[0];
     const hit = this.segCache.get(cacheKey);
     if (hit && Date.now() - hit.ts < SEG_TTL) return { buf: hit.buf, contentType: hit.contentType };
 
-    // Also check alternate cache keys (in case poller cached it under different key)
+    // Also check alternate cache keys
     for (const alt of candidates.slice(1)) {
       const h2 = this.segCache.get(alt);
       if (h2 && Date.now() - h2.ts < SEG_TTL) return { buf: h2.buf, contentType: h2.contentType };
@@ -124,17 +154,17 @@ class XtreamProxy {
   // ─────────────────────────────────────────────────────────────
   // Public: Sub-manifest proxy (quality variant playlists)
   // ─────────────────────────────────────────────────────────────
-  async getSubManifest(streamId, encodedUrl, proxyBase, sessionId) {
+  async getSubManifest(streamId, encodedUrl, sessionId) {
     this._touchSession(streamId, sessionId);
     const subUrl = decodeURIComponent(encodedUrl);
-    let res;
-    try {
-      res = await fetch(subUrl, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(10000) });
-    } catch (e) { throw new Error(`Sub-manifest fetch failed: ${e.message}`); }
-    if (!res.ok) throw new Error(`Sub-manifest HTTP ${res.status}`);
-    const content  = await res.text();
+    // Serialize through queue to prevent concurrent IPTV connections
+    const content = await iptvQueue.enqueue(async () => {
+      const res = await fetch(subUrl, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(10000) });
+      if (!res.ok) throw new Error(`Sub-manifest HTTP ${res.status}`);
+      return res.text();
+    });
     const baseForSub = subUrl.substring(0, subUrl.lastIndexOf('/') + 1);
-    return this._rewriteSubManifest(content, streamId, baseForSub, proxyBase);
+    return this._rewriteSubManifest(content, streamId, baseForSub);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -170,7 +200,10 @@ class XtreamProxy {
     for (const line of manifestContent.split('\n')) {
       const t = line.trim();
       if (!t || t.startsWith('#')) continue;
-      const segUrl = t.startsWith('http') ? t : `${srv}/live/${XTREAM.user}/${XTREAM.pass}/${t}`;
+      let segUrl;
+      if (t.startsWith('http')) segUrl = t;
+      else if (t.startsWith('/')) segUrl = `${srv}${t}`;
+      else segUrl = `${srv}/live/${XTREAM.user}/${XTREAM.pass}/${t}`;
       if (!known.has(segUrl)) {
         known.add(segUrl);
         if (known.size > 20) known.delete(known.values().next().value);
@@ -216,7 +249,15 @@ class XtreamProxy {
           });
           if (!res.ok) { lastErr = new Error(`HTTP ${res.status} from ${srv}`); continue; }
           const content = await res.text();
-          return { content, srv };
+          // Capture actual server after 302 redirect (IPTV redirects to streaming server with session token)
+          let actualBase = srv;
+          try {
+            if (res.url) {
+              const u = new URL(res.url);
+              actualBase = u.origin;
+            }
+          } catch {}
+          return { content, srv: actualBase };
         } catch (e) {
           lastErr = new Error(`${e.message} (${srv})`);
         }
@@ -257,25 +298,39 @@ class XtreamProxy {
     if (p) p.lastViewer = Date.now();
   }
 
-  _rewriteManifest(content, streamId, baseUrl, proxyBase) {
+  _rewriteManifest(content, streamId, baseUrl) {
     return content.split('\n').map(line => {
       const t = line.trim();
       if (!t || t.startsWith('#')) return line;
-      const abs = t.startsWith('http') ? t : `${baseUrl}/live/${XTREAM.user}/${XTREAM.pass}/${t}`;
+      // Resolve segment URL to absolute:
+      // - http://... → use as-is
+      // - /hlsr/token/.../segment.ts → resolve against redirect server (baseUrl = actual server after 302)
+      // - relative (segment.ts) → legacy format, resolve against IPTV path
+      let abs;
+      if (t.startsWith('http')) {
+        abs = t;
+      } else if (t.startsWith('/')) {
+        abs = `${baseUrl}${t}`;
+      } else {
+        abs = `${baseUrl}/live/${XTREAM.user}/${XTREAM.pass}/${t}`;
+      }
       const enc = encodeURIComponent(abs);
+      // Path-only URLs — resolved by player relative to manifest origin
+      // Web: origin = Railway HTTPS → Next.js rewrite → cloud server
+      // Mobile: origin = cloud server directly
       return (t.endsWith('.m3u8') || t.includes('.m3u8?'))
-        ? `${proxyBase}/proxy/live/${streamId}/sub/${enc}`
-        : `${proxyBase}/proxy/live/${streamId}/seg/${enc}`;
+        ? `/proxy/live/${streamId}/sub/${enc}`
+        : `/proxy/live/${streamId}/seg/${enc}`;
     }).join('\n');
   }
 
-  _rewriteSubManifest(content, streamId, baseUrl, proxyBase) {
+  _rewriteSubManifest(content, streamId, baseUrl) {
     return content.split('\n').map(line => {
       const t = line.trim();
       if (!t || t.startsWith('#')) return line;
       const abs = t.startsWith('http') ? t : `${baseUrl}${t}`;
       const enc = encodeURIComponent(abs);
-      return `${proxyBase}/proxy/live/${streamId}/seg/${enc}`;
+      return `/proxy/live/${streamId}/seg/${enc}`;
     }).join('\n');
   }
 
