@@ -54,6 +54,100 @@ function arabicGenre(genre) {
   return parts.join(' , ');
 }
 
+// Translate IPTV provider category names to Arabic
+const CAT_AR = {
+  // ── VOD Categories ──
+  'English 2026':              'أفلام إنجليزية 2026',
+  'English Multi-Sub 2026':    'إنجليزية مترجمة 2026',
+  'English AR Sub 2026':       'إنجليزية مترجمة عربي 2026',
+  'English AR Sub 2025':       'إنجليزية مترجمة عربي 2025',
+  'English Multi-Sub 2025':    'إنجليزية مترجمة 2025',
+  'English 2025':              'أفلام إنجليزية 2025',
+  'Netflix| Multi-Language':   'نتفلكس',
+  'Arabic Movies 2025':        'أفلام عربية 2025',
+  'English AR Sub':            'إنجليزية مترجمة عربي',
+  'English Steven Seagal':     'أفلام ستيفن سيغال',
+  'English Multi-Sub':         'إنجليزية مترجمة',
+  'English Movies':            'أفلام إنجليزية',
+  'Turkish AR Sub':            'تركية مترجمة عربي',
+  'India AR Sub':              'هندية مترجمة عربي',
+  'Asia AR Sub':               'آسيوية مترجمة عربي',
+  'Animation AR Sub':          'أنيميشن مترجم عربي',
+  'Arabic Movies':             'أفلام عربية',
+  'Arabic Masrahyat':          'مسرحيات عربية',
+  'Arabic Movies مدبلج':       'أفلام عربية مدبلجة',
+  'Arabic Animation':          'كرتون عربي',
+  'Persian Original':          'فارسية أصلية',
+  'Persian Dubbed':            'فارسية مدبلجة',
+  'Persian Classic':           'فارسية كلاسيكية',
+  'Persian Subbed':            'فارسية مترجمة',
+  'Kurdish KRD Sub':           'كردية مترجمة',
+  'Kurd Doblaj Sorani':        'كردية سوراني مدبلجة',
+  'Kurd Doblaj Kurmanji':      'كردية كرمانجي مدبلجة',
+  'Kurd Cartoon':              'كرتون كردي',
+  'Kurd Documentary':          'وثائقي كردي',
+  'France Movies':             'أفلام فرنسية',
+  'Germany Movies':            'أفلام ألمانية',
+  'Netherlands Movies':        'أفلام هولندية',
+  'Turkish Movies':            'أفلام تركية',
+  'Spian Movies':              'أفلام إسبانية',
+  'Italy Movies':              'أفلام إيطالية',
+  'Poland Movies':             'أفلام بولندية',
+  // ── Series Categories ──
+  'Ramadan 2026':              'رمضان 2026',
+  'Watching Now Arabic':       'يُعرض الآن عربي',
+  'Watching Now Turkish':      'يُعرض الآن تركي',
+  'Watching Now English':      'يُعرض الآن إنجليزي',
+  'Series Multi-Sub':          'مسلسلات مترجمة',
+  'English Series [Ar Sub]':   'إنجليزية مترجمة عربي',
+  'ِِِAsia Ar Sub':            'آسيوية مترجمة عربي',
+  'Animation Series [Ar Sub]': 'أنيميشن مترجم عربي',
+  'Ramadan Series':            'مسلسلات رمضان',
+  'Egypt Series':              'مسلسلات مصرية',
+  'Syria Series':              'مسلسلات سورية',
+  'Lebanon Series':            'مسلسلات لبنانية',
+  'Arabic Series':             'مسلسلات عربية',
+  'Khaliji Series':            'مسلسلات خليجية',
+  'Iraq Series':               'مسلسلات عراقية',
+  'Arabic Cartoon Series':     'كرتون عربي',
+  'Turkish Series [Doblaj]':   'تركية مدبلجة',
+  'Turkish Series [Ar Sub]':   'تركية مترجمة عربي',
+  'Program Ar':                'برامج عربية',
+  'Indian Series [ Ar Dub ]':  'هندية مدبلجة عربي',
+  'Islamic Series':            'مسلسلات إسلامية',
+  'Anime Series [Ar Sub]':     'أنمي مترجم عربي',
+  'Anime Series [mdblj]':      'أنمي مدبلج',
+  'Spanish Series [Ar Sub]':   'إسبانية مترجمة عربي',
+  'French Series [Ar Sub]':    'فرنسية مترجمة عربي',
+  'Germany Series [Ar Sub]':   'ألمانية مترجمة عربي',
+  'Italy Series [Ar Sub]':     'إيطالية مترجمة عربي',
+  'Scandinavia Series [Ar Sub]':'اسكندنافية مترجمة عربي',
+  'Portugal Series [Ar Sub]':  'برتغالية مترجمة عربي',
+  'Poland Series [Pl: Ar Sub]':'بولندية مترجمة عربي',
+  'Indian Series':             'مسلسلات هندية',
+  'Persian Series Original':   'فارسية أصلية',
+  'Persian Series Foreign':    'فارسية أجنبية',
+  'Turkish Series [Per Sub]':  'تركية مترجمة فارسي',
+  'Kurdish Series Sorani':     'كردية سوراني',
+  'Kurdish Series Kurmanji':   'كردية كرمانجي',
+  'Kurdish Series Cartoon':    'كرتون كردي',
+  'Series [Krd Sub]':          'مترجمة كردي',
+  'E-Parwarda':                'تعليمي',
+  'Quran ☪':                   'القرآن الكريم',
+};
+function translateCategory(name) {
+  if (!name) return 'عام';
+  // Direct match
+  if (CAT_AR[name]) return CAT_AR[name];
+  // Trim and try again
+  const trimmed = name.trim();
+  if (CAT_AR[trimmed]) return CAT_AR[trimmed];
+  // If already Arabic, return as-is
+  if (/[\u0600-\u06FF]/.test(trimmed)) return trimmed;
+  // Fallback: return original
+  return trimmed;
+}
+
 // Detect if episode title is just a filename like "Show.S1.E1" or "show_s01e05"
 function isFilenameLike(title) {
   if (!title) return true;
@@ -102,7 +196,7 @@ async function getVodCategories() {
   const data = await apiCall('get_vod_categories');
   const cats = (Array.isArray(data) ? data : []).map(c => ({
     id  : String(c.category_id),
-    name: c.category_name || 'عام',
+    name: translateCategory(c.category_name),
   }));
   setCache(key, cats);
   return cats;
@@ -205,7 +299,7 @@ async function getSeriesCategories() {
   const data = await apiCall('get_series_categories');
   const cats = (Array.isArray(data) ? data : []).map(c => ({
     id  : String(c.category_id),
-    name: c.category_name || 'عام',
+    name: translateCategory(c.category_name),
   }));
   setCache(key, cats);
   return cats;

@@ -711,20 +711,28 @@ app.get(['/vod-play/:token', '/vod-play/:token/stream.mp4'], async (req, res) =>
     const headers = { 'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20' };
     if (range) headers['Range'] = range;
 
-    const upRes = await fetch(upstream, { headers, redirect: 'follow' });
+    const upRes = await fetch(upstream, { headers, redirect: 'follow', signal: AbortSignal.timeout(30000) });
     if (!upRes.ok && upRes.status !== 206) return res.status(upRes.status).end();
 
     res.status(upRes.status);
     res.set('Content-Type', upRes.headers.get('content-type') || 'video/mp4');
+    // Always tell browser that seeking is supported
+    res.set('Accept-Ranges', 'bytes');
     if (upRes.headers.get('content-length')) res.set('Content-Length', upRes.headers.get('content-length'));
     if (upRes.headers.get('content-range'))  res.set('Content-Range', upRes.headers.get('content-range'));
-    if (upRes.headers.get('accept-ranges'))  res.set('Accept-Ranges', upRes.headers.get('accept-ranges'));
 
     const { Readable } = require('stream');
-    Readable.fromWeb(upRes.body).pipe(res);
+    const readable = Readable.fromWeb(upRes.body);
+    // Clean up on client disconnect to avoid dangling streams
+    req.on('close', () => { readable.destroy(); });
+    readable.on('error', (err) => {
+      if (!res.headersSent) res.status(502).end();
+      else res.destroy();
+    });
+    readable.pipe(res);
   } catch (e) {
     console.error('[VOD-play] proxy error:', e.message);
-    res.status(403).json({ error: 'Invalid or expired token' });
+    if (!res.headersSent) res.status(403).json({ error: 'Invalid or expired token' });
   }
 });
 
