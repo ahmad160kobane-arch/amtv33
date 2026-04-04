@@ -215,11 +215,17 @@ export async function fetchAgentTransactions(params?: { limit?: number; offset?:
 
 // ─── Token Management ────────────────────────────────────
 let _cachedToken: string | null = null;
+let _tokenPromise: Promise<string | null> | null = null;
 
 export async function getToken(): Promise<string | null> {
   if (_cachedToken) return _cachedToken;
-  _cachedToken = await AsyncStorage.getItem(TOKEN_KEY);
-  return _cachedToken;
+  if (_tokenPromise) return _tokenPromise;
+  _tokenPromise = AsyncStorage.getItem(TOKEN_KEY).then(t => {
+    _cachedToken = t;
+    _tokenPromise = null;
+    return t;
+  });
+  return _tokenPromise;
 }
 
 export async function setToken(token: string): Promise<void> {
@@ -497,11 +503,13 @@ export async function fetchVidsrcBrowse(params?: {
   type?: string;
   page?: number;
   category?: string;
+  limit?: number;
 }): Promise<VidsrcBrowseResult> {
   const q = new URLSearchParams();
   if (params?.type) q.set('type', params.type);
   if (params?.page) q.set('page', String(params.page));
   if (params?.category) q.set('category', params.category);
+  if (params?.limit) q.set('limit', String(params.limit));
   const qs = q.toString();
   const cacheKey = `vidsrc_browse_${qs}`;
   const cached = getCached<VidsrcBrowseResult>(cacheKey);
@@ -513,6 +521,22 @@ export async function fetchVidsrcBrowse(params?: {
     return data;
   } catch {
     return { items: [], page: 1, hasMore: false };
+  }
+}
+
+export async function searchVidsrc(query: string): Promise<VidsrcItem[]> {
+  if (!query.trim()) return [];
+  const cacheKey = `vidsrc_search_${query.trim()}`;
+  const cached = getCached<VidsrcItem[]>(cacheKey);
+  if (cached) return cached;
+  try {
+    const res = await cloudFetch(`/api/vidsrc/search?query=${encodeURIComponent(query.trim())}`);
+    const data = await res.json();
+    const items = data.results || data.items || [];
+    setCached(cacheKey, items);
+    return items;
+  } catch {
+    return [];
   }
 }
 
@@ -856,10 +880,13 @@ export async function fetchFreeChannels(params?: {
     if (params?.limit)  q.set('limit', String(params.limit));
     if (params?.offset) q.set('offset', String(params.offset));
     const qs = q.toString();
+    const cacheKey = `free_channels_${qs}`;
+    const cached = getCached<FreeChannelsResult>(cacheKey);
+    if (cached) return cached;
     const res = await fetch(`${CLOUD_SERVER_URL}/api/xtream/channels${qs ? '?' + qs : ''}`);
     if (!res.ok) throw new Error('Failed to fetch');
     const data = await res.json();
-    return {
+    const result: FreeChannelsResult = {
       success: true,
       channels: (data.channels || []).map((c: any) => ({
         id: c.id, name: c.name, logo: c.logo, group: c.category,
@@ -868,6 +895,8 @@ export async function fetchFreeChannels(params?: {
       hasMore: data.hasMore || false,
       categories: data.categories || [],
     };
+    setCached(cacheKey, result);
+    return result;
   } catch {
     return { success: false, channels: [], total: 0, hasMore: false, categories: [] };
   }
@@ -898,12 +927,17 @@ export async function requestFreeStream(channelId: string): Promise<FreeStreamRe
       return { success: false, error: data.error || 'القناة غير متاحة' };
     }
     const data = await res.json();
+    let streamUrl = data.directUrl || data.proxyUrl || '';
+    // Prepend server base URL for relative proxy paths
+    if (streamUrl && !streamUrl.startsWith('http')) {
+      streamUrl = `${CLOUD_SERVER_URL}${streamUrl}`;
+    }
     return {
       success: true,
       name: data.name,
       logo: data.logo,
       group: data.category,
-      streamUrl: data.directUrl || data.proxyUrl,
+      streamUrl,
     };
   } catch (err: any) {
     return { success: false, error: err.message || 'خطأ في الاتصال' };
@@ -967,6 +1001,194 @@ export async function fetchPremiumChannels(): Promise<PremiumChannelsResult> {
     return { success: false, channels: [], total: 0, categories: [], error: 'خطأ في الاتصال' };
   }
 }
+
+// ─── IPTV VOD API (أفلام ومسلسلات من Xtream) ────────────────────────────────
+
+export interface IptvVodItem {
+  id: string;
+  name: string;
+  poster: string;
+  rating: string;
+  year: string;
+  genre?: string;
+  category_id?: string;
+  ext?: string;
+  vod_type: 'movie' | 'series';
+}
+
+export interface IptvVodDetail extends IptvVodItem {
+  o_name?: string;
+  backdrop?: string;
+  plot?: string;
+  cast?: string;
+  director?: string;
+  runtime?: string;
+  duration_secs?: number;
+  releaseDate?: string;
+  country?: string;
+  tmdb_id?: number | null;
+  trailer?: string;
+  age?: string;
+  genre_raw?: string;
+  rating5?: number | null;
+}
+
+export interface IptvEpisode {
+  id: string;
+  episode: number;
+  title: string;
+  rawTitle?: string;
+  poster?: string;
+  plot?: string;
+  duration?: string;
+  duration_secs?: number;
+  released?: string;
+  ext: string;
+  season: number;
+  resolution?: string;
+}
+
+export interface IptvSeason {
+  season: number;
+  episodes: IptvEpisode[];
+}
+
+export interface IptvSeriesDetail extends IptvVodDetail {
+  seasons: IptvSeason[];
+  episode_run_time?: string;
+}
+
+export interface IptvBrowseResult {
+  items: IptvVodItem[];
+  page: number;
+  total: number;
+  hasMore: boolean;
+}
+
+export interface IptvHomeData {
+  latestMovies: IptvVodItem[];
+  latestSeries: IptvVodItem[];
+  vodCategories: { id: string; name: string }[];
+  seriesCategories: { id: string; name: string }[];
+}
+
+export async function fetchIptvHome(): Promise<IptvHomeData> {
+  const cached = getCached<IptvHomeData>('iptv_home');
+  if (cached) return cached;
+  try {
+    const res = await cloudFetch('/api/xtream/vod/home');
+    const data = await res.json();
+    setCached('iptv_home', data);
+    return data;
+  } catch {
+    return { latestMovies: [], latestSeries: [], vodCategories: [], seriesCategories: [] };
+  }
+}
+
+export interface IptvCategoryWithMovies {
+  id: string;
+  name: string;
+  items: IptvVodItem[];
+}
+
+export async function fetchIptvCategoriesWithMovies(maxCategories = 40, filter = ''): Promise<{ categories: IptvCategoryWithMovies[]; total: number }> {
+  const key = `iptv_cats_movies_${maxCategories}_${filter}`;
+  const cached = getCached<{ categories: IptvCategoryWithMovies[]; total: number }>(key);
+  if (cached) return cached;
+  try {
+    const res = await cloudFetch(`/api/xtream/vod/categories-with-movies?max_categories=${maxCategories}&per_category=12${filter ? '&filter=' + filter : ''}`);
+    const data = await res.json();
+    setCached(key, data);
+    return data;
+  } catch {
+    return { categories: [], total: 0 };
+  }
+}
+
+export async function fetchIptvMovies(params?: { categoryId?: string; page?: number; search?: string }): Promise<IptvBrowseResult> {
+  const q = new URLSearchParams();
+  if (params?.categoryId) q.set('category_id', params.categoryId);
+  if (params?.page) q.set('page', String(params.page));
+  if (params?.search) q.set('search', params.search);
+  const qs = q.toString();
+  const key = `iptv_movies_${qs}`;
+  const cached = getCached<IptvBrowseResult>(key);
+  if (cached) return cached;
+  try {
+    const res = await cloudFetch(`/api/xtream/vod/streams${qs ? '?' + qs : ''}`);
+    const data = await res.json();
+    setCached(key, data);
+    return data;
+  } catch {
+    return { items: [], page: 1, total: 0, hasMore: false };
+  }
+}
+
+export async function fetchIptvSeries(params?: { categoryId?: string; page?: number; search?: string }): Promise<IptvBrowseResult> {
+  const q = new URLSearchParams();
+  if (params?.categoryId) q.set('category_id', params.categoryId);
+  if (params?.page) q.set('page', String(params.page));
+  if (params?.search) q.set('search', params.search);
+  const qs = q.toString();
+  const key = `iptv_series_${qs}`;
+  const cached = getCached<IptvBrowseResult>(key);
+  if (cached) return cached;
+  try {
+    const res = await cloudFetch(`/api/xtream/series/list${qs ? '?' + qs : ''}`);
+    const data = await res.json();
+    setCached(key, data);
+    return data;
+  } catch {
+    return { items: [], page: 1, total: 0, hasMore: false };
+  }
+}
+
+export async function fetchIptvMovieDetail(vodId: string): Promise<IptvVodDetail | null> {
+  try {
+    const res = await cloudFetch(`/api/xtream/vod/info/${vodId}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+export async function fetchIptvSeriesDetail(seriesId: string): Promise<IptvSeriesDetail | null> {
+  try {
+    const res = await cloudFetch(`/api/xtream/series/info/${seriesId}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+export async function fetchIptvSearch(query: string, page = 1): Promise<IptvBrowseResult> {
+  try {
+    const res = await cloudFetch(`/api/xtream/vod/search?q=${encodeURIComponent(query)}&page=${page}`);
+    return await res.json();
+  } catch { return { items: [], page: 1, total: 0, hasMore: false }; }
+}
+
+export async function requestIptvVodStream(vodId: string, ext = 'mp4'): Promise<{ success: boolean; streamUrl?: string; error?: string }> {
+  try {
+    const res = await cloudFetch(`/api/xtream/vod/stream/${vodId}?ext=${ext}`);
+    const data = await res.json();
+    if (!res.ok) return { success: false, error: data.error };
+    let url: string = data.streamUrl || '';
+    if (url && !url.startsWith('http')) url = `${CLOUD_SERVER_URL}${url}`;
+    return { success: true, streamUrl: url };
+  } catch (err: any) { return { success: false, error: err.message }; }
+}
+
+export async function requestIptvSeriesStream(episodeId: string, ext = 'mp4'): Promise<{ success: boolean; streamUrl?: string; error?: string }> {
+  try {
+    const res = await cloudFetch(`/api/xtream/series/stream/${episodeId}?ext=${ext}`);
+    const data = await res.json();
+    if (!res.ok) return { success: false, error: data.error };
+    let url: string = data.streamUrl || '';
+    if (url && !url.startsWith('http')) url = `${CLOUD_SERVER_URL}${url}`;
+    return { success: true, streamUrl: url };
+  } catch (err: any) { return { success: false, error: err.message }; }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 export async function requestPremiumStream(channelId: string): Promise<PremiumStreamResult> {
   try {

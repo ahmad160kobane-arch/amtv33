@@ -116,7 +116,7 @@ function DetailContent() {
       <span className={`px-2 py-0.5 rounded text-xs font-bold ${isSeries ? 'bg-indigo-500 text-white' : 'bg-brand-primary text-black'}`}>
         {isSeries ? 'مسلسل' : 'فيلم'}
       </span>
-      {detail?.year && <span className="text-xs text-dark-muted">{detail.year}</span>}
+      {detail?.year && <span className="text-xs text-light-muted dark:text-dark-muted">{detail.year}</span>}
       {detail?.rating && (
         <div className="flex items-center gap-1 bg-amber-500/15 px-1.5 py-0.5 rounded">
           <svg className="w-2.5 h-2.5 text-amber-400 fill-amber-400" viewBox="0 0 20 20">
@@ -125,6 +125,8 @@ function DetailContent() {
           <span className="text-xs text-amber-400 font-bold">{detail.rating}</span>
         </div>
       )}
+      {detail?.age && <span className="px-2 py-0.5 rounded text-xs font-medium bg-red-500/15 text-red-400">{detail.age}</span>}
+      {detail?.runtime && <span className="text-xs text-light-muted dark:text-dark-muted">{detail.runtime}</span>}
     </div>
   );
 
@@ -188,7 +190,10 @@ function DetailContent() {
                 </div>
                 <div className="flex-1 text-right">
                   <p className="text-sm font-medium text-light-text dark:text-dark-text line-clamp-1">{ep.title || `الحلقة ${ep.episode}`}</p>
-                  {ep.released && <p className="text-xs text-light-muted dark:text-dark-muted mt-0.5">{ep.released}</p>}
+                  <div className="flex items-center gap-2 mt-0.5">
+                    {ep.duration && <span className="text-xs text-light-muted dark:text-dark-muted">{ep.duration}</span>}
+                    {ep.resolution && ep.resolution !== '0x0' && <span className="text-xs text-light-muted dark:text-dark-muted bg-light-input dark:bg-dark-input px-1 rounded">{ep.resolution.includes('1920') ? 'HD' : ep.resolution.includes('1280') ? 'HD' : ep.resolution.includes('3840') ? '4K' : 'SD'}</span>}
+                  </div>
                 </div>
               </button>
             ))}
@@ -236,19 +241,25 @@ function DetailContent() {
               <div className="flex-1 pb-2">
                 <MetaBadges />
                 <h1 className="text-lg md:text-2xl lg:text-3xl font-black text-light-text dark:text-white leading-tight">{title}</h1>
+                {detail?.o_name && detail.o_name !== title && (
+                  <p className="text-xs text-light-muted dark:text-dark-muted mt-0.5">{detail.o_name}</p>
+                )}
                 {detail?.genre && (
                   <div className="flex flex-wrap gap-1.5 mt-2">
-                    {detail.genre.split(',').slice(0, 4).map((g: string) => (
-                      <span key={g.trim()} className="px-2 py-0.5 rounded-full bg-white/10 text-white/70 text-xs">{g.trim()}</span>
+                    {detail.genre.split(/[,،]/).slice(0, 5).map((g: string) => (
+                      <span key={g.trim()} className="px-2 py-0.5 rounded-full bg-white/10 dark:bg-white/10 bg-light-input text-light-muted dark:text-white/70 text-xs">{g.trim()}</span>
                     ))}
                   </div>
+                )}
+                {detail?.releaseDate && (
+                  <p className="text-xs text-light-muted dark:text-dark-muted mt-1.5">{detail.releaseDate}</p>
                 )}
               </div>
             </div>
 
             {description ? (
               <div className="mb-4">
-                <p className={`text-sm text-dark-muted leading-relaxed ${descExpanded ? '' : 'line-clamp-3'}`}>{description}</p>
+                <p className={`text-sm text-light-muted dark:text-dark-muted leading-relaxed whitespace-pre-line ${descExpanded ? '' : 'line-clamp-3'}`}>{description}</p>
                 {description.length > 150 && (
                   <button onClick={() => setDescExpanded(v => !v)} className="text-xs text-brand-primary mt-1 hover:text-brand-dark transition">
                     {descExpanded ? 'عرض أقل' : 'قراءة المزيد'}
@@ -278,6 +289,15 @@ function DetailContent() {
                 </svg>
                 {isFav ? 'مفضل' : 'مفضلة'}
               </button>
+              {detail?.trailer && (
+                <a href={`https://www.youtube.com/watch?v=${detail.trailer}`} target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-2 px-4 py-3 rounded-xl font-medium text-sm bg-red-600/15 text-red-500 hover:bg-red-600/25 transition">
+                  <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" />
+                  </svg>
+                  إعلان
+                </a>
+              )}
             </div>
 
             {/* Video Player */}
@@ -308,9 +328,9 @@ function DetailContent() {
               </div>
             )}
 
-            {(detail?.cast || detail?.director || detail?.runtime) && (
+            {(detail?.cast || detail?.director || detail?.runtime || detail?.country) && (
               <div className="mb-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {detail.director && (
+                {detail?.director && (
                   <div className="flex items-start gap-3 p-3 rounded-xl bg-light-card dark:bg-dark-card">
                     <svg className="w-4 h-4 text-brand-primary mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.069A1 1 0 0121 8.82v6.36a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
@@ -318,7 +338,7 @@ function DetailContent() {
                     <div><p className="text-xs text-light-muted dark:text-dark-muted">المخرج</p><p className="text-sm text-light-text dark:text-dark-text font-medium">{detail.director}</p></div>
                   </div>
                 )}
-                {detail.cast && (
+                {detail?.cast && (
                   <div className="flex items-start gap-3 p-3 rounded-xl bg-light-card dark:bg-dark-card">
                     <svg className="w-4 h-4 text-brand-primary mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -326,12 +346,20 @@ function DetailContent() {
                     <div><p className="text-xs text-light-muted dark:text-dark-muted">الممثلون</p><p className="text-sm text-light-text dark:text-dark-text font-medium line-clamp-2">{detail.cast}</p></div>
                   </div>
                 )}
-                {detail.runtime && (
+                {detail?.runtime && (
                   <div className="flex items-start gap-3 p-3 rounded-xl bg-light-card dark:bg-dark-card">
                     <svg className="w-4 h-4 text-brand-primary mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
                     <div><p className="text-xs text-light-muted dark:text-dark-muted">المدة</p><p className="text-sm text-light-text dark:text-dark-text font-medium">{detail.runtime}</p></div>
+                  </div>
+                )}
+                {detail?.country && (
+                  <div className="flex items-start gap-3 p-3 rounded-xl bg-light-card dark:bg-dark-card">
+                    <svg className="w-4 h-4 text-brand-primary mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <div><p className="text-xs text-light-muted dark:text-dark-muted">البلد</p><p className="text-sm text-light-text dark:text-dark-text font-medium">{detail.country}</p></div>
                   </div>
                 )}
               </div>

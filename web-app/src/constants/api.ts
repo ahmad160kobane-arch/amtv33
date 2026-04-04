@@ -311,24 +311,35 @@ export interface IptvVodItem {
 }
 
 export interface IptvVodDetail extends IptvVodItem {
+  o_name?: string;
   backdrop?: string;
   plot?: string;
   cast?: string;
   director?: string;
   runtime?: string;
+  duration_secs?: number;
+  releaseDate?: string;
+  country?: string;
+  tmdb_id?: number | null;
   trailer?: string;
+  age?: string;
+  genre_raw?: string;
+  rating5?: number | null;
 }
 
 export interface IptvEpisode {
   id: string;
   episode: number;
   title: string;
+  rawTitle?: string;
   poster?: string;
   plot?: string;
   duration?: string;
+  duration_secs?: number;
   released?: string;
   ext: string;
   season: number;
+  resolution?: string;
 }
 
 export interface IptvSeason {
@@ -338,6 +349,7 @@ export interface IptvSeason {
 
 export interface IptvSeriesDetail extends IptvVodDetail {
   seasons: IptvSeason[];
+  episode_run_time?: string;
 }
 
 export interface IptvBrowseResult {

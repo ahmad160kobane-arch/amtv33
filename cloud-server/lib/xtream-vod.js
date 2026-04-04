@@ -5,19 +5,62 @@
 
 const { XTREAM } = require('./xtream');
 
-// ─────────────────────────── Image URL sanitizer ──────────────────────────
+// ─────────────────────────── Text helpers ──────────────────────────────────
+
 // Cleans broken URLs from Xtream (spaces, bad chars) — returns '' if invalid
 function sanitizeUrl(url) {
   if (!url || typeof url !== 'string') return '';
   const trimmed = url.trim();
-  // Filter 'null', 'undefined', empty, non-http
   if (!trimmed || trimmed === 'null' || trimmed === 'undefined' || !trimmed.startsWith('http')) return '';
   try {
-    // encodeURI preserves valid URL chars but encodes spaces and illegal chars
     return encodeURI(decodeURI(trimmed));
   } catch {
     return trimmed.replace(/ /g, '%20');
   }
+}
+
+// Remove provider tags like [Ar Movies 2025], [EN Series], etc. and clean whitespace
+function cleanName(name) {
+  if (!name || typeof name !== 'string') return '';
+  return name
+    .replace(/\[.*?\]/g, '')   // remove [Any Tag]
+    .replace(/\s{2,}/g, ' ')   // collapse multiple spaces
+    .trim();
+}
+
+// Prioritize Arabic text in mixed Arabic/English fields (e.g. plot)
+function arabicFirst(text) {
+  if (!text || typeof text !== 'string') return '';
+  // Clean escaped newlines from IPTV data
+  let clean = text.replace(/\\r\\n|\\n|\\r/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  // Check if text contains Arabic
+  const hasArabic = /[\u0600-\u06FF\u0750-\u077F]/.test(clean);
+  if (!hasArabic) return clean;
+  // Split into sentences/paragraphs, find Arabic portions
+  const parts = clean.split(/(?<=\.)\s+|\n+/);
+  const arabicParts = parts.filter(p => /[\u0600-\u06FF]/.test(p));
+  const englishParts = parts.filter(p => !/[\u0600-\u06FF]/.test(p) && p.trim());
+  if (arabicParts.length === 0) return clean;
+  // Arabic first, then English
+  return [...arabicParts, ...englishParts].join('\n').trim();
+}
+
+// Extract Arabic genre names: "Comedy / كوميدي" → "كوميدي" (keep both if no Arabic)
+function arabicGenre(genre) {
+  if (!genre || typeof genre !== 'string') return '';
+  const parts = genre.split(/[,\/]/).map(p => p.trim()).filter(Boolean);
+  const arabic = parts.filter(p => /[\u0600-\u06FF]/.test(p));
+  if (arabic.length > 0) return arabic.join(' , ');
+  return parts.join(' , ');
+}
+
+// Detect if episode title is just a filename like "Show.S1.E1" or "show_s01e05"
+function isFilenameLike(title) {
+  if (!title) return true;
+  return /^[A-Za-z0-9._\-]+\.[Ss]\d+\.?[Ee]\d+/.test(title) ||
+         /^[A-Za-z0-9._\-]+_[Ss]\d+[Ee]\d+/.test(title) ||
+         /^[Ee]p?\s*\d+$/i.test(title) ||
+         /^\d+$/.test(title);
 }
 
 const CACHE_TTL   = 30 * 60 * 1000; // 30 min
@@ -96,7 +139,7 @@ async function getVodStreams({ categoryId, page = 1, limit = 20, search } = {}) 
 
   const items = paged.map(s => ({
     id           : String(s.stream_id),
-    name         : (s.name || '').trim(),
+    name         : cleanName(s.name),
     poster       : sanitizeUrl(s.stream_icon),
     rating       : s.rating ? String(s.rating) : (s.rating_5based ? String(s.rating_5based) : ''),
     year         : s.releasedate ? String(s.releasedate).substring(0, 4)
@@ -126,19 +169,27 @@ async function getVodInfo(vodId) {
 
   const result = {
     id          : String(movie.stream_id || vodId),
-    name        : info.name || movie.name || '',
+    name        : cleanName(info.name || movie.name || ''),
+    o_name      : cleanName(info.o_name || ''),
     poster,
     backdrop,
-    plot        : info.plot || '',
-    cast        : info.cast || '',
+    plot        : arabicFirst(info.plot || info.description || ''),
+    cast        : info.cast || info.actors || '',
     director    : info.director || '',
-    genre       : info.genre || '',
+    genre       : arabicGenre(info.genre),
+    genre_raw   : info.genre || '',
     rating      : info.rating || '',
-    year        : info.releasedate ? info.releasedate.substring(0, 4) : '',
+    rating5     : info.rating_5based || null,
+    year        : info.year || (info.releasedate ? info.releasedate.substring(0, 4) : ''),
+    releaseDate : info.releasedate || info.release_date || '',
     runtime     : info.duration || '',
+    duration_secs: info.duration_secs || 0,
+    country     : info.country || '',
+    tmdb_id     : info.tmdb_id || null,
     ext         : movie.container_extension || 'mp4',
     vod_type    : 'movie',
     trailer     : info.youtube_trailer || '',
+    age         : info.age || info.mpaa_rating || info.mpaa || '',
   };
 
   setCache(key, result);
@@ -189,11 +240,11 @@ async function getSeriesList({ categoryId, page = 1, limit = 20, search } = {}) 
 
   const items = paged.map(s => ({
     id          : String(s.series_id),
-    name        : (s.name || '').trim(),
+    name        : cleanName(s.name),
     poster      : sanitizeUrl(s.cover) || sanitizeUrl(s.series_icon),
     rating      : s.rating || '',
     year        : s.releaseDate ? s.releaseDate.substring(0, 4) : '',
-    genre       : s.genre || '',
+    genre       : arabicGenre(s.genre),
     category_id : String(s.category_id || ''),
     vod_type    : 'series',
   }));
@@ -219,33 +270,51 @@ async function getSeriesInfo(seriesId) {
   const seasons = [];
   for (const [seasonNum, eps] of Object.entries(rawEps)) {
     const sNum = Number(seasonNum);
-    const epList = (Array.isArray(eps) ? eps : []).map(e => ({
-      id      : String(e.id),
-      episode : Number(e.episode_num || 1),
-      title   : e.title || `الحلقة ${e.episode_num}`,
-      poster  : sanitizeUrl((e.info || {}).movie_image),
-      plot    : (e.info || {}).plot || '',
-      duration: (e.info || {}).duration || '',
-      released: (e.info || {}).releasedate || '',
-      ext     : e.container_extension || 'mp4',
-      season  : sNum,
-    }));
+    const epList = (Array.isArray(eps) ? eps : []).map(e => {
+      const ei  = e.info || {};
+      const epn = Number(e.episode_num || 1);
+      const rawTitle = e.title || '';
+      // Use Arabic fallback when title is just a filename
+      const title = (rawTitle && !isFilenameLike(rawTitle))
+        ? rawTitle
+        : `الحلقة ${epn}`;
+      return {
+        id           : String(e.id),
+        episode      : epn,
+        title,
+        rawTitle     : rawTitle,
+        poster       : sanitizeUrl(ei.movie_image),
+        plot         : arabicFirst(ei.plot || ''),
+        duration     : ei.duration || '',
+        duration_secs: ei.duration_secs || 0,
+        released     : ei.releasedate || '',
+        ext          : e.container_extension || 'mp4',
+        season       : sNum,
+        resolution   : ei.video ? `${ei.video.width || 0}x${ei.video.height || 0}` : '',
+      };
+    });
     seasons.push({ season: sNum, episodes: epList });
   }
   seasons.sort((a, b) => a.season - b.season);
 
   const result = {
-    id      : String(seriesId),
-    name    : info.name || '',
+    id          : String(seriesId),
+    name        : cleanName(info.name),
+    o_name      : cleanName(info.o_name || ''),
     poster,
     backdrop,
-    plot    : info.plot || '',
-    cast    : info.cast || '',
-    director: info.director || '',
-    genre   : info.genre || '',
-    rating  : info.rating || '',
-    year    : info.releaseDate ? info.releaseDate.substring(0, 4) : '',
-    vod_type: 'series',
+    plot        : arabicFirst(info.plot || ''),
+    cast        : info.cast || '',
+    director    : info.director || '',
+    genre       : arabicGenre(info.genre),
+    genre_raw   : info.genre || '',
+    rating      : info.rating || '',
+    rating5     : info.rating_5based || null,
+    year        : info.releaseDate ? info.releaseDate.substring(0, 4) : '',
+    releaseDate : info.releaseDate || '',
+    vod_type    : 'series',
+    trailer     : info.youtube_trailer || '',
+    episode_run_time: info.episode_run_time || '',
     seasons,
   };
 
@@ -343,7 +412,7 @@ async function getVodByCategory({ perCategory = 12, maxCategories = 40, filter =
       name: cat.name,
       items: streams.map(s => ({
         id: String(s.stream_id),
-        name: (s.name || '').trim(),
+        name: cleanName(s.name),
         poster: sanitizeUrl(s.stream_icon),
         rating: s.rating ? String(s.rating) : '',
         year: s.added ? new Date(Number(s.added) * 1000).getFullYear().toString() : '',
