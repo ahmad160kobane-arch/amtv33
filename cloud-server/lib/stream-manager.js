@@ -105,7 +105,7 @@ class StreamManager {
       for (let i = 0; i < maxRedirects; i++) {
         const resp = await fetch(currentUrl, {
           redirect: 'manual',
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+          headers: { 'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20' },
         });
         if (resp.status >= 300 && resp.status < 400) {
           const location = resp.headers.get('location');
@@ -175,7 +175,7 @@ class StreamManager {
       '-flags', 'low_delay',
       '-analyzeduration', '1000000',
       '-probesize', '1000000',
-      '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      '-user_agent', 'VLC/3.0.20 LibVLC/3.0.20',
       '-reconnect', '1',
       '-reconnect_streamed', '1',
       '-reconnect_at_eof', '1',
@@ -228,7 +228,7 @@ class StreamManager {
 
     const cmd = [
       '-y', '-hide_banner', '-loglevel', 'warning',
-      '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      '-user_agent', 'VLC/3.0.20 LibVLC/3.0.20',
       '-reconnect', '1',
       '-reconnect_streamed', '1',
       '-reconnect_on_network_error', '1',
@@ -472,7 +472,7 @@ class StreamManager {
       execFile(ffprobe, [
         '-v', 'quiet', '-print_format', 'json',
         '-show_streams', '-select_streams', 's',
-        '-user_agent', 'Mozilla/5.0',
+        '-user_agent', 'VLC/3.0.20 LibVLC/3.0.20',
         sourceUrl,
       ], { timeout: 15000 }, (err, stdout) => {
         if (err) return resolve([]);

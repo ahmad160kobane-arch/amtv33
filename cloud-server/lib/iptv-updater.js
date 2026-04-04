@@ -10,9 +10,9 @@ class IptvUpdater {
   }
 
   async update() {
-    const cfg = this.db.prepare('SELECT server_url, username, password FROM iptv_config WHERE id = 1').get();
+    const cfg = await this.db.prepare('SELECT server_url, username, password FROM iptv_config WHERE id = 1').get();
     if (!cfg || !cfg.server_url) {
-      console.log('[IPTV] لا يوجد إعدادات IPTV — تخطي التحديث');
+      console.log('[IPTV] لا يوجد إعدادات IPTV — تخطي التحيث');
       return;
     }
 
@@ -48,7 +48,7 @@ class IptvUpdater {
     await this._updateEpisodes();
 
     // تسجيل وقت المزامنة
-    this.db.prepare("UPDATE iptv_config SET last_sync = datetime('now') WHERE id = 1").run();
+    await this.db.prepare("UPDATE iptv_config SET last_sync = NOW() WHERE id = 1").run();
 
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
     console.log(`[IPTV] تحديث الروابط اكتمل في ${elapsed}s`);
@@ -59,16 +59,15 @@ class IptvUpdater {
       const streams = await this._fetch(`${this.apiBase}&action=get_live_streams`);
       if (!Array.isArray(streams)) return;
 
-      const update = this.db.prepare('UPDATE channels SET stream_url = ? WHERE xtream_id = ?');
       let count = 0;
-      const tx = this.db.transaction(() => {
+      await this.db.runTransaction(async (prepare) => {
+        const update = prepare('UPDATE channels SET stream_url = ? WHERE xtream_id = ?');
         for (const s of streams) {
           const url = `${this.server}/live/${this.username}/${this.password}/${s.stream_id}.m3u8`;
-          const r = update.run(url, String(s.stream_id));
+          const r = await update.run(url, String(s.stream_id));
           count += r.changes;
         }
       });
-      tx();
       console.log(`[IPTV] تحديث ${count} قناة مباشرة`);
     } catch (e) {
       console.error('[IPTV] خطأ تحديث القنوات:', e.message);
@@ -80,17 +79,16 @@ class IptvUpdater {
       const streams = await this._fetch(`${this.apiBase}&action=get_vod_streams`);
       if (!Array.isArray(streams)) return;
 
-      const update = this.db.prepare('UPDATE vod SET stream_token = ? WHERE xtream_id = ? AND vod_type = ?');
       let count = 0;
-      const tx = this.db.transaction(() => {
+      await this.db.runTransaction(async (prepare) => {
+        const update = prepare('UPDATE vod SET stream_token = ? WHERE xtream_id = ? AND vod_type = ?');
         for (const s of streams) {
           const ext = s.container_extension || 'mkv';
           const url = `${this.server}/movie/${this.username}/${this.password}/${s.stream_id}.${ext}`;
-          const r = update.run(url, String(s.stream_id), 'movie');
+          const r = await update.run(url, String(s.stream_id), 'movie');
           count += r.changes;
         }
       });
-      tx();
       console.log(`[IPTV] تحديث ${count} فيلم`);
     } catch (e) {
       console.error('[IPTV] خطأ تحديث الأفلام:', e.message);
@@ -100,18 +98,17 @@ class IptvUpdater {
   async _updateEpisodes() {
     try {
       // نحدّث الحلقات الموجودة فقط — نبني الرابط من xtream_id
-      const episodes = this.db.prepare("SELECT id, xtream_id, container_ext FROM episodes WHERE xtream_id IS NOT NULL AND xtream_id != ''").all();
-      const update = this.db.prepare('UPDATE episodes SET stream_token = ? WHERE id = ?');
+      const episodes = await this.db.prepare("SELECT id, xtream_id, container_ext FROM episodes WHERE xtream_id IS NOT NULL AND xtream_id != ''").all();
       let count = 0;
-      const tx = this.db.transaction(() => {
+      await this.db.runTransaction(async (prepare) => {
+        const update = prepare('UPDATE episodes SET stream_token = ? WHERE id = ?');
         for (const ep of episodes) {
           const ext = ep.container_ext || 'mkv';
           const url = `${this.server}/series/${this.username}/${this.password}/${ep.xtream_id}.${ext}`;
-          const r = update.run(url, ep.id);
+          const r = await update.run(url, ep.id);
           count += r.changes;
         }
       });
-      tx();
       console.log(`[IPTV] تحديث ${count} حلقة`);
     } catch (e) {
       console.error('[IPTV] خطأ تحديث الحلقات:', e.message);

@@ -11,17 +11,46 @@ function HlsPlayer({ streamUrl, title }: { streamUrl: string; title: string }) {
     if (!videoRef.current || !streamUrl) return;
     const video = videoRef.current;
 
-    if (streamUrl.includes('.m3u8') || streamUrl.includes('m3u')) {
-      // Try native HLS first (Safari), then load hls.js
+    const isHls = streamUrl.includes('.m3u8') || streamUrl.includes('m3u');
+    const isTs  = streamUrl.includes('/xtream-pipe/') || streamUrl.includes('.ts');
+
+    if (isTs) {
+      // Raw MPEG-TS pipe — use mpegts.js via MSE
+      const loadMpegts = () => {
+        const Mpegts = (window as any).mpegts;
+        if (Mpegts && Mpegts.isSupported()) {
+          const player = Mpegts.createPlayer({ type: 'mse', isLive: true, url: streamUrl });
+          player.attachMediaElement(video);
+          player.load();
+          player.play().catch(() => {});
+          (video as any)._mpegts = player;
+        } else {
+          video.src = streamUrl;
+          video.play().catch(() => {});
+        }
+      };
+      if ((window as any).mpegts) {
+        loadMpegts();
+      } else {
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/mpegts.js@latest/dist/mpegts.min.js';
+        script.onload = loadMpegts;
+        document.head.appendChild(script);
+      }
+      return () => {
+        const p = (video as any)._mpegts;
+        if (p) { try { p.destroy(); } catch {} delete (video as any)._mpegts; }
+      };
+    }
+
+    if (isHls) {
+      // HLS — try native (Safari) then hls.js
       if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = streamUrl;
         video.play().catch(() => {});
         return;
       }
-      // Load hls.js dynamically from CDN
-      const script = document.createElement('script');
-      script.src = 'https://cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js';
-      script.onload = () => {
+      const loadHls = () => {
         const Hls = (window as any).Hls;
         if (Hls && Hls.isSupported()) {
           const hls = new Hls({ enableWorker: false });
@@ -31,16 +60,19 @@ function HlsPlayer({ streamUrl, title }: { streamUrl: string; title: string }) {
           (video as any)._hls = hls;
         }
       };
-      if (!(window as any).Hls) {
-        document.head.appendChild(script);
+      if ((window as any).Hls) {
+        loadHls();
       } else {
-        script.onload!(new Event('load'));
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js';
+        script.onload = loadHls;
+        document.head.appendChild(script);
       }
       return () => { const h = (video as any)._hls; if (h) { h.destroy(); delete (video as any)._hls; } };
-    } else {
-      video.src = streamUrl;
-      video.play().catch(() => {});
     }
+
+    video.src = streamUrl;
+    video.play().catch(() => {});
   }, [streamUrl]);
 
   return (
@@ -138,18 +170,18 @@ function LiveContent() {
 
       {/* Grid */}
       {loading ? (
-        <div className="grid grid-cols-3 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
           {Array.from({ length: 12 }).map((_, i) => <SkeletonChannelCard key={i} />)}
         </div>
       ) : filtered.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 gap-2">
-          <svg className="w-10 h-10 text-dark-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0" /></svg>
-          <p className="text-dark-muted text-sm">لا توجد قنوات</p>
+          <svg className="w-10 h-10 text-light-muted dark:text-dark-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0" /></svg>
+          <p className="text-light-muted dark:text-dark-muted text-sm">لا توجد قنوات</p>
         </div>
       ) : (
         <>
           <p className="text-xs text-light-muted dark:text-dark-muted mb-3">{filtered.length} قناة</p>
-          <div className="grid grid-cols-3 md:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
             {filtered.map(ch => (
               <button key={ch.id} onClick={() => selectChannel(ch)}
                 className={`flex flex-col items-center p-3 rounded-xl transition relative ${activeChannel?.id === ch.id ? 'bg-brand-primary/15 border border-brand-primary/40' : 'bg-light-card dark:bg-dark-card hover:bg-light-input dark:hover:bg-dark-input'}`}>
@@ -178,15 +210,12 @@ function LiveContent() {
           <div className="w-2 h-2 rounded-full bg-brand-success live-dot" />
         </div>
 
-        {/* ── Desktop: player left + channels right | Mobile: stacked ── */}
         <div className="lg:flex lg:gap-6 lg:items-start">
 
-          {/* LEFT — Player (desktop: 2/3, mobile: full width above) */}
+          {/* LEFT — Player + channels below on mobile */}
           <div className="lg:flex-1 min-w-0">
-            {/* Mobile: channels ABOVE player */}
-            <div className="lg:hidden mb-4"><ChannelGrid /></div>
 
-            {/* Player */}
+            {/* Player — always at top when a channel is active */}
             {activeChannel ? (
               <div className="rounded-xl overflow-hidden bg-black shadow-2xl mb-4">
                 <div className="relative w-full" style={{ paddingTop: '56.25%' }}>
@@ -213,21 +242,23 @@ function LiveContent() {
                 </div>
               </div>
             ) : (
-              /* Desktop placeholder when no channel selected */
-              <div className="hidden lg:flex rounded-xl bg-dark-card border border-dark-border items-center justify-center mb-4" style={{ paddingTop: '56.25%', position: 'relative' }}>
+              <div className="hidden lg:flex rounded-xl bg-light-card dark:bg-dark-card border border-light-border dark:border-dark-border items-center justify-center mb-4" style={{ paddingTop: '56.25%', position: 'relative' }}>
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
-                  <svg className="w-14 h-14 text-dark-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className="w-14 h-14 text-light-muted dark:text-dark-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0" />
                   </svg>
-                  <p className="text-dark-muted text-sm">اختر قناة من القائمة</p>
+                  <p className="text-light-muted dark:text-dark-muted text-sm">اختر قناة من القائمة</p>
                 </div>
               </div>
             )}
+
+            {/* Mobile: channels BELOW player */}
+            <div className="lg:hidden"><ChannelGrid /></div>
           </div>
 
           {/* RIGHT — Channel list (desktop sidebar, sticky) */}
           <div className="hidden lg:block lg:w-80 xl:w-96 flex-shrink-0">
-            <div className="sticky top-4 max-h-[calc(100vh-5rem)] overflow-y-auto no-scrollbar">
+            <div className="sticky top-20 max-h-[calc(100vh-6rem)] overflow-y-auto no-scrollbar">
               <ChannelGrid />
             </div>
           </div>

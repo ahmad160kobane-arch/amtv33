@@ -70,20 +70,21 @@ const TS_DEFAULT = "TO_CHAR(NOW(), 'YYYY-MM-DD HH24:MI:SS')";
 db.init = async function () {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
-      id            TEXT PRIMARY KEY,
-      username      TEXT UNIQUE NOT NULL,
-      email         TEXT UNIQUE NOT NULL,
-      password_hash TEXT NOT NULL,
-      display_name  TEXT DEFAULT '',
-      avatar_url    TEXT DEFAULT '',
-      plan          TEXT DEFAULT 'free',
-      expires_at    TEXT DEFAULT NULL,
-      is_admin      INTEGER DEFAULT 0,
-      is_blocked    INTEGER DEFAULT 0,
-      role          TEXT DEFAULT 'user',
-      balance       REAL DEFAULT 0,
-      created_by    TEXT DEFAULT NULL,
-      created_at    TEXT DEFAULT ${TS_DEFAULT}
+      id              TEXT PRIMARY KEY,
+      username        TEXT UNIQUE NOT NULL,
+      email           TEXT UNIQUE NOT NULL,
+      password_hash   TEXT NOT NULL,
+      display_name    TEXT DEFAULT '',
+      avatar_url      TEXT DEFAULT '',
+      plan            TEXT DEFAULT 'free',
+      expires_at      TEXT DEFAULT NULL,
+      max_connections INTEGER DEFAULT 1,
+      is_admin        INTEGER DEFAULT 0,
+      is_blocked      INTEGER DEFAULT 0,
+      role            TEXT DEFAULT 'user',
+      balance         REAL DEFAULT 0,
+      created_by      TEXT DEFAULT NULL,
+      created_at      TEXT DEFAULT ${TS_DEFAULT}
     );
 
     CREATE TABLE IF NOT EXISTS channels (
@@ -181,23 +182,25 @@ db.init = async function () {
     );
 
     CREATE TABLE IF NOT EXISTS subscription_plans (
-      id            TEXT PRIMARY KEY,
-      name          TEXT NOT NULL,
-      duration_days INTEGER NOT NULL,
-      price_usd     REAL NOT NULL DEFAULT 0,
-      is_active     INTEGER DEFAULT 1,
-      created_at    TEXT DEFAULT ${TS_DEFAULT}
+      id              TEXT PRIMARY KEY,
+      name            TEXT NOT NULL,
+      duration_days   INTEGER NOT NULL,
+      max_connections INTEGER NOT NULL DEFAULT 1,
+      price_usd       REAL NOT NULL DEFAULT 0,
+      is_active       INTEGER DEFAULT 1,
+      created_at      TEXT DEFAULT ${TS_DEFAULT}
     );
 
     CREATE TABLE IF NOT EXISTS activation_codes (
-      id            TEXT PRIMARY KEY,
-      code          TEXT UNIQUE NOT NULL,
-      plan_id       TEXT NOT NULL REFERENCES subscription_plans(id),
-      created_by    TEXT NOT NULL REFERENCES users(id),
-      activated_by  TEXT DEFAULT NULL REFERENCES users(id),
-      activated_at  TEXT DEFAULT NULL,
-      status        TEXT DEFAULT 'unused' CHECK(status IN ('unused','used','expired','cancelled')),
-      created_at    TEXT DEFAULT ${TS_DEFAULT}
+      id              TEXT PRIMARY KEY,
+      code            TEXT UNIQUE NOT NULL,
+      plan_id         TEXT NOT NULL REFERENCES subscription_plans(id),
+      max_connections INTEGER DEFAULT 1,
+      created_by      TEXT NOT NULL REFERENCES users(id),
+      activated_by    TEXT DEFAULT NULL REFERENCES users(id),
+      activated_at    TEXT DEFAULT NULL,
+      status          TEXT DEFAULT 'unused' CHECK(status IN ('unused','used','expired','cancelled')),
+      created_at      TEXT DEFAULT ${TS_DEFAULT}
     );
 
     CREATE TABLE IF NOT EXISTS agent_transactions (
@@ -237,16 +240,29 @@ db.init = async function () {
     CREATE INDEX IF NOT EXISTS idx_channels_xtream ON channels(xtream_id);
   `);
 
-  // ─── Seed: default subscription plans ────────────────────
+  // ─── Seed: default subscription plans (with connection variants) ───
   const { rows } = await pool.query('SELECT COUNT(*) as cnt FROM subscription_plans');
   if (parseInt(rows[0].cnt) === 0) {
     await pool.query(`
-      INSERT INTO subscription_plans (id, name, duration_days, price_usd) VALUES
-        ('plan_weekly',  'أسبوعي',  7,   2.99),
-        ('plan_monthly', 'شهري',    30,  7.99),
-        ('plan_yearly',  'سنوي',    365, 59.99)
+      INSERT INTO subscription_plans (id, name, duration_days, max_connections, price_usd) VALUES
+        ('plan_weekly_1',  'أسبوعي - جهاز واحد',   7,   1, 2.99),
+        ('plan_weekly_2',  'أسبوعي - جهازين',       7,   2, 4.99),
+        ('plan_weekly_3',  'أسبوعي - 3 أجهزة',      7,   3, 6.99),
+        ('plan_monthly_1', 'شهري - جهاز واحد',      30,  1, 7.99),
+        ('plan_monthly_2', 'شهري - جهازين',          30,  2, 12.99),
+        ('plan_monthly_3', 'شهري - 3 أجهزة',         30,  3, 17.99),
+        ('plan_yearly_1',  'سنوي - جهاز واحد',      365, 1, 59.99),
+        ('plan_yearly_2',  'سنوي - جهازين',          365, 2, 89.99),
+        ('plan_yearly_3',  'سنوي - 3 أجهزة',         365, 3, 119.99)
     `);
   }
+
+  // ─── Migration: add max_connections columns if missing ──────
+  try {
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS max_connections INTEGER DEFAULT 1');
+    await pool.query('ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS max_connections INTEGER DEFAULT 1');
+    await pool.query('ALTER TABLE activation_codes ADD COLUMN IF NOT EXISTS max_connections INTEGER DEFAULT 1');
+  } catch (e) { /* columns already exist */ }
 
   // ─── Seed: default admin user ──────────────────────────
   const { rows: adminRows } = await pool.query("SELECT COUNT(*) as cnt FROM users WHERE is_admin = 1");

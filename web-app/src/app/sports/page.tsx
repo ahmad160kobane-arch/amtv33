@@ -1,8 +1,7 @@
 'use client';
 import React, { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { fetchVidsrcBrowse, fetchFreeChannels, fetchChannels, VidsrcItem, FreeChannel, Channel } from '@/constants/api';
-import ContentRow from '@/components/ContentRow';
+import { fetchFreeChannels, FreeChannel } from '@/constants/api';
 import { SkeletonRow } from '@/components/Skeleton';
 
 export default function SportsPage() {
@@ -10,17 +9,11 @@ export default function SportsPage() {
   const [loading, setLoading] = useState(true);
   const [logoErrors, setLogoErrors] = useState<Set<string>>(new Set());
   const [freeChannels, setFreeChannels] = useState<FreeChannel[]>([]);
-  const [channels, setChannels] = useState<Channel[]>([]);
-  const [action, setAction] = useState<VidsrcItem[]>([]);
-  const [adventure, setAdventure] = useState<VidsrcItem[]>([]);
 
   const load = useCallback(async () => {
     try {
       await Promise.all([
         fetchFreeChannels({ group: 'رياضة', limit: 30 }).then(d => setFreeChannels(d.channels || [])).catch(() => {}),
-        fetchChannels({ group: 'sport', limit: 20 }).then(d => setChannels(d.items || [])).catch(() => {}),
-        fetchVidsrcBrowse({ type: 'movie', category: 'action', page: 1 }).then(d => setAction(d.items?.slice(0, 16) || [])).catch(() => {}),
-        fetchVidsrcBrowse({ type: 'movie', category: 'adventure', page: 1 }).then(d => setAdventure(d.items?.slice(0, 16) || [])).catch(() => {}),
       ]);
     } finally {
       setLoading(false);
@@ -75,13 +68,8 @@ export default function SportsPage() {
         </section>
       )}
 
-      {loading ? (
-        <><SkeletonRow /><SkeletonRow /></>
-      ) : (
-        <>
-          {action.length > 0 && <ContentRow title="أفلام أكشن" items={action} seeAllHref="/allcontent?type=movie&category=action" />}
-          {adventure.length > 0 && <ContentRow title="أفلام مغامرات" items={adventure} seeAllHref="/allcontent?type=movie&category=adventure" />}
-        </>
+      {loading && freeChannels.length === 0 && (
+        <SkeletonRow />
       )}
     </div>
   );

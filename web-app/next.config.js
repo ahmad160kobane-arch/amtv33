@@ -48,6 +48,9 @@ const nextConfig = {
       { source: '/api/xtream/:path*',   destination: `${CLOUD_URL}/api/xtream/:path*`   },
       { source: '/proxy/live/:path*',   destination: `${CLOUD_URL}/proxy/live/:path*`   },
       { source: '/free-hls/:path*',     destination: `${CLOUD_URL}/free-hls/:path*`     },
+      { source: '/xtream-play/:path*',  destination: `${CLOUD_URL}/xtream-play/:path*`  },
+      { source: '/xtream-pipe/:path*',  destination: `${CLOUD_URL}/xtream-pipe/:path*`  },
+      { source: '/vod-play/:path*',     destination: `${CLOUD_URL}/vod-play/:path*`     },
       // Backend API (port 3000) — everything else
       { source: '/api/:path*',          destination: `${BACKEND_URL}/api/:path*`         },
     ];

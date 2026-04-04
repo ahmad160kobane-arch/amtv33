@@ -18,7 +18,7 @@ const http = require('http');
 const https = require('https');
 const { URL } = require('url');
 
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+const UA = 'VLC/3.0.20 LibVLC/3.0.20';
 const RECONNECT_DELAY = 2000;
 const MAX_RECONNECTS = 10;
 const CONNECT_TIMEOUT = 12000;
@@ -72,14 +72,14 @@ class LiveProxy {
    * يتصل بالمصدر ويبث مباشرة عبر HTTP pipe
    */
   async streamToClient(channelId, sourceUrl, req, res) {
-    // حل redirects
-    const resolvedUrl = await this._resolveUrl(sourceUrl);
-
-    // تحويل m3u8 → ts لمصادر IPTV الحية
-    let streamUrl = resolvedUrl;
+    // تحويل m3u8 → ts لمصادر IPTV الحية (قبل resolve لأن التوكن يختلف حسب الصيغة)
+    let streamUrl = sourceUrl;
     if (streamUrl.includes('/live/') && streamUrl.endsWith('.m3u8')) {
       streamUrl = streamUrl.slice(0, -5) + '.ts';
     }
+
+    // حل redirects بعد تحويل الصيغة
+    streamUrl = await this._resolveUrl(streamUrl);
 
     // إعداد headers الاستجابة
     res.writeHead(200, {

@@ -1,20 +1,28 @@
 'use client';
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { VidsrcItem } from '@/constants/api';
+interface ContentItem {
+  id: string;
+  title: string;
+  poster: string;
+  vod_type: 'movie' | 'series';
+  year?: string;
+  rating?: string;
+  tmdb_id?: string;
+}
 
 interface Props {
-  item: VidsrcItem;
+  item: ContentItem;
 }
 
 export default function ContentCard({ item }: Props) {
   const [imgError, setImgError] = useState(false);
-  const type = item.vod_type === 'series' ? 'tv' : 'movie';
-  const href = `/detail?tmdbId=${item.tmdb_id || item.id}&type=${type}&title=${encodeURIComponent(item.title)}&poster=${encodeURIComponent(item.poster || '')}`;
+  const type = item.vod_type === 'series' ? 'series' : 'movie';
+  const href = `/detail?id=${item.id}&type=${type}&title=${encodeURIComponent(item.title)}&poster=${encodeURIComponent(item.poster || '')}`;
 
   return (
-    <Link href={href} className="block w-full group cursor-pointer">
-      <div className="relative w-full aspect-[2/3] rounded-xl overflow-hidden bg-dark-input">
+    <Link href={href} className="block w-full group cursor-pointer card-hover">
+      <div className="relative w-full aspect-[2/3] rounded-xl overflow-hidden bg-light-input dark:bg-dark-input">
         {item.poster && !imgError ? (
           <img
             src={item.poster}
@@ -24,7 +32,7 @@ export default function ContentCard({ item }: Props) {
             loading="lazy"
           />
         ) : (
-          <div className="w-full h-full flex items-center justify-center bg-dark-card">
+          <div className="w-full h-full flex items-center justify-center bg-light-card dark:bg-dark-card">
             <svg className="w-10 h-10 text-dark-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.069A1 1 0 0121 8.82v6.36a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
             </svg>
