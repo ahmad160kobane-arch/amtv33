@@ -36,17 +36,34 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
     const video = videoRef.current;
     setError('');
     setBuffering(true);
-    let mpegtsPlayer: any = null;
     let hlsInstance: any = null;
+    let retryCount = 0;
+    const MAX_AUTO_RETRY = 3;
+    let retryTimer: any = null;
 
     const isTs = streamUrl.includes('/xtream-pipe/') || streamUrl.includes('.ts') || streamUrl.includes('/live-pipe/');
-    const isHls = streamUrl.includes('.m3u8');
+    const isHls = streamUrl.includes('.m3u8') || streamUrl.includes('/proxy/live/');
 
-    const onPlay = () => { setPlaying(true); setBuffering(false); };
+    const onPlay = () => { setPlaying(true); setBuffering(false); retryCount = 0; };
     const onPause = () => setPlaying(false);
     const onWaiting = () => setBuffering(true);
-    const onPlaying = () => { setBuffering(false); setPlaying(true); };
-    const onError = () => setError('فشل تحميل البث المباشر');
+    const onPlaying = () => { setBuffering(false); setPlaying(true); retryCount = 0; };
+    const onError = () => {
+      if (retryCount < MAX_AUTO_RETRY) {
+        retryCount++;
+        console.log(`[LivePlayer] Auto-retry ${retryCount}/${MAX_AUTO_RETRY}`);
+        retryTimer = setTimeout(() => {
+          if (hlsInstance) {
+            hlsInstance.startLoad();
+          } else if (video.src) {
+            video.load();
+            video.play().catch(() => {});
+          }
+        }, 2000 * retryCount);
+      } else {
+        setError('فشل تحميل البث المباشر');
+      }
+    };
 
     video.addEventListener('play', onPlay);
     video.addEventListener('pause', onPause);
@@ -58,7 +75,7 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
       const loadMpegts = () => {
         const Mpegts = (window as any).mpegts;
         if (Mpegts && Mpegts.isSupported()) {
-          mpegtsPlayer = Mpegts.createPlayer({
+          const mpegtsPlayer = Mpegts.createPlayer({
             type: 'mse', isLive: true, url: streamUrl,
             enableWorker: true,
             liveBufferLatencyChasing: true,
@@ -68,7 +85,8 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
           mpegtsPlayer.attachMediaElement(video);
           mpegtsPlayer.load();
           mpegtsPlayer.play().catch(() => {});
-          mpegtsPlayer.on('error', () => setError('فشل تحميل البث'));
+          mpegtsPlayer.on('error', () => onError());
+          (video as any)._mpegtsPlayer = mpegtsPlayer;
         } else {
           video.src = streamUrl;
           video.play().catch(() => {});
@@ -84,25 +102,64 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
       }
     } else if (isHls) {
       if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        // Safari native HLS
         video.src = streamUrl;
         video.play().catch(() => {});
       } else {
         const loadHls = () => {
           const Hls = (window as any).Hls;
           if (Hls && Hls.isSupported()) {
-            hlsInstance = new Hls({ enableWorker: true, lowLatencyMode: true });
+            hlsInstance = new Hls({
+              enableWorker: true,
+              lowLatencyMode: true,
+              // ═══ Live streaming optimized config ═══
+              liveSyncDurationCount: 3,          // sync to 3 segments behind live edge
+              liveMaxLatencyDurationCount: 6,    // max 6 segments behind before seeking
+              liveDurationInfinity: true,         // treat as infinite live stream
+              maxBufferLength: 30,                // buffer up to 30s
+              maxMaxBufferLength: 60,             // hard max 60s buffer
+              maxBufferSize: 60 * 1024 * 1024,   // 60MB buffer
+              maxBufferHole: 0.5,                 // tolerate 0.5s gaps
+              // ═══ Error recovery ═══
+              fragLoadingMaxRetry: 6,             // retry segment load 6 times
+              fragLoadingRetryDelay: 1000,        // start with 1s retry delay
+              fragLoadingMaxRetryTimeout: 8000,   // max 8s retry delay
+              manifestLoadingMaxRetry: 4,         // retry manifest 4 times
+              manifestLoadingRetryDelay: 1000,
+              levelLoadingMaxRetry: 4,
+              levelLoadingRetryDelay: 1000,
+            });
             hlsInstance.loadSource(streamUrl);
             hlsInstance.attachMedia(video);
             hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
             hlsInstance.on(Hls.Events.ERROR, (_: any, data: any) => {
-              if (data.fatal) setError('فشل تحميل البث');
+              if (data.fatal) {
+                switch (data.type) {
+                  case Hls.ErrorTypes.NETWORK_ERROR:
+                    if (retryCount < MAX_AUTO_RETRY) {
+                      retryCount++;
+                      console.log(`[LivePlayer] HLS network error, recovering (${retryCount}/${MAX_AUTO_RETRY})`);
+                      hlsInstance.startLoad();
+                    } else {
+                      setError('فشل الاتصال بالبث — تحقق من الشبكة');
+                    }
+                    break;
+                  case Hls.ErrorTypes.MEDIA_ERROR:
+                    console.log('[LivePlayer] HLS media error, recovering');
+                    hlsInstance.recoverMediaError();
+                    break;
+                  default:
+                    setError('فشل تحميل البث المباشر');
+                    break;
+                }
+              }
             });
           }
         };
         if ((window as any).Hls) { loadHls(); }
         else {
           const s = document.createElement('script');
-          s.src = 'https://cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js';
+          s.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js';
           s.onload = loadHls;
           document.head.appendChild(s);
         }
@@ -113,12 +170,14 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
     }
 
     return () => {
+      if (retryTimer) clearTimeout(retryTimer);
       video.removeEventListener('play', onPlay);
       video.removeEventListener('pause', onPause);
       video.removeEventListener('waiting', onWaiting);
       video.removeEventListener('playing', onPlaying);
       video.removeEventListener('error', onError);
-      if (mpegtsPlayer) { try { mpegtsPlayer.destroy(); } catch {} }
+      const mp = (video as any)._mpegtsPlayer;
+      if (mp) { try { mp.destroy(); } catch {} (video as any)._mpegtsPlayer = null; }
       if (hlsInstance) { try { hlsInstance.destroy(); } catch {} }
     };
   }, [streamUrl]);

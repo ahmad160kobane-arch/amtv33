@@ -63,17 +63,18 @@ class StreamManager {
     // ابدأ البث الجديد
     if (!sourceUrl) return { success: false, error: 'رابط المصدر مطلوب' };
 
-    // ═══ وضع اتصال واحد: أوقف أي بث نشط قبل بدء بث جديد ═══
-    // الاشتراك IPTV يدعم اتصال واحد فقط — FFmpeg واحد في كل لحظة
-    // لكن VOD مكتمل (FFmpeg انتهى) لا يستخدم اتصال — لا تُوقفه
+    // ═══ Multi-channel mode: allow multiple concurrent FFmpeg streams ═══
+    // HLS proxy (xtream-proxy) is the preferred path for Xtream live channels
+    // StreamManager is only used for local channels or explicit HLS mode requests
+    // Safety limit: max 5 concurrent FFmpeg streams to prevent resource exhaustion
+    const MAX_CONCURRENT_FFMPEG = 5;
     const activeStreams = [...this.streams.entries()].filter(([, info]) => !info.completed);
-    if (activeStreams.length > 0) {
-      console.log(`[Stream] ⚠ إيقاف ${activeStreams.length} بث نشط (اتصال IPTV واحد فقط)`);
-      for (const [id] of activeStreams) {
-        this._killStream(id);
-      }
-      // انتظر قليلاً حتى يُغلق الاتصال القديم
-      await new Promise(r => setTimeout(r, 1000));
+    if (activeStreams.length >= MAX_CONCURRENT_FFMPEG) {
+      // Kill the oldest stream (least recently accessed)
+      const oldest = activeStreams.sort((a, b) => a[1].lastAccess - b[1].lastAccess)[0];
+      console.log(`[Stream] ⚠ إيقاف ${oldest[1].name} (حد ${MAX_CONCURRENT_FFMPEG} FFmpeg)`);
+      this._killStream(oldest[0]);
+      await new Promise(r => setTimeout(r, 500));
     }
 
     // تتبع redirects لتجاوز Cloudflare — FFmpeg يأخذ الرابط المباشر

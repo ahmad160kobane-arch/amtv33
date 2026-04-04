@@ -321,17 +321,22 @@ app.post('/api/stream/live/:channelId', requireAuth, requirePremium, async (req,
   }
 
   // -- Xtream live channel (xtream_live_<streamId> or bare numeric ID) --
-  // Signed token redirect — credentials hidden from client, client connects directly to source
-  // Signed token redirect — credentials hidden from client, client connects directly to source
+  // Use HLS proxy (shared upstream, segment caching, multi-user safe)
   const xtreamMatch = rawId.match(/^xtream_live_(\d+)$/) || rawId.match(/^(\d+)$/);
   if (xtreamMatch) {
     const streamNumId = xtreamMatch[1];
     const xch = await db.prepare('SELECT id, name, logo, category, stream_id, base_url FROM xtream_channels WHERE stream_id = ? OR id = ?').get(Number(streamNumId), streamNumId);
     if (xch) {
+      const sid = `live_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const base = encodeURIComponent(xch.base_url || XTREAM.primary);
+      // HLS proxy: segment caching, request coalescing, multi-user safe
+      const hlsUrl = `/proxy/live/${xch.stream_id}/index.m3u8?sid=${sid}&base=${base}`;
+      // Direct URL as fallback for mobile ExoPlayer
       const token = jwt.sign({ sid: String(xch.stream_id), t: 'xt' }, config.JWT_SECRET, { expiresIn: '6h' });
       return res.json({
         success: true,
-        hlsUrl: `/xtream-play/${token}/index.m3u8`,
+        hlsUrl,
+        directUrl: `/xtream-play/${token}/index.m3u8`,
         ready: true,
         streamId: String(xch.stream_id),
         sessionId: connCheck.sessionId,
