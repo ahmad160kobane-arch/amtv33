@@ -1,91 +1,9 @@
 'use client';
-import React, { useEffect, useState, useCallback, useRef, Suspense } from 'react';
+import React, { useEffect, useState, useCallback, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { fetchFreeChannels, requestFreeStream, FreeChannel } from '@/constants/api';
 import { SkeletonChannelCard } from '@/components/Skeleton';
-
-function HlsPlayer({ streamUrl, title }: { streamUrl: string; title: string }) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-
-  useEffect(() => {
-    if (!videoRef.current || !streamUrl) return;
-    const video = videoRef.current;
-
-    const isHls = streamUrl.includes('.m3u8') || streamUrl.includes('m3u');
-    const isTs  = streamUrl.includes('/xtream-pipe/') || streamUrl.includes('.ts');
-
-    if (isTs) {
-      // Raw MPEG-TS pipe — use mpegts.js via MSE
-      const loadMpegts = () => {
-        const Mpegts = (window as any).mpegts;
-        if (Mpegts && Mpegts.isSupported()) {
-          const player = Mpegts.createPlayer({ type: 'mse', isLive: true, url: streamUrl });
-          player.attachMediaElement(video);
-          player.load();
-          player.play().catch(() => {});
-          (video as any)._mpegts = player;
-        } else {
-          video.src = streamUrl;
-          video.play().catch(() => {});
-        }
-      };
-      if ((window as any).mpegts) {
-        loadMpegts();
-      } else {
-        const script = document.createElement('script');
-        script.src = 'https://cdn.jsdelivr.net/npm/mpegts.js@latest/dist/mpegts.min.js';
-        script.onload = loadMpegts;
-        document.head.appendChild(script);
-      }
-      return () => {
-        const p = (video as any)._mpegts;
-        if (p) { try { p.destroy(); } catch {} delete (video as any)._mpegts; }
-      };
-    }
-
-    if (isHls) {
-      // HLS — try native (Safari) then hls.js
-      if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        video.src = streamUrl;
-        video.play().catch(() => {});
-        return;
-      }
-      const loadHls = () => {
-        const Hls = (window as any).Hls;
-        if (Hls && Hls.isSupported()) {
-          const hls = new Hls({ enableWorker: false });
-          hls.loadSource(streamUrl);
-          hls.attachMedia(video);
-          hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
-          (video as any)._hls = hls;
-        }
-      };
-      if ((window as any).Hls) {
-        loadHls();
-      } else {
-        const script = document.createElement('script');
-        script.src = 'https://cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js';
-        script.onload = loadHls;
-        document.head.appendChild(script);
-      }
-      return () => { const h = (video as any)._hls; if (h) { h.destroy(); delete (video as any)._hls; } };
-    }
-
-    video.src = streamUrl;
-    video.play().catch(() => {});
-  }, [streamUrl]);
-
-  return (
-    <video
-      ref={videoRef}
-      className="absolute inset-0 w-full h-full bg-black"
-      controls
-      autoPlay
-      playsInline
-      title={title}
-    />
-  );
-}
+import LivePlayer from '@/components/LivePlayer';
 
 function LiveContent() {
   const params = useSearchParams();
@@ -217,29 +135,34 @@ function LiveContent() {
 
             {/* Player — always at top when a channel is active */}
             {activeChannel ? (
-              <div className="rounded-xl overflow-hidden bg-black shadow-2xl mb-4">
-                <div className="relative w-full" style={{ paddingTop: '56.25%' }}>
-                  {streamLoading && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-black">
-                      <div className="w-10 h-10 border-2 border-brand-primary border-t-transparent rounded-full animate-spin" />
+              <div className="mb-4">
+                {streamLoading && (
+                  <div className="relative w-full bg-black rounded-2xl overflow-hidden shadow-2xl" style={{ paddingTop: '56.25%' }}>
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+                      <div className="w-12 h-12 border-[3px] border-brand-primary border-t-transparent rounded-full animate-spin" />
+                      <span className="text-white/60 text-xs">جارٍ تحميل {activeChannel.name}...</span>
                     </div>
-                  )}
-                  {streamError && (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-black gap-2">
-                      <svg className="w-8 h-8 text-brand-error" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                      <p className="text-white/70 text-sm">{streamError}</p>
-                    </div>
-                  )}
-                  {streamUrl && !streamLoading && <HlsPlayer streamUrl={streamUrl} title={activeChannel.name} />}
-                </div>
-                <div className="px-4 py-3 flex items-center justify-between bg-black/80">
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-brand-success live-dot" />
-                    <span className="text-white font-bold text-sm">{activeChannel.name}</span>
-                    {activeChannel.group && <span className="text-xs text-white/40 bg-white/10 px-2 py-0.5 rounded">{activeChannel.group}</span>}
                   </div>
-                  <button onClick={() => { setActiveChannel(null); setStreamUrl(''); }} className="text-white/60 hover:text-white text-xs transition">إغلاق</button>
-                </div>
+                )}
+                {streamError && (
+                  <div className="relative w-full bg-black rounded-2xl overflow-hidden shadow-2xl" style={{ paddingTop: '56.25%' }}>
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+                      <svg className="w-10 h-10 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                      <p className="text-white/70 text-sm">{streamError}</p>
+                      <button onClick={() => selectChannel(activeChannel)} className="px-5 py-2 rounded-xl bg-brand-primary text-black font-bold text-sm hover:bg-brand-dark transition">إعادة المحاولة</button>
+                    </div>
+                  </div>
+                )}
+                {streamUrl && !streamLoading && (
+                  <LivePlayer
+                    streamUrl={streamUrl}
+                    title={activeChannel.name}
+                    logo={activeChannel.logo}
+                    group={activeChannel.group}
+                    onClose={() => { setActiveChannel(null); setStreamUrl(''); }}
+                    onRetry={() => selectChannel(activeChannel)}
+                  />
+                )}
               </div>
             ) : (
               <div className="hidden lg:flex rounded-xl bg-light-card dark:bg-dark-card border border-light-border dark:border-dark-border items-center justify-center mb-4" style={{ paddingTop: '56.25%', position: 'relative' }}>
