@@ -21,6 +21,7 @@ function DetailContent() {
   const [streamUrl, setStreamUrl] = useState('');
   const [embedUrl, setEmbedUrl] = useState('');
   const [allEmbedUrls, setAllEmbedUrls] = useState<string[]>([]);
+  const [embedSources, setEmbedSources] = useState<{url:string,name:string}[]>([]);
   const [embedSourceIdx, setEmbedSourceIdx] = useState(0);
   const [streamLoading, setStreamLoading] = useState(false);
   const [streamError, setStreamError] = useState('');
@@ -72,10 +73,13 @@ function DetailContent() {
       setEmbedUrl('');
       setAllEmbedUrls([]);
     } else if (result.embedUrl) {
-      const urls: string[] = result.allEmbedUrls?.length ? result.allEmbedUrls : [result.embedUrl];
-      setAllEmbedUrls(urls);
+      const srcs: {url:string,name:string}[] = result.sources?.length
+        ? result.sources
+        : (result.allEmbedUrls?.length ? result.allEmbedUrls.map((u:string,i:number)=>({url:u,name:`مصدر ${i+1}`})) : [{url:result.embedUrl,name:'مصدر 1'}]);
+      setEmbedSources(srcs);
+      setAllEmbedUrls(srcs.map(s=>s.url));
       setEmbedSourceIdx(0);
-      setEmbedUrl(urls[0]);
+      setEmbedUrl(srcs[0].url);
       setStreamUrl('');
     } else {
       setStreamError(result.error || 'فشل تحميل المحتوى');
@@ -356,16 +360,19 @@ function DetailContent() {
                 )}
                 {embedUrl && !streamUrl && !streamLoading && !streamError && (
                   <div className="relative w-full bg-black rounded-2xl overflow-hidden shadow-2xl">
-                    <div className="flex items-center justify-between px-3 py-2 bg-black/80">
-                      <button onClick={() => { setEmbedUrl(''); setStreamUrl(''); setStreamError(''); }} className="text-white/60 hover:text-white text-xs transition">✕ إغلاق</button>
-                      <div className="flex items-center gap-2">
-                        {allEmbedUrls.length > 1 && allEmbedUrls.map((_, i) => (
-                          <button key={i} onClick={() => { setEmbedSourceIdx(i); setEmbedUrl(allEmbedUrls[i]); }}
-                            className={`text-xs px-2 py-0.5 rounded-full transition ${i === embedSourceIdx ? 'bg-brand-primary text-black font-bold' : 'bg-white/10 text-white/60 hover:bg-white/20'}`}>
-                            {i + 1}
-                          </button>
-                        ))}
-                      </div>
+                    <div className="flex items-center justify-between px-3 py-2 bg-black/80 gap-2">
+                      <button onClick={() => { setEmbedUrl(''); setStreamUrl(''); setStreamError(''); }} className="text-white/50 hover:text-white text-xs transition flex-shrink-0">✕ إغلاق</button>
+                      {embedSources.length > 1 && (
+                        <div className="flex items-center gap-1.5 overflow-x-auto flex-1 justify-end">
+                          <span className="text-white/40 text-xs flex-shrink-0">المصدر:</span>
+                          {embedSources.map((src, i) => (
+                            <button key={i} onClick={() => { setEmbedSourceIdx(i); setEmbedUrl(src.url); }}
+                              className={`text-xs px-2.5 py-1 rounded-full whitespace-nowrap transition flex-shrink-0 ${i === embedSourceIdx ? 'bg-brand-primary text-black font-bold' : 'bg-white/10 text-white/60 hover:bg-white/20'}`}>
+                              {src.name}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     <div style={{ paddingTop: '56.25%', position: 'relative' }}>
                       <iframe
@@ -374,10 +381,15 @@ function DetailContent() {
                         className="absolute inset-0 w-full h-full border-0"
                         allowFullScreen
                         allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
-                        referrerPolicy="no-referrer"
-                        sandbox="allow-scripts allow-same-origin allow-forms allow-orientation-lock allow-pointer-lock allow-presentation allow-fullscreen"
+                        referrerPolicy="no-referrer-when-downgrade"
+                        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-presentation allow-fullscreen"
                       />
                     </div>
+                    {embedSources.length > 1 && (
+                      <div className="px-3 py-2 bg-black/60 text-center">
+                        <p className="text-white/40 text-xs">إذا لم يعمل المشغّل، جرّب مصدراً آخر أعلاه</p>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
