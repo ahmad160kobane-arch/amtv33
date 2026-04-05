@@ -21,6 +21,23 @@ const crypto = require('crypto');
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
+// ─── Keep-alive agents for connection reuse (high concurrency) ───
+const _httpAgent = new http.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 30000,
+  maxSockets: 40,
+  maxFreeSockets: 15,
+  timeout: 60000,
+});
+const _httpsAgent = new https.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 30000,
+  maxSockets: 40,
+  maxFreeSockets: 15,
+  timeout: 60000,
+  rejectUnauthorized: false,
+});
+
 class HlsProxy {
   constructor() {
     this.sessions = new Map();
@@ -29,7 +46,7 @@ class HlsProxy {
 
   start() {
     this._cleanupInterval = setInterval(() => this._cleanup(), 5 * 60 * 1000);
-    console.log('[HlsProxy] جاهز — بث HLS بدون إعلانات');
+    console.log('[HlsProxy] جاهز — بث HLS بدون إعلانات (keep-alive agents, maxSockets: 40)');
   }
 
   stop() {
@@ -234,8 +251,8 @@ class HlsProxy {
           'Origin': referer ? new URL(referer).origin : '',
           'Accept': '*/*',
         },
+        agent: isHttps ? _httpsAgent : _httpAgent,
         timeout: 15000,
-        rejectUnauthorized: false,
       }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           res.resume();
@@ -269,8 +286,8 @@ class HlsProxy {
           'Origin': referer ? new URL(referer).origin : '',
           'Accept': '*/*',
         },
+        agent: isHttps ? _httpsAgent : _httpAgent,
         timeout: 30000,
-        rejectUnauthorized: false,
       }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           res.resume();

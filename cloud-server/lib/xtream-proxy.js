@@ -1,16 +1,17 @@
 /**
- * Xtream HLS Shared Proxy — On-demand, smart caching, multi-user safe
+ * Xtream HLS Shared Proxy v2 — Multi-channel, multi-user, fast startup
  *
- * Problem: IPTV provider allows ~1 concurrent connection per subscription.
+ * Problem: IPTV provider allows limited concurrent connections per subscription.
  *          Multiple users → multiple upstream fetches → IPTV kicks everyone.
  *
- * Solution:
- * - Manifests: serialized (1 at a time via RequestQueue) — prevents IPTV 403/458
- * - Segments:  parallel (up to 3 via Semaphore) — fast downloads, no bottleneck
- * - Cache:     manifest 4s, segment 60s — fetch once, serve ALL users
+ * Solution v2 (rewritten for speed + concurrency):
+ * - Manifests: bounded parallel (Semaphore, up to 3 concurrent) — different
+ *   channels fetch simultaneously, same channel coalesced (1 in-flight)
+ * - Segments:  parallel (up to 10 via Semaphore) — segments go to CDN, not IPTV
+ * - Cache:     manifest 8s, segment 60s — fetch once, serve ALL users
  * - Coalesce:  if fetch already in-flight, other requests wait for same result
  * - Stale:     on upstream error, serve last good manifest (up to 30s old)
- * - On-demand: no background polling — fetch only when users actually request
+ * - Proactive: refresh manifest for active channels BEFORE cache expires
  * - Cleanup:   expired caches + idle sessions auto-cleaned every 15s
  */
 
@@ -18,40 +19,22 @@ const { XTREAM } = require('./xtream');
 
 // ─── Constants ──────────────────────────────────────────────
 const UA               = 'VLC/3.0.20 LibVLC/3.0.20';
-const MANIFEST_TIMEOUT = 10000;  // 10s  — manifest fetch timeout
-const SEGMENT_TIMEOUT  = 15000;  // 15s  — segment fetch timeout (larger files)
-const MANIFEST_TTL     = 4000;   // 4s   — manifest cache (HLS segments ~10s)
+const MANIFEST_TIMEOUT = 6000;   // 6s   — manifest fetch timeout (fail fast)
+const SEGMENT_TIMEOUT  = 10000;  // 10s  — segment fetch timeout
+const MANIFEST_TTL     = 8000;   // 8s   — manifest cache (HLS segments ~4-10s)
 const MANIFEST_STALE   = 30000;  // 30s  — serve stale manifest on error
+const PROACTIVE_MS     = 2000;   // 2s   — refresh manifest 2s before TTL expires
 const SEG_TTL          = 60000;  // 60s  — segment cache
 const SESSION_TTL      = 60000;  // 60s  — viewer idle timeout
 const GC_INTERVAL      = 15000;  // 15s  — cleanup cycle
-const MAX_SEG_CACHE    = 200;    // max cached segments (prevent OOM)
-const MAX_SEG_PARALLEL = 3;      // max parallel segment downloads
+const MAX_SEG_CACHE    = 300;    // max cached segments (~300MB worst case, prevent OOM)
+const MAX_SEG_BYTES    = 400 * 1024 * 1024; // 400MB hard limit for segment cache
+const MAX_MANIFEST_PARALLEL = 5; // max parallel manifest fetches (100+ users, many channels)
+const MAX_SEG_PARALLEL = 20;     // max parallel segment downloads (CDN, not IPTV)
 
-const SERVERS = [XTREAM.primary, XTREAM.backup];
+const SERVERS = [XTREAM.primary, ...(XTREAM.backup !== XTREAM.primary ? [XTREAM.backup] : [])];
 
-// ─── RequestQueue: serialize manifest requests (max 1 at a time) ──
-class RequestQueue {
-  constructor() { this._queue = []; this._running = false; }
-  enqueue(fn) {
-    return new Promise((resolve, reject) => {
-      this._queue.push({ fn, resolve, reject });
-      this._drain();
-    });
-  }
-  async _drain() {
-    if (this._running) return;
-    this._running = true;
-    while (this._queue.length > 0) {
-      const { fn, resolve, reject } = this._queue.shift();
-      try { resolve(await fn()); } catch (e) { reject(e); }
-    }
-    this._running = false;
-  }
-  get pending() { return this._queue.length; }
-}
-
-// ─── Semaphore: bounded parallel segment downloads ──────────
+// ─── Semaphore: bounded parallel execution ──────────────────
 class Semaphore {
   constructor(max) { this._max = max; this._active = 0; this._queue = []; }
   async acquire() {
@@ -70,10 +53,12 @@ class Semaphore {
     try { return await fn(); } finally { this.release(); }
   }
   get active() { return this._active; }
+  get pending() { return this._queue.length; }
 }
 
-const manifestQueue = new RequestQueue();
-const segSemaphore  = new Semaphore(MAX_SEG_PARALLEL);
+const manifestSemaphore = new Semaphore(MAX_MANIFEST_PARALLEL);
+const segSemaphore      = new Semaphore(MAX_SEG_PARALLEL);
+let _totalSegBytes = 0; // track total segment cache memory usage
 
 // ═════════════════════════════════════════════════════════════
 class XtreamProxy {
@@ -93,11 +78,13 @@ class XtreamProxy {
 
   start() {
     this._gcTimer = setInterval(() => this._gc(), GC_INTERVAL);
-    console.log(`[XtreamProxy] Ready — manifests serialized, segments parallel(${MAX_SEG_PARALLEL}), cache+coalesce`);
+    this._proactiveTimer = setInterval(() => this._proactiveRefresh(), MANIFEST_TTL - PROACTIVE_MS);
+    console.log(`[XtreamProxy] v2 Ready — manifests parallel(${MAX_MANIFEST_PARALLEL}), segments parallel(${MAX_SEG_PARALLEL}), cache ${MANIFEST_TTL/1000}s+coalesce+proactive`);
   }
 
   stop() {
     if (this._gcTimer) clearInterval(this._gcTimer);
+    if (this._proactiveTimer) clearInterval(this._proactiveTimer);
     this._manifests.clear();
     this._segments.clear();
     this.sessions.clear();
@@ -106,8 +93,9 @@ class XtreamProxy {
   // ═══════════ Public API (called from Express routes) ═══════════
 
   /**
-   * GET manifest — cached 4s, coalesced, stale fallback on error
-   * Serialized through RequestQueue (1 upstream at a time)
+   * GET manifest — cached 8s, coalesced per-channel, stale fallback on error
+   * Parallel via Semaphore (up to 3 concurrent for different channels)
+   * Same-channel requests are coalesced (only 1 in-flight per channel)
    */
   async getManifest(streamId, baseUrl, sessionId) {
     this._touch(streamId, sessionId);
@@ -118,18 +106,18 @@ class XtreamProxy {
       return cached.rewritten;
     }
     // Cooldown: if last attempt failed recently, don't flood IPTV
-    if (cached && cached.failed && Date.now() - cached.ts < MANIFEST_TTL * 2) {
+    if (cached && cached.failed && Date.now() - cached.ts < MANIFEST_TTL) {
       throw new Error('IPTV temporarily unavailable (cooldown)');
     }
 
-    // 2. Already fetching → wait for result (coalescing)
+    // 2. Already fetching this channel → wait for result (per-channel coalescing)
     if (this._pendingManifests.has(streamId)) {
       try { await this._pendingManifests.get(streamId); } catch {}
       const c = this._manifests.get(streamId);
-      if (c) return c.rewritten;
+      if (c && !c.failed) return c.rewritten;
     }
 
-    // 3. Fetch from IPTV (serialized — only 1 manifest request at a time)
+    // 3. Fetch from IPTV (parallel across channels, semaphore-bounded)
     const p = this._fetchManifest(streamId, baseUrl)
       .finally(() => this._pendingManifests.delete(streamId));
     this._pendingManifests.set(streamId, p);
@@ -139,17 +127,15 @@ class XtreamProxy {
       const rewritten = this._rewriteManifest(result.content, streamId, result.srv);
       this._manifests.set(streamId, {
         content: result.content, srv: result.srv,
-        ts: Date.now(), rewritten,
+        baseUrl, ts: Date.now(), rewritten,
       });
       return rewritten;
     } catch (err) {
       // On 403/error: set cooldown so we don't flood IPTV with retries
-      if (!cached) {
-        // No stale cache → set a "failed" placeholder to prevent retry storm
+      if (!cached || cached.failed) {
         this._manifests.set(streamId, { ts: Date.now(), failed: true });
       } else if (Date.now() - cached.ts < MANIFEST_STALE) {
-        // Has stale cache → serve it and bump timestamp to prevent immediate retry
-        cached.ts = Date.now();
+        // Has stale cache → serve it (don't bump ts — allow retry soon)
         return cached.rewritten;
       }
       throw err;
@@ -158,7 +144,7 @@ class XtreamProxy {
 
   /**
    * GET segment — cached 60s, coalesced
-   * Parallel downloads via Semaphore (up to 3 concurrent)
+   * Parallel downloads via Semaphore (up to 10 concurrent — segments go to CDN)
    */
   async getSegment(streamId, encodedPath, baseUrl, sessionId) {
     this._touch(streamId, sessionId);
@@ -206,7 +192,7 @@ class XtreamProxy {
 
   /**
    * GET sub-manifest (quality variant playlists)
-   * Serialized through manifest queue
+   * Parallel via manifest semaphore (not blocking other channels)
    */
   async getSubManifest(streamId, encodedUrl, sessionId) {
     this._touch(streamId, sessionId);
@@ -227,8 +213,8 @@ class XtreamProxy {
       return result.rewritten || result;
     }
 
-    const p = manifestQueue.enqueue(async () => {
-      // Re-check cache after waiting in queue
+    const p = manifestSemaphore.run(async () => {
+      // Re-check cache after waiting for semaphore
       const c = this._segments.get(cacheKey);
       if (c && Date.now() - c.ts < MANIFEST_TTL) return { rewritten: c.rewritten };
 
@@ -269,9 +255,15 @@ class XtreamProxy {
 
   // ═══════════ Upstream fetchers ═════════════════════════════
 
-  /** Manifest: serialized through RequestQueue (prevents IPTV 403) */
+  /** Manifest: parallel via Semaphore (up to 3 concurrent for different channels) */
   async _fetchManifest(streamId, preferredBase) {
-    return manifestQueue.enqueue(async () => {
+    return manifestSemaphore.run(async () => {
+      // Re-check cache after waiting for semaphore (another channel may have delayed us)
+      const cached = this._manifests.get(streamId);
+      if (cached && !cached.failed && Date.now() - cached.ts < MANIFEST_TTL) {
+        return { content: cached.content, srv: cached.srv };
+      }
+
       const servers = [preferredBase, ...SERVERS.filter(s => s !== preferredBase)];
       let lastErr = null;
       for (const srv of servers) {
@@ -317,6 +309,7 @@ class XtreamProxy {
             const contentType = res.headers.get('content-type') || 'video/mp2t';
             // Cache for all users
             this._evictSegments();
+            _totalSegBytes += buf.length;
             this._segments.set(cacheKey, { buf, contentType, ts: Date.now() });
             return { buf, contentType };
           } catch (e) { lastErr = e; }
@@ -360,8 +353,18 @@ class XtreamProxy {
   }
 
   _evictSegments() {
+    // Evict by count
     while (this._segments.size >= MAX_SEG_CACHE) {
       const oldest = this._segments.keys().next().value;
+      const entry = this._segments.get(oldest);
+      if (entry && entry.buf) _totalSegBytes -= entry.buf.length;
+      this._segments.delete(oldest);
+    }
+    // Evict by total memory (hard limit)
+    while (_totalSegBytes > MAX_SEG_BYTES && this._segments.size > 0) {
+      const oldest = this._segments.keys().next().value;
+      const entry = this._segments.get(oldest);
+      if (entry && entry.buf) _totalSegBytes -= entry.buf.length;
       this._segments.delete(oldest);
     }
   }
@@ -376,7 +379,10 @@ class XtreamProxy {
 
     // Expire old segments
     for (const [k, v] of this._segments) {
-      if (now - v.ts > SEG_TTL * 2) this._segments.delete(k);
+      if (now - v.ts > SEG_TTL * 2) {
+        if (v.buf) _totalSegBytes -= v.buf.length;
+        this._segments.delete(k);
+      }
     }
 
     // Expire viewer sessions
@@ -389,8 +395,40 @@ class XtreamProxy {
     const viewers = this.getTotalViewers();
     const channels = this._manifests.size;
     const segs = this._segments.size;
+    const segMB = (_totalSegBytes / 1024 / 1024).toFixed(1);
+    const heapMB = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(0);
     if (viewers > 0 || channels > 0) {
-      console.log(`[XtreamProxy] Viewers: ${viewers} | Channels: ${channels} | Segs: ${segs} | Queue: ${manifestQueue.pending} | SegDL: ${segSemaphore.active}/${MAX_SEG_PARALLEL}`);
+      console.log(`[XtreamProxy] Viewers: ${viewers} | Ch: ${channels} | Segs: ${segs}(${segMB}MB) | Heap: ${heapMB}MB | ManifestDL: ${manifestSemaphore.active}/${MAX_MANIFEST_PARALLEL}(q:${manifestSemaphore.pending}) | SegDL: ${segSemaphore.active}/${MAX_SEG_PARALLEL}`);
+    }
+  }
+
+  // ─── Proactive manifest refresh ─────────────────────────
+  // For channels with active viewers, refresh manifest BEFORE cache expires
+  // so users never wait for a cold fetch
+  _proactiveRefresh() {
+    const now = Date.now();
+    for (const [streamId, m] of this._manifests) {
+      // Skip failed entries
+      if (m.failed) continue;
+      // Skip if still fresh (not near expiry)
+      if (now - m.ts < MANIFEST_TTL - PROACTIVE_MS) continue;
+      // Skip if already fetching
+      if (this._pendingManifests.has(streamId)) continue;
+      // Only refresh if channel has active viewers
+      if (this.getViewerCount(streamId) === 0) continue;
+
+      const baseUrl = m.baseUrl || XTREAM.primary;
+      const p = this._fetchManifest(streamId, baseUrl)
+        .then(result => {
+          const rewritten = this._rewriteManifest(result.content, streamId, result.srv);
+          this._manifests.set(streamId, {
+            content: result.content, srv: result.srv,
+            baseUrl, ts: Date.now(), rewritten,
+          });
+        })
+        .catch(() => { /* silent — users will get stale or retry */ })
+        .finally(() => this._pendingManifests.delete(streamId));
+      this._pendingManifests.set(streamId, p);
     }
   }
 }

@@ -28,16 +28,16 @@ const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 const httpAgent = new http.Agent({
   keepAlive: true,
   keepAliveMsecs: 30000,
-  maxSockets: 10,
-  maxFreeSockets: 5,
+  maxSockets: 50,
+  maxFreeSockets: 20,
   timeout: 120000,
 });
 
 const httpsAgent = new https.Agent({
   keepAlive: true,
   keepAliveMsecs: 30000,
-  maxSockets: 10,
-  maxFreeSockets: 5,
+  maxSockets: 50,
+  maxFreeSockets: 20,
   timeout: 120000,
   rejectUnauthorized: false,
 });
@@ -53,7 +53,7 @@ class VodProxy {
 
   start() {
     this._cleanupInterval = setInterval(() => this._cleanup(), 5 * 60 * 1000);
-    console.log('[VodProxy] جاهز — بث مباشر بدون تحميل (keep-alive + large buffers)');
+    console.log('[VodProxy] جاهز — بث مباشر بدون تحميل (keep-alive + large buffers) — maxSockets: 50');
   }
 
   stop() {

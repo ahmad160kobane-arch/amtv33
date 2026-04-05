@@ -112,22 +112,28 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
             hlsInstance = new Hls({
               enableWorker: true,
               lowLatencyMode: true,
-              // ═══ Live streaming optimized config ═══
-              liveSyncDurationCount: 3,          // sync to 3 segments behind live edge
-              liveMaxLatencyDurationCount: 6,    // max 6 segments behind before seeking
-              liveDurationInfinity: true,         // treat as infinite live stream
-              maxBufferLength: 30,                // buffer up to 30s
-              maxMaxBufferLength: 60,             // hard max 60s buffer
-              maxBufferSize: 60 * 1024 * 1024,   // 60MB buffer
-              maxBufferHole: 0.5,                 // tolerate 0.5s gaps
+              // ═══ Fast startup + live streaming ═══
+              startLevel: -1,                      // auto quality selection (fastest start)
+              liveSyncDurationCount: 2,            // sync to 2 segments behind live edge (faster)
+              liveMaxLatencyDurationCount: 5,      // max 5 segments behind before seeking
+              liveDurationInfinity: true,           // treat as infinite live stream
+              maxBufferLength: 15,                  // buffer 15s (faster initial load)
+              maxMaxBufferLength: 30,               // hard max 30s buffer
+              maxBufferSize: 30 * 1024 * 1024,     // 30MB buffer
+              maxBufferHole: 0.5,                   // tolerate 0.5s gaps
+              backBufferLength: 15,                 // keep only 15s back buffer (save memory)
+              // ═══ Faster loading ═══
+              manifestLoadingTimeOut: 8000,         // 8s manifest timeout (fail fast)
+              fragLoadingTimeOut: 10000,            // 10s segment timeout
+              levelLoadingTimeOut: 8000,            // 8s level timeout
               // ═══ Error recovery ═══
-              fragLoadingMaxRetry: 6,             // retry segment load 6 times
-              fragLoadingRetryDelay: 1000,        // start with 1s retry delay
-              fragLoadingMaxRetryTimeout: 8000,   // max 8s retry delay
-              manifestLoadingMaxRetry: 4,         // retry manifest 4 times
-              manifestLoadingRetryDelay: 1000,
+              fragLoadingMaxRetry: 6,               // retry segment load 6 times
+              fragLoadingRetryDelay: 500,           // start with 0.5s retry delay (faster)
+              fragLoadingMaxRetryTimeout: 6000,     // max 6s retry delay
+              manifestLoadingMaxRetry: 4,           // retry manifest 4 times
+              manifestLoadingRetryDelay: 500,       // 0.5s retry delay (faster)
               levelLoadingMaxRetry: 4,
-              levelLoadingRetryDelay: 1000,
+              levelLoadingRetryDelay: 500,
             });
             hlsInstance.loadSource(streamUrl);
             hlsInstance.attachMedia(video);

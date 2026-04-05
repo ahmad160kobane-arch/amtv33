@@ -10,6 +10,8 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const http = require('http');
+const https = require('https');
 const jwt = require('jsonwebtoken');
 const config = require('./config');
 const db = require('./db');
@@ -39,6 +41,23 @@ const streamManager = new StreamManager();
 const vodProxy = new VodProxy();
 const hlsProxy = new HlsProxy();
 const liveProxy = new LiveProxy();
+
+// ─── HTTP Agents for upstream connections (keep-alive, high concurrency) ───
+const upstreamHttpAgent = new http.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 30000,
+  maxSockets: 80,
+  maxFreeSockets: 30,
+  timeout: 120000,
+});
+const upstreamHttpsAgent = new https.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 30000,
+  maxSockets: 80,
+  maxFreeSockets: 30,
+  timeout: 120000,
+  rejectUnauthorized: false,
+});
 
 // â”€â”€â”€ Middleware â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 app.use(cors());
@@ -112,6 +131,24 @@ function requirePremium(req, res, next) {
 const SESSION_TIMEOUT = 5 * 60 * 1000; // 5 min — session expires if no heartbeat
 const { randomUUID } = require('crypto');
 
+// ─── User data cache — reduce DB pressure under high concurrency ───
+const _userCache = new Map();
+const USER_CACHE_TTL = 5000; // 5s — short enough to pick up plan changes quickly
+async function _getCachedUser(userId) {
+  const cached = _userCache.get(userId);
+  if (cached && Date.now() - cached.ts < USER_CACHE_TTL) return cached.data;
+  const data = await db.prepare(
+    'SELECT id, plan, expires_at, max_connections, is_admin, role, is_blocked FROM users WHERE id = ?'
+  ).get(userId);
+  _userCache.set(userId, { data, ts: Date.now() });
+  // Prevent unbounded cache growth
+  if (_userCache.size > 500) {
+    const oldest = _userCache.keys().next().value;
+    _userCache.delete(oldest);
+  }
+  return data;
+}
+
 // ─── Channel sync from backend PostgreSQL ───────────────────
 const CHANNEL_SYNC_INTERVAL = 10 * 60 * 1000; // 10 minutes
 async function syncChannelsFromBackend(force = false) {
@@ -159,10 +196,8 @@ async function _updateHeartbeat(sessionId) {
  * Returns: { allowed, sessionId, error?, message?, active?, max? }
  */
 async function checkConnectionLimit(userId, streamId, streamType) {
-  // Query the real users table (shared with backend-api)
-  const user = await db.prepare(
-    'SELECT id, plan, expires_at, max_connections, is_admin, role, is_blocked FROM users WHERE id = ?'
-  ).get(userId);
+  // Query with cache (5s TTL) — reduces DB pressure under high concurrency
+  const user = await _getCachedUser(userId);
   const maxConn = (user && user.max_connections) || 1;
   const isAdmin = user && (user.is_admin || user.role === 'admin' || user.role === 'agent');
 
@@ -794,44 +829,84 @@ app.get('/api/xtream/vod/search', async (req, res) => {
 });
 
 // VOD Token Proxy — pipe the IPTV stream through cloud server so browsers don't face CORS/mixed-content
-app.get(['/vod-play/:token', '/vod-play/:token/stream.mp4'], async (req, res) => {
+// Uses keep-alive agents for connection reuse across 100+ concurrent VOD users
+app.get(['/vod-play/:token', '/vod-play/:token/stream.mp4'], (req, res) => {
   try {
     const payload = jwt.verify(req.params.token, config.JWT_SECRET);
     if (!payload.sid || !['vod', 'ser'].includes(payload.t)) return res.status(403).end();
     const ext = payload.ext || 'mp4';
-    const path = payload.t === 'ser'
+    const vodPath = payload.t === 'ser'
       ? `series/${XTREAM.user}/${XTREAM.pass}/${payload.sid}.${ext}`
       : `movie/${XTREAM.user}/${XTREAM.pass}/${payload.sid}.${ext}`;
-    const upstream = `${XTREAM.primary}/${path}`;
+    const upstreamUrl = `${XTREAM.primary}/${vodPath}`;
 
-    const range = req.headers.range;
-    const headers = { 'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20' };
-    if (range) headers['Range'] = range;
+    const parsed = new URL(upstreamUrl);
+    const isHttps = parsed.protocol === 'https:';
+    const httpMod = isHttps ? https : http;
+    const agent = isHttps ? upstreamHttpsAgent : upstreamHttpAgent;
 
-    const upRes = await fetch(upstream, { headers, redirect: 'follow', signal: AbortSignal.timeout(30000) });
-    if (!upRes.ok && upRes.status !== 206) return res.status(upRes.status).end();
+    const reqHeaders = {
+      'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20',
+      'Accept': '*/*',
+      'Connection': 'keep-alive',
+    };
+    if (req.headers.range) reqHeaders['Range'] = req.headers.range;
 
-    res.status(upRes.status);
-    res.set('Content-Type', upRes.headers.get('content-type') || 'video/mp4');
-    // Always tell browser that seeking is supported
-    res.set('Accept-Ranges', 'bytes');
-    if (upRes.headers.get('content-length')) res.set('Content-Length', upRes.headers.get('content-length'));
-    if (upRes.headers.get('content-range'))  res.set('Content-Range', upRes.headers.get('content-range'));
-
-    const { Readable } = require('stream');
-    const readable = Readable.fromWeb(upRes.body);
-    // Clean up on client disconnect to avoid dangling streams
-    req.on('close', () => { readable.destroy(); });
-    readable.on('error', (err) => {
-      if (!res.headersSent) res.status(502).end();
-      else res.destroy();
+    const proxyReq = httpMod.get(upstreamUrl, {
+      headers: reqHeaders,
+      agent,
+      timeout: 60000,
+    }, (upRes) => {
+      // Follow redirects
+      if (upRes.statusCode >= 300 && upRes.statusCode < 400 && upRes.headers.location) {
+        upRes.resume();
+        const redirectUrl = upRes.headers.location;
+        const rParsed = new URL(redirectUrl);
+        const rHttps = rParsed.protocol === 'https:';
+        const rMod = rHttps ? https : http;
+        const rAgent = rHttps ? upstreamHttpsAgent : upstreamHttpAgent;
+        const rReq = rMod.get(redirectUrl, { headers: reqHeaders, agent: rAgent, timeout: 60000 }, (rRes) => {
+          _pipeVodResponse(rRes, req, res);
+        });
+        rReq.on('error', (e) => { if (!res.headersSent) res.status(502).end(); });
+        rReq.on('timeout', () => { rReq.destroy(); if (!res.headersSent) res.status(504).end(); });
+        return;
+      }
+      _pipeVodResponse(upRes, req, res);
     });
-    readable.pipe(res);
+    proxyReq.on('error', (e) => {
+      console.error('[VOD-play] proxy error:', e.message);
+      if (!res.headersSent) res.status(502).end();
+    });
+    proxyReq.on('timeout', () => {
+      proxyReq.destroy();
+      if (!res.headersSent) res.status(504).end();
+    });
   } catch (e) {
-    console.error('[VOD-play] proxy error:', e.message);
+    console.error('[VOD-play] token error:', e.message);
     if (!res.headersSent) res.status(403).json({ error: 'Invalid or expired token' });
   }
 });
+
+function _pipeVodResponse(upRes, req, res) {
+  if (upRes.statusCode !== 200 && upRes.statusCode !== 206) {
+    upRes.resume();
+    if (!res.headersSent) res.status(upRes.statusCode || 502).end();
+    return;
+  }
+  if (!res.headersSent) {
+    res.status(upRes.statusCode);
+    res.set('Content-Type', upRes.headers['content-type'] || 'video/mp4');
+    res.set('Accept-Ranges', 'bytes');
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+    if (upRes.headers['content-length']) res.set('Content-Length', upRes.headers['content-length']);
+    if (upRes.headers['content-range']) res.set('Content-Range', upRes.headers['content-range']);
+  }
+  upRes.pipe(res);
+  upRes.on('error', () => { try { res.end(); } catch {} });
+  req.on('close', () => { upRes.destroy(); });
+}
 
 // ═══════════════════════════════════════════════════════
 // DISABLED: Old VidSrc/TMDB Content API (kept for reference)
@@ -1380,11 +1455,20 @@ app.get('/proxy/live/:streamId/sub/:encodedUrl(*)', async (req, res) => {
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 app.get('/health', (req, res) => {
+  const mem = process.memoryUsage();
   res.json({
     status: 'ok',
     uptime: Math.floor(process.uptime()),
     activeStreams: streamManager.getActiveStreams().length,
-    memory: Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + 'MB',
+    liveViewers: xtreamProxy.getTotalViewers(),
+    liveChannels: Object.keys(xtreamProxy.getAllViewers()).length,
+    vodSessions: vodProxy.getActiveSessions().length,
+    hlsSessions: hlsProxy.sessions.size,
+    memory: {
+      heapUsed: Math.round(mem.heapUsed / 1024 / 1024) + 'MB',
+      heapTotal: Math.round(mem.heapTotal / 1024 / 1024) + 'MB',
+      rss: Math.round(mem.rss / 1024 / 1024) + 'MB',
+    },
   });
 });
 
@@ -1486,8 +1570,22 @@ app.use((err, req, res, next) => {
 });
 
 // â”€â”€â”€ Ø¨Ø¯Ø¡ Ø§Ù„Ø³ÙŠØ±ÙØ± + ØªØ­Ø¯ÙŠØ« ØªÙ„Ù‚Ø§Ø¦ÙŠ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ═══ Graceful error handling — prevent crashes under high concurrency ═══
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] Uncaught exception:', err.message, err.stack?.split('\n')[1]);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[WARN] Unhandled rejection:', reason instanceof Error ? reason.message : reason);
+});
+
 db.init().then(() => {
 const server = app.listen(config.PORT, config.HOST, async () => {
+  // ═══ Server tuning for 100+ concurrent users ═══
+  server.keepAliveTimeout = 65000;    // Keep connections alive (must > proxy timeout)
+  server.headersTimeout = 70000;      // Must be > keepAliveTimeout
+  server.maxConnections = 0;          // Unlimited (OS limit applies)
+  server.timeout = 0;                 // No timeout for streaming connections
+
   console.log(`\n  â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—`);
   console.log(`  â•‘   IPTV Cloud Streaming Server v3.0               â•‘`);
   console.log(`  â•‘   Ø¨Ø« Ù…Ø¨Ø§Ø´Ø± + ØªØ­Ù‚Ù‚ JWT + ØªØ­Ø¯ÙŠØ« ØªÙ„Ù‚Ø§Ø¦ÙŠ             â•‘`);
@@ -1495,6 +1593,9 @@ const server = app.listen(config.PORT, config.HOST, async () => {
   console.log(`  â•‘   http://localhost:${config.PORT}                         â•‘`);
   console.log(`  â•‘   DB: PostgreSQL (shared)                       â•‘`);
   console.log(`  â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•\n`);
+
+  console.log(`  ║   keepAlive: 65s | maxSockets: 80 upstream      ║`);
+  console.log(`  ╚══════════════════════════════════════════════════╝\n`);
 
   streamManager.start();
   vodProxy.start();

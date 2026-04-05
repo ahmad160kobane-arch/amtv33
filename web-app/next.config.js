@@ -32,11 +32,38 @@ const nextConfig = {
       { protocol: 'https', hostname: '**' },
     ],
   },
+  // Increase proxy timeout for streaming (default 30s is too short for VOD)
+  experimental: {
+    proxyTimeout: 120000,
+  },
   async headers() {
     return [
       {
         source: '/(.*)',
         headers: SECURITY_HEADERS,
+      },
+      // Streaming-specific headers — no buffering, CORS, long cache for segments
+      {
+        source: '/proxy/live/:path*',
+        headers: [
+          { key: 'X-Accel-Buffering', value: 'no' },
+          { key: 'Access-Control-Allow-Origin', value: '*' },
+        ],
+      },
+      {
+        source: '/free-hls/:path*',
+        headers: [
+          { key: 'X-Accel-Buffering', value: 'no' },
+          { key: 'Access-Control-Allow-Origin', value: '*' },
+        ],
+      },
+      {
+        source: '/vod-play/:path*',
+        headers: [
+          { key: 'X-Accel-Buffering', value: 'no' },
+          { key: 'Access-Control-Allow-Origin', value: '*' },
+          { key: 'Access-Control-Expose-Headers', value: 'Content-Range, Content-Length, Accept-Ranges' },
+        ],
       },
     ];
   },
