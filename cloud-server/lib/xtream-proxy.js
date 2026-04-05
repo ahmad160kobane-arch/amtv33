@@ -1,71 +1,164 @@
 /**
- * Xtream HLS Transparent Proxy — Simple, fast, per-user
+ * Xtream HLS Shared Proxy — On-demand, smart caching, multi-user safe
  *
- * How it works:
- * - User requests manifest → proxy fetches from IPTV → rewrites URLs → returns
- * - User requests segment  → proxy fetches from IPTV → pipes back directly
- * - No caching, no polling, no re-broadcasting, no complexity
- * - Each request = direct pass-through to IPTV provider
- * - Session tracking for viewer stats + auto-cleanup when idle
- * - Handles IPTV 302 redirects (session tokens) transparently
+ * Problem: IPTV provider allows ~1 concurrent connection per subscription.
+ *          Multiple users → multiple upstream fetches → IPTV kicks everyone.
+ *
+ * Solution:
+ * - Manifests: serialized (1 at a time via RequestQueue) — prevents IPTV 403/458
+ * - Segments:  parallel (up to 3 via Semaphore) — fast downloads, no bottleneck
+ * - Cache:     manifest 4s, segment 60s — fetch once, serve ALL users
+ * - Coalesce:  if fetch already in-flight, other requests wait for same result
+ * - Stale:     on upstream error, serve last good manifest (up to 30s old)
+ * - On-demand: no background polling — fetch only when users actually request
+ * - Cleanup:   expired caches + idle sessions auto-cleaned every 15s
  */
 
 const { XTREAM } = require('./xtream');
 
-const UA            = 'VLC/3.0.20 LibVLC/3.0.20';
-const FETCH_TIMEOUT = 10000;  // 10s — upstream request timeout
-const SESSION_TTL   = 60000;  // 60s — viewer session idle timeout
-const GC_INTERVAL   = 15000;  // 15s — session cleanup cycle
+// ─── Constants ──────────────────────────────────────────────
+const UA               = 'VLC/3.0.20 LibVLC/3.0.20';
+const MANIFEST_TIMEOUT = 10000;  // 10s  — manifest fetch timeout
+const SEGMENT_TIMEOUT  = 15000;  // 15s  — segment fetch timeout (larger files)
+const MANIFEST_TTL     = 4000;   // 4s   — manifest cache (HLS segments ~10s)
+const MANIFEST_STALE   = 30000;  // 30s  — serve stale manifest on error
+const SEG_TTL          = 60000;  // 60s  — segment cache
+const SESSION_TTL      = 60000;  // 60s  — viewer idle timeout
+const GC_INTERVAL      = 15000;  // 15s  — cleanup cycle
+const MAX_SEG_CACHE    = 200;    // max cached segments (prevent OOM)
+const MAX_SEG_PARALLEL = 3;      // max parallel segment downloads
 
 const SERVERS = [XTREAM.primary, XTREAM.backup];
 
+// ─── RequestQueue: serialize manifest requests (max 1 at a time) ──
+class RequestQueue {
+  constructor() { this._queue = []; this._running = false; }
+  enqueue(fn) {
+    return new Promise((resolve, reject) => {
+      this._queue.push({ fn, resolve, reject });
+      this._drain();
+    });
+  }
+  async _drain() {
+    if (this._running) return;
+    this._running = true;
+    while (this._queue.length > 0) {
+      const { fn, resolve, reject } = this._queue.shift();
+      try { resolve(await fn()); } catch (e) { reject(e); }
+    }
+    this._running = false;
+  }
+  get pending() { return this._queue.length; }
+}
+
+// ─── Semaphore: bounded parallel segment downloads ──────────
+class Semaphore {
+  constructor(max) { this._max = max; this._active = 0; this._queue = []; }
+  async acquire() {
+    if (this._active < this._max) { this._active++; return; }
+    await new Promise(r => this._queue.push(r));
+  }
+  release() {
+    this._active--;
+    if (this._queue.length > 0 && this._active < this._max) {
+      this._active++;
+      this._queue.shift()();
+    }
+  }
+  async run(fn) {
+    await this.acquire();
+    try { return await fn(); } finally { this.release(); }
+  }
+  get active() { return this._active; }
+}
+
+const manifestQueue = new RequestQueue();
+const segSemaphore  = new Semaphore(MAX_SEG_PARALLEL);
+
+// ═════════════════════════════════════════════════════════════
 class XtreamProxy {
   constructor() {
-    this.sessions = new Map(); // streamId → Map<sessionId, lastSeen>
+    // Manifest cache: streamId → { content, srv, ts, rewritten }
+    this._manifests = new Map();
+    // Manifest in-flight: streamId → Promise (coalescing)
+    this._pendingManifests = new Map();
+    // Segment cache: url → { buf, contentType, ts }
+    this._segments = new Map();
+    // Segment in-flight: url → Promise (coalescing)
+    this._pendingSegments = new Map();
+    // Viewer sessions: streamId → Map<sessionId, lastSeen>
+    this.sessions = new Map();
     this._gcTimer = null;
   }
 
   start() {
     this._gcTimer = setInterval(() => this._gc(), GC_INTERVAL);
-    console.log('[XtreamProxy] Ready — transparent proxy mode');
+    console.log(`[XtreamProxy] Ready — manifests serialized, segments parallel(${MAX_SEG_PARALLEL}), cache+coalesce`);
   }
 
   stop() {
     if (this._gcTimer) clearInterval(this._gcTimer);
+    this._manifests.clear();
+    this._segments.clear();
     this.sessions.clear();
   }
 
-  // ─── Manifest: fetch from IPTV → rewrite URLs → return ────
+  // ═══════════ Public API (called from Express routes) ═══════════
+
+  /**
+   * GET manifest — cached 4s, coalesced, stale fallback on error
+   * Serialized through RequestQueue (1 upstream at a time)
+   */
   async getManifest(streamId, baseUrl, sessionId) {
     this._touch(streamId, sessionId);
 
-    const servers = [baseUrl, ...SERVERS.filter(s => s !== baseUrl)];
-    let lastErr = null;
-
-    for (const srv of servers) {
-      const url = `${srv}/live/${XTREAM.user}/${XTREAM.pass}/${streamId}.m3u8`;
-      try {
-        const res = await fetch(url, {
-          headers: { 'User-Agent': UA, 'Referer': `${srv}/` },
-          signal: AbortSignal.timeout(FETCH_TIMEOUT),
-        });
-        if (!res.ok) { lastErr = new Error(`HTTP ${res.status}`); continue; }
-        const content = await res.text();
-        let actualBase = srv;
-        try { if (res.url) actualBase = new URL(res.url).origin; } catch {}
-        return this._rewriteManifest(content, streamId, actualBase);
-      } catch (e) { lastErr = e; }
+    // 1. Fresh cache → return immediately (all users share this)
+    const cached = this._manifests.get(streamId);
+    if (cached && Date.now() - cached.ts < MANIFEST_TTL) {
+      return cached.rewritten;
     }
-    throw lastErr || new Error('All servers unreachable');
+
+    // 2. Already fetching → wait for result (coalescing)
+    if (this._pendingManifests.has(streamId)) {
+      try { await this._pendingManifests.get(streamId); } catch {}
+      const c = this._manifests.get(streamId);
+      if (c) return c.rewritten;
+    }
+
+    // 3. Fetch from IPTV (serialized — only 1 manifest request at a time)
+    const p = this._fetchManifest(streamId, baseUrl)
+      .finally(() => this._pendingManifests.delete(streamId));
+    this._pendingManifests.set(streamId, p);
+
+    try {
+      const result = await p;
+      const rewritten = this._rewriteManifest(result.content, streamId, result.srv);
+      this._manifests.set(streamId, {
+        content: result.content, srv: result.srv,
+        ts: Date.now(), rewritten,
+      });
+      return rewritten;
+    } catch (err) {
+      // Stale fallback — serve old manifest if available (up to 30s old)
+      if (cached && Date.now() - cached.ts < MANIFEST_STALE) {
+        console.log(`[Proxy] Manifest ${streamId}: upstream error, serving stale cache`);
+        return cached.rewritten;
+      }
+      throw err;
+    }
   }
 
-  // ─── Segment: fetch from IPTV → return buffer ─────────────
+  /**
+   * GET segment — cached 60s, coalesced
+   * Parallel downloads via Semaphore (up to 3 concurrent)
+   */
   async getSegment(streamId, encodedPath, baseUrl, sessionId) {
     this._touch(streamId, sessionId);
 
     let decoded;
     try { decoded = decodeURIComponent(encodedPath); } catch { decoded = encodedPath; }
 
+    // Build candidate URLs
     let candidates;
     if (decoded.startsWith('http')) {
       candidates = [decoded];
@@ -78,36 +171,74 @@ class XtreamProxy {
       ];
     }
 
-    let lastErr = null;
-    for (const segUrl of candidates) {
-      try {
-        const res = await fetch(segUrl, {
-          headers: { 'User-Agent': UA },
-          signal: AbortSignal.timeout(FETCH_TIMEOUT),
-        });
-        if (!res.ok) { lastErr = new Error(`HTTP ${res.status}`); continue; }
-        const buf = Buffer.from(await res.arrayBuffer());
-        return { buf, contentType: res.headers.get('content-type') || 'video/mp2t' };
-      } catch (e) { lastErr = e; }
+    const cacheKey = candidates[0];
+
+    // 1. Cache hit → instant response (all users share this)
+    const cached = this._segments.get(cacheKey);
+    if (cached && Date.now() - cached.ts < SEG_TTL) {
+      return { buf: cached.buf, contentType: cached.contentType };
     }
-    throw lastErr || new Error('Segment unavailable');
+
+    // 2. Already fetching → coalesce (wait for same download)
+    if (this._pendingSegments.has(cacheKey)) {
+      return this._pendingSegments.get(cacheKey);
+    }
+
+    // 3. Fetch via Semaphore (parallel, up to 3)
+    const p = this._fetchSegment(candidates, cacheKey)
+      .catch(err => {
+        // Segment failed → invalidate manifest cache so next request gets fresh IPTV session
+        this._manifests.delete(streamId);
+        throw err;
+      })
+      .finally(() => this._pendingSegments.delete(cacheKey));
+    this._pendingSegments.set(cacheKey, p);
+    return p;
   }
 
-  // ─── Sub-manifest: fetch from IPTV → rewrite → return ─────
+  /**
+   * GET sub-manifest (quality variant playlists)
+   * Serialized through manifest queue
+   */
   async getSubManifest(streamId, encodedUrl, sessionId) {
     this._touch(streamId, sessionId);
 
     let subUrl;
     try { subUrl = decodeURIComponent(encodedUrl); } catch { subUrl = encodedUrl; }
 
-    const res = await fetch(subUrl, {
-      headers: { 'User-Agent': UA },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const content = await res.text();
-    const base = subUrl.substring(0, subUrl.lastIndexOf('/') + 1);
-    return this._rewriteSubManifest(content, streamId, base);
+    // Check cache
+    const cacheKey = `sub:${subUrl}`;
+    const cached = this._segments.get(cacheKey);
+    if (cached && Date.now() - cached.ts < MANIFEST_TTL) {
+      return cached.rewritten;
+    }
+
+    // Coalesce
+    if (this._pendingSegments.has(cacheKey)) {
+      const result = await this._pendingSegments.get(cacheKey);
+      return result.rewritten || result;
+    }
+
+    const p = manifestQueue.enqueue(async () => {
+      // Re-check cache after waiting in queue
+      const c = this._segments.get(cacheKey);
+      if (c && Date.now() - c.ts < MANIFEST_TTL) return { rewritten: c.rewritten };
+
+      const res = await fetch(subUrl, {
+        headers: { 'User-Agent': UA },
+        signal: AbortSignal.timeout(MANIFEST_TIMEOUT),
+      });
+      if (!res.ok) throw new Error(`Sub-manifest HTTP ${res.status}`);
+      const content = await res.text();
+      const base = subUrl.substring(0, subUrl.lastIndexOf('/') + 1);
+      const rewritten = this._rewriteSubManifest(content, streamId, base);
+      this._segments.set(cacheKey, { rewritten, ts: Date.now() });
+      return { rewritten };
+    }).finally(() => this._pendingSegments.delete(cacheKey));
+    this._pendingSegments.set(cacheKey, p);
+
+    const result = await p;
+    return result.rewritten;
   }
 
   // ─── Viewer stats ─────────────────────────────────────────
@@ -126,6 +257,67 @@ class XtreamProxy {
   }
   getTotalViewers() {
     return Object.values(this.getAllViewers()).reduce((a, b) => a + b, 0);
+  }
+
+  // ═══════════ Upstream fetchers ═════════════════════════════
+
+  /** Manifest: serialized through RequestQueue (prevents IPTV 403) */
+  async _fetchManifest(streamId, preferredBase) {
+    return manifestQueue.enqueue(async () => {
+      const servers = [preferredBase, ...SERVERS.filter(s => s !== preferredBase)];
+      let lastErr = null;
+      for (const srv of servers) {
+        const url = `${srv}/live/${XTREAM.user}/${XTREAM.pass}/${streamId}.m3u8`;
+        try {
+          const res = await fetch(url, {
+            headers: { 'User-Agent': UA, 'Referer': `${srv}/` },
+            signal: AbortSignal.timeout(MANIFEST_TIMEOUT),
+          });
+          if (!res.ok) { lastErr = new Error(`HTTP ${res.status} from ${srv}`); continue; }
+          const content = await res.text();
+          // Capture actual server after 302 redirect (IPTV session token)
+          let actualBase = srv;
+          try { if (res.url) actualBase = new URL(res.url).origin; } catch {}
+          return { content, srv: actualBase };
+        } catch (e) { lastErr = e; }
+      }
+      throw lastErr || new Error('All IPTV servers unreachable');
+    });
+  }
+
+  /** Segment: parallel via Semaphore (segments go to redirect server, not main IPTV) */
+  async _fetchSegment(candidates, cacheKey) {
+    return segSemaphore.run(async () => {
+      // Re-check cache (might have been filled while waiting for semaphore)
+      const cached = this._segments.get(cacheKey);
+      if (cached && Date.now() - cached.ts < SEG_TTL) {
+        return { buf: cached.buf, contentType: cached.contentType };
+      }
+
+      // Try each candidate, with 1 retry on timeout
+      let lastErr = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        for (const segUrl of candidates) {
+          try {
+            const timeout = attempt === 0 ? SEGMENT_TIMEOUT : SEGMENT_TIMEOUT + 5000;
+            const res = await fetch(segUrl, {
+              headers: { 'User-Agent': UA },
+              signal: AbortSignal.timeout(timeout),
+            });
+            if (!res.ok) { lastErr = new Error(`Segment HTTP ${res.status}`); continue; }
+            const buf = Buffer.from(await res.arrayBuffer());
+            const contentType = res.headers.get('content-type') || 'video/mp2t';
+            // Cache for all users
+            this._evictSegments();
+            this._segments.set(cacheKey, { buf, contentType, ts: Date.now() });
+            return { buf, contentType };
+          } catch (e) { lastErr = e; }
+        }
+        // Only retry on timeout errors
+        if (lastErr && !lastErr.message?.includes('timeout')) break;
+      }
+      throw lastErr || new Error('Segment unavailable');
+    });
   }
 
   // ─── URL rewriting ────────────────────────────────────────
@@ -159,15 +351,38 @@ class XtreamProxy {
     this.sessions.get(streamId).set(sessionId, Date.now());
   }
 
+  _evictSegments() {
+    while (this._segments.size >= MAX_SEG_CACHE) {
+      const oldest = this._segments.keys().next().value;
+      this._segments.delete(oldest);
+    }
+  }
+
   _gc() {
     const now = Date.now();
+
+    // Expire old manifests
+    for (const [id, m] of this._manifests) {
+      if (now - m.ts > MANIFEST_STALE) this._manifests.delete(id);
+    }
+
+    // Expire old segments
+    for (const [k, v] of this._segments) {
+      if (now - v.ts > SEG_TTL * 2) this._segments.delete(k);
+    }
+
+    // Expire viewer sessions
     for (const [id, map] of this.sessions) {
       for (const [sid, t] of map) { if (now - t > SESSION_TTL) map.delete(sid); }
       if (map.size === 0) this.sessions.delete(id);
     }
+
+    // Stats
     const viewers = this.getTotalViewers();
-    if (viewers > 0) {
-      console.log(`[XtreamProxy] Active viewers: ${viewers}`);
+    const channels = this._manifests.size;
+    const segs = this._segments.size;
+    if (viewers > 0 || channels > 0) {
+      console.log(`[XtreamProxy] Viewers: ${viewers} | Channels: ${channels} | Segs: ${segs} | Queue: ${manifestQueue.pending} | SegDL: ${segSemaphore.active}/${MAX_SEG_PARALLEL}`);
     }
   }
 }
