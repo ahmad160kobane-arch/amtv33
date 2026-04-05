@@ -1,16 +1,49 @@
 'use client';
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 
+interface SubtitleTrack {
+  language: string;
+  label: string;
+  url: string;
+  format: string;
+}
+
 interface VodPlayerProps {
   streamUrl: string;
   title: string;
   poster?: string;
   subtitle?: string;
+  subtitles?: SubtitleTrack[];
   onClose?: () => void;
   onNext?: () => void;
   onPrev?: () => void;
   hasNext?: boolean;
   hasPrev?: boolean;
+}
+
+function srtTimeToSec(t: string): number {
+  const clean = t.trim().replace(',', '.');
+  const dotIdx = clean.lastIndexOf('.');
+  const hms = dotIdx >= 0 ? clean.slice(0, dotIdx) : clean;
+  const ms = dotIdx >= 0 ? clean.slice(dotIdx + 1) : '0';
+  const parts = hms.split(':').map(Number);
+  const [h, m, s] = parts.length === 3 ? parts : [0, parts[0] ?? 0, parts[1] ?? 0];
+  return h * 3600 + m * 60 + s + parseInt(ms.padEnd(3, '0').slice(0, 3)) / 1000;
+}
+
+function parseSrt(raw: string): { start: number; end: number; text: string }[] {
+  const cues: { start: number; end: number; text: string }[] = [];
+  const blocks = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim().split(/\n\s*\n/);
+  for (const block of blocks) {
+    const lines = block.trim().split('\n');
+    const ti = lines.findIndex(l => l.includes('-->'));
+    if (ti < 0) continue;
+    const arrow = lines[ti].split('-->');
+    if (arrow.length < 2) continue;
+    const text = lines.slice(ti + 1).join('\n').replace(/<[^>]+>/g, '').trim();
+    if (text) cues.push({ start: srtTimeToSec(arrow[0]), end: srtTimeToSec(arrow[1]), text });
+  }
+  return cues;
 }
 
 function formatTime(sec: number): string {
@@ -22,7 +55,7 @@ function formatTime(sec: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export default function VodPlayer({ streamUrl, title, poster, subtitle, onClose, onNext, onPrev, hasNext, hasPrev }: VodPlayerProps) {
+export default function VodPlayer({ streamUrl, title, poster, subtitle, subtitles, onClose, onNext, onPrev, hasNext, hasPrev }: VodPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const progressRef = useRef<HTMLDivElement>(null);
@@ -43,6 +76,11 @@ export default function VodPlayer({ streamUrl, title, poster, subtitle, onClose,
   const [showSpeedMenu, setShowSpeedMenu] = useState(false);
   const [seekPreview, setSeekPreview] = useState<number | null>(null);
   const [skipIndicator, setSkipIndicator] = useState<{ dir: 'fwd' | 'bwd'; key: number } | null>(null);
+  const [activeSubtitle, setActiveSubtitle] = useState<SubtitleTrack | null>(null);
+  const [subCues, setSubCues] = useState<{ start: number; end: number; text: string }[]>([]);
+  const [currentSubText, setCurrentSubText] = useState('');
+  const [showSubMenu, setShowSubMenu] = useState(false);
+  const [subLoading, setSubLoading] = useState(false);
 
   const scheduleHide = useCallback(() => {
     if (hideTimer.current) clearTimeout(hideTimer.current);
@@ -152,6 +190,19 @@ export default function VodPlayer({ streamUrl, title, poster, subtitle, onClose,
     setTimeout(() => setSkipIndicator(null), 700);
   };
 
+  const selectSubtitle = useCallback(async (sub: SubtitleTrack | null) => {
+    setShowSubMenu(false);
+    if (!sub) { setActiveSubtitle(null); setSubCues([]); setCurrentSubText(''); return; }
+    setActiveSubtitle(sub);
+    setSubLoading(true);
+    try {
+      const r = await fetch(`/api/subtitle-proxy?url=${encodeURIComponent(sub.url)}`);
+      const text = await r.text();
+      setSubCues(parseSrt(text));
+    } catch { setSubCues([]); }
+    finally { setSubLoading(false); }
+  }, []);
+
   const togglePlay = () => {
     if (!videoRef.current) return;
     if (videoRef.current.paused) videoRef.current.play().catch(() => {});
@@ -227,6 +278,12 @@ export default function VodPlayer({ streamUrl, title, poster, subtitle, onClose,
     return () => document.removeEventListener('fullscreenchange', onChange);
   }, []);
 
+  useEffect(() => {
+    if (!subCues.length) { setCurrentSubText(''); return; }
+    const cue = subCues.find(c => currentTime >= c.start && currentTime <= c.end);
+    setCurrentSubText(cue ? cue.text : '');
+  }, [currentTime, subCues]);
+
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
   const bufferedPct = duration > 0 ? (buffered / duration) * 100 : 0;
 
@@ -292,6 +349,15 @@ export default function VodPlayer({ streamUrl, title, poster, subtitle, onClose,
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
           <p className="text-white/80 text-sm font-medium">{error}</p>
+        </div>
+      )}
+
+      {/* Subtitle overlay */}
+      {currentSubText && (
+        <div className={`${isFullscreen ? 'fixed' : 'absolute'} bottom-24 left-0 right-0 flex justify-center z-10 pointer-events-none px-4`}>
+          <div className="bg-black/80 text-white text-sm sm:text-base px-4 py-2 rounded-lg text-center leading-loose max-w-[90%] whitespace-pre-line font-medium shadow-lg" style={{ textShadow: '1px 1px 3px rgba(0,0,0,1)' }} dir="rtl">
+            {currentSubText}
+          </div>
         </div>
       )}
 
@@ -409,7 +475,7 @@ export default function VodPlayer({ streamUrl, title, poster, subtitle, onClose,
             <div className="flex items-center gap-1.5">
               {/* Speed */}
               <div className="relative" data-menu>
-                <button onClick={(e) => { e.stopPropagation(); setShowSpeedMenu(!showSpeedMenu); }}
+                <button onClick={(e) => { e.stopPropagation(); setShowSpeedMenu(!showSpeedMenu); setShowSubMenu(false); }}
                   className="h-7 px-2 rounded-lg bg-white/10 backdrop-blur-sm flex items-center justify-center hover:bg-white/20 transition">
                   <span className="text-white text-[10px] font-bold">{playbackRate}x</span>
                 </button>
@@ -424,6 +490,36 @@ export default function VodPlayer({ streamUrl, title, poster, subtitle, onClose,
                   </div>
                 )}
               </div>
+
+              {/* Subtitle selector */}
+              {subtitles && subtitles.length > 0 && (
+                <div className="relative" data-menu>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setShowSubMenu(v => !v); setShowSpeedMenu(false); }}
+                    className={`h-7 px-2 rounded-lg backdrop-blur-sm flex items-center gap-1 justify-center hover:bg-white/20 transition ${activeSubtitle ? 'bg-brand-primary/30 border border-brand-primary/50' : 'bg-white/10'}`}
+                    title="الترجمة"
+                  >
+                    <svg className={`w-4 h-4 ${activeSubtitle ? 'text-brand-primary' : 'text-white'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 8h10M7 12h6m-3 4h2M5 3h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z" />
+                    </svg>
+                    {subLoading && <div className="w-2.5 h-2.5 border border-brand-primary border-t-transparent rounded-full animate-spin" />}
+                  </button>
+                  {showSubMenu && (
+                    <div className="absolute bottom-full mb-2 right-0 bg-black/90 backdrop-blur-xl rounded-xl border border-white/10 py-1.5 min-w-[140px] shadow-2xl max-h-52 overflow-y-auto" data-menu>
+                      <button onClick={(e) => { e.stopPropagation(); selectSubtitle(null); }}
+                        className={`block w-full text-right px-3 py-1.5 text-xs font-medium transition ${!activeSubtitle ? 'text-brand-primary bg-brand-primary/10' : 'text-white/70 hover:text-white hover:bg-white/5'}`}>
+                        إيقاف الترجمة
+                      </button>
+                      {subtitles.map((sub, i) => (
+                        <button key={i} onClick={(e) => { e.stopPropagation(); selectSubtitle(sub); }}
+                          className={`block w-full text-right px-3 py-1.5 text-xs font-medium transition ${activeSubtitle?.url === sub.url ? 'text-brand-primary bg-brand-primary/10' : 'text-white/70 hover:text-white hover:bg-white/5'}`}>
+                          {sub.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Fullscreen */}
               <button onClick={(e) => { e.stopPropagation(); toggleFullscreen(); }}

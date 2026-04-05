@@ -27,6 +27,7 @@ function DetailContent() {
   const [streamError, setStreamError] = useState('');
   const [descExpanded, setDescExpanded] = useState(false);
   const [posterError, setPosterError] = useState(false);
+  const [subtitles, setSubtitles] = useState<any[]>([]);
   const historyRecorded = useRef('');
   const playerRef = useRef<HTMLDivElement>(null);
 
@@ -86,16 +87,31 @@ function DetailContent() {
     }
   };
 
+  const fetchSubtitles = useCallback(async (tmdbId: string, type: string, season?: number, episode?: number) => {
+    try {
+      let url = `/api/subtitles?tmdbId=${tmdbId}&type=${type}`;
+      if (type === 'tv' && season && episode) url += `&season=${season}&episode=${episode}`;
+      const token = typeof window !== 'undefined' ? localStorage.getItem('token') || '' : '';
+      const res = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      const data = await res.json();
+      if (data.subtitles?.length) setSubtitles(data.subtitles);
+    } catch {}
+  }, []);
+
   const handleWatch = async () => {
     setStreamLoading(true);
     setStreamError('');
     setStreamUrl('');
     setEmbedUrl('');
+    setSubtitles([]);
     scrollToPlayer();
     try {
       const result = await requestVidsrcStream({ tmdbId: detail?.tmdb_id || contentId, type: 'movie', title });
-      if (result.success) { applyStreamResult(result); recordHistory(); }
-      else setStreamError(result.error || 'فشل تحميل الفيلم');
+      if (result.success) {
+        applyStreamResult(result);
+        recordHistory();
+        fetchSubtitles(detail?.tmdb_id || contentId, 'movie');
+      } else setStreamError(result.error || 'فشل تحميل الفيلم');
     } catch {
       setStreamError('خطأ في الاتصال');
     } finally {
@@ -109,11 +125,15 @@ function DetailContent() {
     setStreamError('');
     setStreamUrl('');
     setEmbedUrl('');
+    setSubtitles([]);
     scrollToPlayer();
     try {
       const result = await requestVidsrcStream({ tmdbId: detail?.tmdb_id || contentId, type: 'tv', season: ep.season, episode: ep.episode, title });
-      if (result.success) { applyStreamResult(result); recordHistory(); }
-      else setStreamError(result.error || 'فشل تحميل الحلقة');
+      if (result.success) {
+        applyStreamResult(result);
+        recordHistory();
+        fetchSubtitles(detail?.tmdb_id || contentId, 'tv', ep.season, ep.episode);
+      } else setStreamError(result.error || 'فشل تحميل الحلقة');
     } catch {
       setStreamError('خطأ في الاتصال');
     } finally {
@@ -351,7 +371,8 @@ function DetailContent() {
                     title={title}
                     poster={poster}
                     subtitle={isSeries && currentEpisode ? `${currentEpisode.title || 'الحلقة ' + currentEpisode.episode} — الموسم ${currentSeason}` : undefined}
-                    onClose={() => { setStreamUrl(''); setStreamError(''); }}
+                    subtitles={subtitles}
+                    onClose={() => { setStreamUrl(''); setStreamError(''); setSubtitles([]); }}
                     hasNext={isSeries && !!getNextEpisode()}
                     hasPrev={isSeries && !!getPrevEpisode()}
                     onNext={isSeries ? () => { const next = getNextEpisode(); if (next) handleEpisodePlay(next); } : undefined}
@@ -382,7 +403,7 @@ function DetailContent() {
                         allowFullScreen
                         allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
                         referrerPolicy="no-referrer-when-downgrade"
-                        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-presentation allow-fullscreen"
+                        sandbox="allow-scripts allow-same-origin allow-forms allow-presentation allow-fullscreen"
                       />
                     </div>
                     {embedSources.length > 1 && (
