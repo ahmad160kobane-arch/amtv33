@@ -11,13 +11,56 @@ function buildEmbedUrls(tmdbId, imdbId, type, season, episode) {
   const isTv = type === 'tv' && season && episode;
   const sources = [];
 
-  // المصدر الوحيد: 2embed.cc
+  sources.push({
+    name: 'vidsrc.to',
+    url: isTv
+      ? `https://vidsrc.to/embed/tv/${tmdbId}/${season}/${episode}`
+      : `https://vidsrc.to/embed/movie/${tmdbId}`,
+  });
+
+  sources.push({
+    name: 'vidsrc.cc',
+    url: isTv
+      ? `https://vidsrc.cc/v2/embed/tv/${tmdbId}/${season}/${episode}`
+      : `https://vidsrc.cc/v2/embed/movie/${tmdbId}`,
+  });
+
+  sources.push({
+    name: 'vidsrc.me',
+    url: isTv
+      ? `https://vidsrc.me/embed/tv?tmdb=${tmdbId}&season=${season}&episode=${episode}`
+      : `https://vidsrc.me/embed/movie?tmdb=${tmdbId}`,
+  });
+
   sources.push({
     name: '2embed.cc',
     url: isTv
       ? `https://www.2embed.cc/embedtv/${tmdbId}&s=${season}&e=${episode}`
       : `https://www.2embed.cc/embed/${tmdbId}`,
   });
+
+  sources.push({
+    name: 'embed.su',
+    url: isTv
+      ? `https://embed.su/embed/tv/${tmdbId}/${season}/${episode}`
+      : `https://embed.su/embed/movie/${tmdbId}`,
+  });
+
+  sources.push({
+    name: 'autoembed.cc',
+    url: isTv
+      ? `https://autoembed.cc/embed/tv/${tmdbId}/${season}/${episode}`
+      : `https://autoembed.cc/embed/movie/${tmdbId}`,
+  });
+
+  if (imdbId) {
+    sources.push({
+      name: 'multiembed.mov',
+      url: isTv
+        ? `https://multiembed.mov/?video_id=${imdbId}&s=${season}&e=${episode}`
+        : `https://multiembed.mov/?video_id=${imdbId}`,
+    });
+  }
 
   return sources;
 }
