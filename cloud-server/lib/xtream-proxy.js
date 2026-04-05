@@ -32,7 +32,7 @@ const MAX_SEG_CACHE    = 300;    // max cached segments (~300MB worst case, prev
 const MAX_SEG_BYTES    = 400 * 1024 * 1024; // 400MB hard limit for segment cache
 const MAX_MANIFEST_PARALLEL = 1; // MUST be 1: IPTV subscription allows ~1 concurrent connection
 const MAX_SEG_PARALLEL = 8;      // parallel segment downloads (CDN-bound, keep reasonable)
-const MAX_PROACTIVE_PER_CYCLE = 3; // max channels refreshed per proactive cycle (prevents burst)
+const MAX_PROACTIVE_PER_CYCLE = 1; // MUST be 1 with max_connections=1: refreshing 2+ channels kills the active session
 
 const SERVERS = [XTREAM.primary, ...(XTREAM.backup !== XTREAM.primary ? [XTREAM.backup] : [])];
 
@@ -81,7 +81,7 @@ class XtreamProxy {
   start() {
     this._gcTimer = setInterval(() => this._gc(), GC_INTERVAL);
     this._proactiveTimer = setInterval(() => this._proactiveRefresh(), MANIFEST_TTL - PROACTIVE_MS);
-    console.log(`[XtreamProxy] v4 Ready — serialized(${MAX_MANIFEST_PARALLEL}), seg parallel(${MAX_SEG_PARALLEL}), TTL ${MANIFEST_TTL/1000}s, stale ${MANIFEST_STALE/1000}s, 403-cooldown ${COOLDOWN_403/1000}s, proactive batch(${MAX_PROACTIVE_PER_CYCLE})`);
+    console.log(`[XtreamProxy] v5 Ready — serialized(${MAX_MANIFEST_PARALLEL}), seg parallel(${MAX_SEG_PARALLEL}), TTL ${MANIFEST_TTL/1000}s, stale ${MANIFEST_STALE/1000}s, 403-cooldown ${COOLDOWN_403/1000}s, proactive(${MAX_PROACTIVE_PER_CYCLE})`);
   }
 
   stop() {
@@ -182,9 +182,11 @@ class XtreamProxy {
     } catch (err) {
       // Determine if this is a 403 (rate-limit / subscription limit)
       const is403 = err.message?.includes('403');
-      // Preserve lastGood from previous cache so stale serving survives repeated failures
-      const prevLastGoodTs = cached?.lastGoodTs || 0;
-      const prevLastGoodRewritten = cached?.lastGoodRewritten || null;
+      // Re-read current cache — a concurrent proactive refresh may have succeeded while we awaited
+      // Using stale `cached` var here would lose that lastGoodRewritten update (race condition bug)
+      const current = this._manifests.get(streamId);
+      const prevLastGoodTs = current?.lastGoodTs || cached?.lastGoodTs || 0;
+      const prevLastGoodRewritten = current?.lastGoodRewritten || cached?.lastGoodRewritten || null;
       this._manifests.set(streamId, {
         ts: Date.now(), failed: true, is403,
         lastGoodTs: prevLastGoodTs,
