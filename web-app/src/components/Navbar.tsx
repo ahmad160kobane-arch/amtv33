@@ -139,13 +139,15 @@ export default function Navbar() {
     <>
       {/* Desktop / top navbar */}
       <header className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 ${
-        scrolled ? 'bg-light-header/95 dark:bg-dark-header/95 backdrop-blur shadow-lg shadow-black/10' : 'bg-transparent'
+        scrolled
+          ? 'bg-light-header/98 dark:bg-dark-header/98 backdrop-blur shadow-lg shadow-black/10'
+          : 'bg-light-header/80 dark:bg-dark-header/80 backdrop-blur-sm'
       }`}>
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between gap-4">
           {/* Logo */}
           <Link href="/" className="flex items-center gap-1.5 flex-shrink-0">
             <span className="text-brand-primary text-2xl font-black tracking-wide">MA</span>
-            <span className="text-xs text-dark-muted mt-1">streaming</span>
+            <span className="text-xs text-light-muted dark:text-dark-muted mt-1">streaming</span>
           </Link>
 
           {/* Desktop nav links */}
@@ -203,44 +205,19 @@ export default function Navbar() {
               {user ? (user.display_name || user.username).split(' ')[0] : 'دخول'}
             </Link>
 
-            {/* Mobile menu button */}
+            {/* Search shortcut on mobile */}
             <button
-              onClick={() => setMenuOpen((v) => !v)}
+              onClick={() => router.push('/allcontent')}
               className="md:hidden p-2 rounded-lg text-light-muted dark:text-dark-muted hover:bg-light-input dark:hover:bg-dark-input transition"
+              title="البحث"
             >
-              {menuOpen ? (
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              ) : (
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-                </svg>
-              )}
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
             </button>
           </div>
         </div>
 
-        {/* Mobile dropdown menu */}
-        {menuOpen && (
-          <div className="md:hidden bg-light-card dark:bg-dark-card border-t border-light-border dark:border-dark-border py-2">
-            {NAV_ITEMS.map((item) => {
-              const active = pathname === item.href || (item.href !== '/' && pathname.startsWith(item.href));
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={`flex items-center gap-3 px-5 py-3 text-sm font-medium transition ${
-                    active ? 'text-brand-primary bg-brand-primary/8' : 'text-light-text dark:text-dark-text hover:bg-light-input dark:hover:bg-dark-input'
-                  }`}
-                >
-                  {React.createElement(NAV_ICONS[item.href], { active })}
-                  <span>{item.label}</span>
-                </Link>
-              );
-            })}
-          </div>
-        )}
       </header>
 
       {/* Bottom nav for mobile */}
@@ -258,7 +235,7 @@ export default function Navbar() {
               <span className={`transition-transform ${active ? 'scale-110' : ''}`}>
                 {React.createElement(NAV_ICONS[item.href], { active })}
               </span>
-              <span className="text-[9px] font-medium">{item.label}</span>
+              <span className="text-[10px] font-semibold">{item.label}</span>
               {active && <span className="absolute bottom-0 w-8 h-0.5 bg-brand-primary rounded-t-full" />}
             </Link>
           );

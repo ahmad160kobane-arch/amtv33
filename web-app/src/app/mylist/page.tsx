@@ -61,19 +61,19 @@ export default function MyListPage() {
           <h1 className="text-xl font-black text-light-text dark:text-dark-text">قائمتي</h1>
           <span className="px-2 py-0.5 rounded-full bg-brand-primary/15 text-brand-primary text-xs font-bold">{items.length}</span>
         </div>
-        <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+        <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 md:gap-3">
           {items.map((item) => {
             const type = item.content_type === 'series' ? 'tv' : 'movie';
             const href = `/detail?tmdbId=${item.item_id}&type=${type}&title=${encodeURIComponent(item.title)}&poster=${encodeURIComponent(item.poster || '')}`;
             return (
               <Link key={item.id} href={href} className="group">
-                <div className="relative aspect-[2/3] rounded-xl overflow-hidden bg-dark-card">
+                <div className="relative aspect-[2/3] rounded-xl overflow-hidden bg-light-card dark:bg-dark-card">
                   {item.poster && !imgErrors.has(item.id) ? (
                     <img src={item.poster} alt={item.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       onError={() => setImgErrors(p => new Set(p).add(item.id))} loading="lazy" />
                   ) : (
-                    <div className="w-full h-full flex items-center justify-center bg-dark-input">
-                      <svg className="w-8 h-8 text-dark-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z" /></svg>
+                    <div className="w-full h-full flex items-center justify-center bg-light-input dark:bg-dark-input">
+                      <svg className="w-8 h-8 text-light-muted dark:text-dark-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z" /></svg>
                     </div>
                   )}
                   <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />

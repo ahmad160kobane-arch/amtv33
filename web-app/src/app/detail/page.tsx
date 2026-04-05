@@ -24,6 +24,7 @@ function DetailContent() {
   const [descExpanded, setDescExpanded] = useState(false);
   const [posterError, setPosterError] = useState(false);
   const historyRecorded = useRef('');
+  const playerRef = useRef<HTMLDivElement>(null);
 
   const isSeries = vodType === 'series' || vodType === 'tv' || detail?.vod_type === 'series';
   const title = detail?.name || paramTitle;
@@ -61,10 +62,15 @@ function DetailContent() {
     setIsFav(res.favorited);
   };
 
+  const scrollToPlayer = useCallback(() => {
+    setTimeout(() => playerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
+  }, []);
+
   const handleWatch = async () => {
     setStreamLoading(true);
     setStreamError('');
     setStreamUrl('');
+    scrollToPlayer();
     try {
       const result = await requestIptvVodStream(contentId, detail?.ext || 'mp4');
       if (result.success && result.streamUrl) {
@@ -85,7 +91,7 @@ function DetailContent() {
     setStreamLoading(true);
     setStreamError('');
     setStreamUrl('');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    scrollToPlayer();
     try {
       const result = await requestIptvSeriesStream(ep.id, ep.ext || 'mp4');
       if (result.success && result.streamUrl) {
@@ -321,7 +327,7 @@ function DetailContent() {
 
             {/* Video Player */}
             {(streamUrl || streamLoading || streamError) && (
-              <div className="mb-6">
+              <div className="mb-6" ref={playerRef}>
                 {streamLoading && (
                   <div className="relative w-full bg-black rounded-2xl overflow-hidden shadow-2xl" style={{ paddingTop: '56.25%' }}>
                     <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
@@ -396,7 +402,7 @@ function DetailContent() {
 
           {isSeries && (
             <div className="hidden lg:flex lg:flex-col lg:w-80 xl:w-96 flex-shrink-0">
-              <div className="sticky top-4 max-h-[calc(100vh-2rem)] overflow-y-auto no-scrollbar pr-1">
+              <div className="sticky top-20 max-h-[calc(100vh-5rem)] overflow-y-auto no-scrollbar pr-1">
                 <EpisodesList />
               </div>
             </div>

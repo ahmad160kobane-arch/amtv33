@@ -20,13 +20,14 @@ interface Props {
   cardWidth?: string;
 }
 
-export default function ContentRow({ title, items, seeAllHref, cardWidth = 'w-36 md:w-40 lg:w-44' }: Props) {
+export default function ContentRow({ title, items, seeAllHref, cardWidth = 'w-32 sm:w-36 md:w-40 lg:w-44' }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const scroll = (dir: 'left' | 'right') => {
+  const scroll = (dir: 'prev' | 'next') => {
     if (!scrollRef.current) return;
     const amount = scrollRef.current.clientWidth * 0.7;
-    scrollRef.current.scrollBy({ left: dir === 'left' ? -amount : amount, behavior: 'smooth' });
+    // RTL: 'next' scrolls left (negative), 'prev' scrolls right (positive)
+    scrollRef.current.scrollBy({ left: dir === 'next' ? -amount : amount, behavior: 'smooth' });
   };
 
   if (!items.length) return null;
@@ -44,19 +45,21 @@ export default function ContentRow({ title, items, seeAllHref, cardWidth = 'w-36
               المزيد
             </Link>
           )}
-          {/* Desktop scroll buttons */}
+          {/* Desktop scroll buttons — prev goes right (←), next goes left (→) in RTL */}
           <div className="hidden md:flex gap-1">
             <button
-              onClick={() => scroll('right')}
-              className="w-7 h-7 rounded-full bg-light-input dark:bg-dark-input flex items-center justify-center hover:bg-light-border dark:hover:bg-dark-border transition"
+              onClick={() => scroll('prev')}
+              title="السابق"
+              className="w-7 h-7 rounded-full bg-light-input dark:bg-dark-input flex items-center justify-center hover:bg-brand-primary/20 hover:text-brand-primary transition"
             >
               <svg className="w-3.5 h-3.5 text-light-muted dark:text-dark-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
               </svg>
             </button>
             <button
-              onClick={() => scroll('left')}
-              className="w-7 h-7 rounded-full bg-light-input dark:bg-dark-input flex items-center justify-center hover:bg-light-border dark:hover:bg-dark-border transition"
+              onClick={() => scroll('next')}
+              title="التالي"
+              className="w-7 h-7 rounded-full bg-light-input dark:bg-dark-input flex items-center justify-center hover:bg-brand-primary/20 hover:text-brand-primary transition"
             >
               <svg className="w-3.5 h-3.5 text-light-muted dark:text-dark-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />

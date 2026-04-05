@@ -35,16 +35,16 @@ export function SkeletonHero() {
 
 export function SkeletonChannelCard() {
   return (
-    <div className="w-28 flex-shrink-0 flex flex-col items-center gap-2 p-3 rounded-xl bg-light-card dark:bg-dark-card skeleton">
-      <div className="w-14 h-10 rounded-lg bg-light-input dark:bg-dark-input" />
-      <div className="h-2.5 w-16 rounded bg-light-input dark:bg-dark-input" />
+    <div className="flex flex-col gap-1.5 p-2.5 rounded-xl bg-light-card dark:bg-dark-card skeleton">
+      <div className="w-full aspect-video rounded-lg bg-light-input dark:bg-dark-input" />
+      <div className="h-2.5 w-3/4 rounded bg-light-input dark:bg-dark-input" />
     </div>
   );
 }
 
 export function SkeletonGrid({ count = 12 }: { count?: number }) {
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 px-4">
+    <div className="grid grid-cols-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 md:gap-3">
       {Array.from({ length: count }).map((_, i) => (
         <div key={i}>
           <div className="w-full aspect-[2/3] rounded-xl bg-light-input dark:bg-dark-input skeleton" />
