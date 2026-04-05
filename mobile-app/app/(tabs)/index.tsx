@@ -16,8 +16,7 @@ import { useRouter } from 'expo-router';
 import { useColorScheme } from '@/hooks/useColorScheme';
 import Colors from '@/constants/Colors';
 import {
-  fetchIptvHome, fetchIptvCategoriesWithMovies,
-  fetchFreeChannels, IptvVodItem, IptvCategoryWithMovies, FreeChannel,
+  fetchVidsrcHome, fetchFreeChannels, VidsrcItem, FreeChannel,
 } from '@/constants/Api';
 import HeroSlider from '@/components/HeroSlider';
 import ContentRow from '@/components/ContentRow';
@@ -26,8 +25,8 @@ import SkeletonRow, { SkeletonHero } from '@/components/SkeletonRow';
 
 const HEADER_H = 50;
 
-function toContentItem(v: IptvVodItem) {
-  return { id: v.id, title: v.name, poster: v.poster, vod_type: v.vod_type, year: v.year, rating: v.rating };
+function toContentItem(v: VidsrcItem) {
+  return { id: v.id, title: v.title, poster: v.poster, vod_type: v.vod_type, year: v.year, rating: v.rating };
 }
 
 export default function HomeScreen() {
@@ -36,15 +35,12 @@ export default function HomeScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
-  const [movies, setMovies] = useState<IptvVodItem[]>([]);
-  const [series, setSeries] = useState<IptvVodItem[]>([]);
+  const [movies, setMovies] = useState<VidsrcItem[]>([]);
+  const [tvShows, setTvShows] = useState<VidsrcItem[]>([]);
+  const [trending, setTrending] = useState<VidsrcItem[]>([]);
   const [channels, setChannels] = useState<FreeChannel[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
-
-  // أقسام حسب الفئات (تحميل مؤجل)
-  const [catRows, setCatRows] = useState<IptvCategoryWithMovies[]>([]);
-  const [extraLoaded, setExtraLoaded] = useState(false);
 
   const totalHeader = HEADER_H + insets.top;
   const scrollY = useRef(new Animated.Value(0)).current;
@@ -56,11 +52,12 @@ export default function HomeScreen() {
   const loadData = useCallback(async () => {
     try {
       const [homeData, chData] = await Promise.all([
-        fetchIptvHome(),
+        fetchVidsrcHome(),
         fetchFreeChannels({ limit: 10 }),
       ]);
       setMovies(homeData.latestMovies || []);
-      setSeries(homeData.latestSeries || []);
+      setTvShows(homeData.latestTvShows || []);
+      setTrending(homeData.trending || []);
       setChannels(chData?.channels || []);
     } catch (e) {
       console.log('[Home] load error:', e);
@@ -70,41 +67,23 @@ export default function HomeScreen() {
     }
   }, []);
 
-  // تحميل الفئات في الخلفية
-  const loadExtra = useCallback(async () => {
-    if (extraLoaded) return;
-    try {
-      const data = await fetchIptvCategoriesWithMovies(8);
-      setCatRows(data.categories || []);
-    } catch {} finally {
-      setExtraLoaded(true);
-    }
-  }, [extraLoaded]);
-
   useEffect(() => {
     const task = InteractionManager.runAfterInteractions(() => { loadData(); });
     return () => task.cancel();
   }, [loadData]);
 
-  useEffect(() => {
-    if (!loading && !extraLoaded) loadExtra();
-  }, [loading, extraLoaded, loadExtra]);
-
   const onRefresh = useCallback(() => {
-    setExtraLoaded(false);
     setRefreshing(true);
     loadData();
   }, [loadData]);
 
-  const heroItems = useMemo(() => movies
-    .filter(v => v.poster)
-    .slice(0, 6)
-    .map(v => ({ id: v.id, title: v.name, poster: v.poster, vod_type: v.vod_type, year: v.year, rating: v.rating, genres: [] as string[] })),
-  [movies]);
+  const heroItems = useMemo(() => [...(trending.filter(v => v.poster).slice(0, 3)), ...(movies.filter(v => v.poster).slice(0, 3))]
+    .map(v => ({ id: v.id, title: v.title, poster: v.poster, vod_type: v.vod_type, year: v.year, rating: v.rating, genres: v.genres || [] })),
+  [trending, movies]);
 
   const handleVodPress = useCallback((item: any) => {
     const type = item.vod_type === 'series' ? 'series' : 'movie';
-    router.push({ pathname: '/detail', params: { xtreamId: item.id, vodType: type, title: item.title || item.name, poster: item.poster } });
+    router.push({ pathname: '/detail', params: { tmdbId: item.tmdb_id || item.id, vodType: type, title: item.title, poster: item.poster } });
   }, [router]);
 
   const handleChannelPress = useCallback((ch: FreeChannel) => {
@@ -143,12 +122,12 @@ export default function HomeScreen() {
           </>
         ) : (
           <>
-            {series.length > 0 && (
+            {trending.length > 0 && (
               <ContentRow
-                title="أحدث المسلسلات"
-                items={series.map(toContentItem)}
+                title="الأكثر مشاهدةً"
+                items={trending.map(toContentItem)}
                 onItemPress={handleVodPress}
-                onSeeAll={() => router.push({ pathname: '/allcontent', params: { type: 'series' } })}
+                onSeeAll={() => router.push('/allcontent' as any)}
                 showBadge
               />
             )}
@@ -158,6 +137,15 @@ export default function HomeScreen() {
                 items={movies.map(toContentItem)}
                 onItemPress={handleVodPress}
                 onSeeAll={() => router.push({ pathname: '/allcontent', params: { type: 'movie' } })}
+                showBadge
+              />
+            )}
+            {tvShows.length > 0 && (
+              <ContentRow
+                title="أحدث المسلسلات"
+                items={tvShows.map(toContentItem)}
+                onItemPress={handleVodPress}
+                onSeeAll={() => router.push({ pathname: '/allcontent', params: { type: 'series' } })}
                 showBadge
               />
             )}
@@ -171,24 +159,6 @@ export default function HomeScreen() {
           onChannelPress={handleChannelPress}
           onSeeAll={() => router.push('/live')}
         />
-
-        {/* أقسام حسب الفئات — تحميل مؤجل */}
-        {!extraLoaded && !loading ? (
-          <><SkeletonRow /><SkeletonRow /><SkeletonRow /></>
-        ) : (
-          <>
-            {catRows.map(cat => cat.items.length > 0 && (
-              <ContentRow
-                key={cat.id}
-                title={cat.name}
-                items={cat.items.map(toContentItem)}
-                onItemPress={handleVodPress}
-                onSeeAll={() => router.push({ pathname: '/allcontent', params: { categoryId: cat.id, title: cat.name } })}
-                showBadge
-              />
-            ))}
-          </>
-        )}
 
         <View style={{ height: 30 }} />
       </Animated.ScrollView>

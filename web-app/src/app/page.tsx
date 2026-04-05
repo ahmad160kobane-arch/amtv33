@@ -1,40 +1,40 @@
 'use client';
 import React, { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { fetchIptvHome, fetchIptvCategoriesWithMovies, fetchFreeChannels, IptvVodItem, IptvCategoryWithMovies, FreeChannel } from '@/constants/api';
+import { fetchVidsrcHome, fetchFreeChannels, VidsrcItem, FreeChannel } from '@/constants/api';
 import ContentRow from '@/components/ContentRow';
 import HeroSlider from '@/components/HeroSlider';
-import { SkeletonRow, SkeletonHero, SkeletonChannelCard } from '@/components/Skeleton';
+import { SkeletonRow, SkeletonHero } from '@/components/Skeleton';
 
-function toContentItem(v: IptvVodItem) {
-  return { id: v.id, title: v.name, poster: v.poster, vod_type: v.vod_type, year: v.year, rating: v.rating };
+function toContentItem(v: VidsrcItem) {
+  return { id: v.id, title: v.title, poster: v.poster, vod_type: v.vod_type, year: v.year, rating: v.rating };
 }
 
-function toHeroItem(v: IptvVodItem) {
+function toHeroItem(v: VidsrcItem) {
   return {
-    id: v.id, title: v.name, poster: v.poster,
-    backdrop: (v as any).backdrop || v.poster,
+    id: v.id, title: v.title, poster: v.poster,
+    backdrop: v.backdrop || v.poster,
     vod_type: v.vod_type, year: v.year, rating: v.rating,
-    genres: (v as any).genres || [],
-    tmdb_id: (v as any).tmdb_id || v.id,
+    genres: v.genres || [],
+    tmdb_id: v.tmdb_id || v.id,
   } as any;
 }
 
 export default function HomePage() {
   const router = useRouter();
-  const [movies, setMovies] = useState<IptvVodItem[]>([]);
-  const [series, setSeries] = useState<IptvVodItem[]>([]);
+  const [movies, setMovies] = useState<VidsrcItem[]>([]);
+  const [tvShows, setTvShows] = useState<VidsrcItem[]>([]);
+  const [trending, setTrending] = useState<VidsrcItem[]>([]);
   const [channels, setChannels] = useState<FreeChannel[]>([]);
   const [logoErrors, setLogoErrors] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
-  const [categories, setCategories] = useState<IptvCategoryWithMovies[]>([]);
-  const [extraLoaded, setExtraLoaded] = useState(false);
 
   const loadData = useCallback(async () => {
     try {
-      const [homeData, chData] = await Promise.all([fetchIptvHome(), fetchFreeChannels({ limit: 12 })]);
+      const [homeData, chData] = await Promise.all([fetchVidsrcHome(), fetchFreeChannels({ limit: 12 })]);
       setMovies(homeData.latestMovies || []);
-      setSeries(homeData.latestSeries || []);
+      setTvShows(homeData.latestTvShows || []);
+      setTrending(homeData.trending || []);
       setChannels(chData?.channels || []);
     } catch (e) {
       console.error('Home load error:', e);
@@ -43,20 +43,9 @@ export default function HomePage() {
     }
   }, []);
 
-  const loadExtra = useCallback(async () => {
-    if (extraLoaded) return;
-    try {
-      const data = await fetchIptvCategoriesWithMovies(8);
-      setCategories(data.categories || []);
-    } catch {} finally {
-      setExtraLoaded(true);
-    }
-  }, [extraLoaded]);
-
   useEffect(() => { loadData(); }, [loadData]);
-  useEffect(() => { if (!loading) loadExtra(); }, [loading, loadExtra]);
 
-  const heroItems = [...movies.slice(0, 4), ...series.slice(0, 2)].map(toHeroItem);
+  const heroItems = [...(trending.slice(0, 3)), ...(movies.slice(0, 2)), ...(tvShows.slice(0, 1))].map(toHeroItem);
 
   return (
     <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-20 md:pb-6">
@@ -130,24 +119,16 @@ export default function HomePage() {
           </>
         ) : (
           <>
+            {trending.length > 0 && (
+              <ContentRow title="الأكثر مشاهدةً" items={trending.map(toContentItem)} seeAllHref="/allcontent" showBadge />
+            )}
             {movies.length > 0 && (
               <ContentRow title="أحدث الأفلام" items={movies.map(toContentItem)} seeAllHref="/allcontent?type=movie" showBadge />
             )}
-            {series.length > 0 && (
-              <ContentRow title="أحدث المسلسلات" items={series.map(toContentItem)} seeAllHref="/allcontent?type=series" showBadge />
+            {tvShows.length > 0 && (
+              <ContentRow title="أحدث المسلسلات" items={tvShows.map(toContentItem)} seeAllHref="/allcontent?type=series" showBadge />
             )}
           </>
-        )}
-
-        {/* Categories from Xtream VOD */}
-        {!extraLoaded && !loading ? (
-          <><SkeletonRow /><SkeletonRow /><SkeletonRow /></>
-        ) : (
-          categories.map(cat => (
-            cat.items.length > 0 && (
-              <ContentRow key={cat.id} title={cat.name} items={cat.items.map(toContentItem)} seeAllHref={`/allcontent?type=movie&categoryId=${cat.id}`} showBadge />
-            )
-          ))
         )}
       </div>
     </div>

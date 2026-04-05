@@ -1,23 +1,23 @@
 'use client';
 import React, { useEffect, useState, useCallback, useRef, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { fetchIptvMovieDetail, fetchIptvSeriesDetail, requestIptvVodStream, requestIptvSeriesStream, checkFavorite, toggleFavorite, addWatchHistory, isLoggedIn, IptvVodDetail, IptvSeriesDetail, IptvEpisode, IptvSeason } from '@/constants/api';
+import { fetchVidsrcDetail, requestVidsrcStream, checkFavorite, toggleFavorite, addWatchHistory, isLoggedIn, VidsrcDetail, VidsrcEpisode } from '@/constants/api';
 import VodPlayer from '@/components/VodPlayer';
 
 function DetailContent() {
   const params = useSearchParams();
   const router = useRouter();
-  const contentId = params.get('id') || params.get('tmdbId') || '';
+  const contentId = params.get('id') || '';
   const vodType = params.get('type') || params.get('vodType') || 'movie';
   const paramTitle = params.get('title') || '';
   const paramPoster = params.get('poster') || '';
 
-  const [detail, setDetail] = useState<(IptvVodDetail & { seasons?: IptvSeason[] }) | null>(null);
+  const [detail, setDetail] = useState<VidsrcDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [isFav, setIsFav] = useState(false);
   const [loggedIn, setLoggedIn] = useState(false);
   const [currentSeason, setCurrentSeason] = useState(1);
-  const [currentEpisode, setCurrentEpisode] = useState<IptvEpisode | null>(null);
+  const [currentEpisode, setCurrentEpisode] = useState<VidsrcEpisode | null>(null);
   const [streamUrl, setStreamUrl] = useState('');
   const [streamLoading, setStreamLoading] = useState(false);
   const [streamError, setStreamError] = useState('');
@@ -27,19 +27,15 @@ function DetailContent() {
   const playerRef = useRef<HTMLDivElement>(null);
 
   const isSeries = vodType === 'series' || vodType === 'tv' || detail?.vod_type === 'series';
-  const title = detail?.name || paramTitle;
+  const fetchType = isSeries ? 'tv' : 'movie';
+  const title = detail?.title || paramTitle;
   const poster = detail?.poster || paramPoster;
-  const description = detail?.plot || '';
+  const description = detail?.description || '';
 
   const loadData = useCallback(async () => {
     if (!contentId) return;
     try {
-      let data: any = null;
-      if (isSeries) {
-        data = await fetchIptvSeriesDetail(contentId);
-      } else {
-        data = await fetchIptvMovieDetail(contentId);
-      }
+      const data = await fetchVidsrcDetail(fetchType as 'movie' | 'tv', contentId);
       setDetail(data);
       const logged = await isLoggedIn();
       setLoggedIn(logged);
@@ -52,7 +48,7 @@ function DetailContent() {
     } finally {
       setLoading(false);
     }
-  }, [contentId, isSeries]);
+  }, [contentId, fetchType]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -72,9 +68,10 @@ function DetailContent() {
     setStreamUrl('');
     scrollToPlayer();
     try {
-      const result = await requestIptvVodStream(contentId, detail?.ext || 'mp4');
-      if (result.success && result.streamUrl) {
-        setStreamUrl(result.streamUrl);
+      const result = await requestVidsrcStream({ tmdbId: detail?.tmdb_id || contentId, type: 'movie', title });
+      const url = result.hlsUrl || result.vodUrl || '';
+      if (result.success && url) {
+        setStreamUrl(url);
         recordHistory();
       } else {
         setStreamError(result.error || 'فشل تحميل الفيلم');
@@ -86,16 +83,17 @@ function DetailContent() {
     }
   };
 
-  const handleEpisodePlay = async (ep: IptvEpisode) => {
+  const handleEpisodePlay = async (ep: VidsrcEpisode) => {
     setCurrentEpisode(ep);
     setStreamLoading(true);
     setStreamError('');
     setStreamUrl('');
     scrollToPlayer();
     try {
-      const result = await requestIptvSeriesStream(ep.id, ep.ext || 'mp4');
-      if (result.success && result.streamUrl) {
-        setStreamUrl(result.streamUrl);
+      const result = await requestVidsrcStream({ tmdbId: detail?.tmdb_id || contentId, type: 'tv', season: ep.season, episode: ep.episode, title });
+      const url = result.hlsUrl || result.vodUrl || '';
+      if (result.success && url) {
+        setStreamUrl(url);
         recordHistory();
       } else {
         setStreamError(result.error || 'فشل تحميل الحلقة');
@@ -108,33 +106,30 @@ function DetailContent() {
   };
 
   const recordHistory = useCallback(() => {
-    const key = `${contentId}_${currentSeason}_${currentEpisode?.id}`;
+    const key = `${contentId}_${currentSeason}_${currentEpisode?.episode}`;
     if (key === historyRecorded.current || !loggedIn) return;
     historyRecorded.current = key;
     addWatchHistory({ item_id: contentId, item_type: 'vod', title, poster, content_type: isSeries ? 'series' : 'movie' });
   }, [contentId, currentSeason, currentEpisode, loggedIn, title, poster, isSeries]);
 
-  const seasons: IptvSeason[] = (detail as IptvSeriesDetail)?.seasons || [];
-  const currentSeasonData = seasons.find(s => s.season === currentSeason);
-  const episodes: IptvEpisode[] = currentSeasonData?.episodes || [];
+  const seasons: number[] = detail?.seasons || [];
+  const episodes: VidsrcEpisode[] = (detail?.episodes || []).filter(e => e.season === currentSeason);
 
-  const getNextEpisode = useCallback((): IptvEpisode | null => {
+  const getNextEpisode = useCallback((): VidsrcEpisode | null => {
     if (!currentEpisode) return episodes[0] || null;
-    const idx = episodes.findIndex(e => e.id === currentEpisode.id);
+    const idx = episodes.findIndex(e => e.episode === currentEpisode.episode);
     if (idx >= 0 && idx < episodes.length - 1) return episodes[idx + 1];
-    const nextSeason = seasons.find(s => s.season === currentSeason + 1);
-    if (nextSeason && nextSeason.episodes.length > 0) return nextSeason.episodes[0];
-    return null;
-  }, [currentEpisode, episodes, seasons, currentSeason]);
+    const nextSeasonEps = (detail?.episodes || []).filter(e => e.season === currentSeason + 1);
+    return nextSeasonEps[0] || null;
+  }, [currentEpisode, episodes, detail, currentSeason]);
 
-  const getPrevEpisode = useCallback((): IptvEpisode | null => {
+  const getPrevEpisode = useCallback((): VidsrcEpisode | null => {
     if (!currentEpisode) return null;
-    const idx = episodes.findIndex(e => e.id === currentEpisode.id);
+    const idx = episodes.findIndex(e => e.episode === currentEpisode.episode);
     if (idx > 0) return episodes[idx - 1];
-    const prevSeason = seasons.find(s => s.season === currentSeason - 1);
-    if (prevSeason && prevSeason.episodes.length > 0) return prevSeason.episodes[prevSeason.episodes.length - 1];
-    return null;
-  }, [currentEpisode, episodes, seasons, currentSeason]);
+    const prevSeasonEps = (detail?.episodes || []).filter(e => e.season === currentSeason - 1);
+    return prevSeasonEps[prevSeasonEps.length - 1] || null;
+  }, [currentEpisode, episodes, detail, currentSeason]);
 
   const MetaBadges = () => (
     <div className="flex items-center gap-2 mb-1.5 flex-wrap">
@@ -150,7 +145,6 @@ function DetailContent() {
           <span className="text-xs text-amber-400 font-bold">{detail.rating}</span>
         </div>
       )}
-      {detail?.age && <span className="px-2 py-0.5 rounded text-xs font-medium bg-red-500/15 text-red-400">{detail.age}</span>}
       {detail?.runtime && <span className="text-xs text-light-muted dark:text-dark-muted">{detail.runtime}</span>}
     </div>
   );
@@ -171,11 +165,11 @@ function DetailContent() {
             <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
               {seasons.map(s => (
                 <button
-                  key={s.season}
-                  onClick={() => { setCurrentSeason(s.season); setCurrentEpisode(null); }}
-                  className={`flex-shrink-0 px-3 py-1.5 rounded-lg text-sm font-medium transition ${currentSeason === s.season ? 'bg-brand-primary text-black' : 'bg-light-card dark:bg-dark-card text-light-muted dark:text-dark-muted hover:bg-light-input dark:hover:bg-dark-input'}`}
+                  key={s}
+                  onClick={() => { setCurrentSeason(s); setCurrentEpisode(null); }}
+                  className={`flex-shrink-0 px-3 py-1.5 rounded-lg text-sm font-medium transition ${currentSeason === s ? 'bg-brand-primary text-black' : 'bg-light-card dark:bg-dark-card text-light-muted dark:text-dark-muted hover:bg-light-input dark:hover:bg-dark-input'}`}
                 >
-                  الموسم {s.season}
+                  الموسم {s}
                 </button>
               ))}
             </div>
@@ -202,23 +196,20 @@ function DetailContent() {
           <div className="flex flex-col gap-2">
             {episodes.map(ep => (
               <button
-                key={ep.id}
+                key={`${ep.season}_${ep.episode}`}
                 onClick={() => handleEpisodePlay(ep)}
-                className={`flex items-center gap-3 p-3 rounded-xl text-right transition ${currentEpisode?.id === ep.id ? 'bg-brand-primary/15 border border-brand-primary/40' : 'bg-light-card dark:bg-dark-card hover:bg-light-input dark:hover:bg-dark-input'}`}
+                className={`flex items-center gap-3 p-3 rounded-xl text-right transition ${currentEpisode?.episode === ep.episode && currentEpisode?.season === ep.season ? 'bg-brand-primary/15 border border-brand-primary/40' : 'bg-light-card dark:bg-dark-card hover:bg-light-input dark:hover:bg-dark-input'}`}
               >
-                <div className={`w-16 h-10 rounded-lg flex-shrink-0 overflow-hidden flex items-center justify-center font-bold text-sm ${currentEpisode?.id === ep.id ? 'bg-brand-primary/20' : 'bg-light-input dark:bg-dark-input'}`}>
-                  {ep.poster ? (
-                    <img src={ep.poster} alt={ep.title || ''} className="w-full h-full object-cover" loading="lazy" />
+                <div className={`w-16 h-10 rounded-lg flex-shrink-0 overflow-hidden flex items-center justify-center font-bold text-sm ${currentEpisode?.episode === ep.episode ? 'bg-brand-primary/20' : 'bg-light-input dark:bg-dark-input'}`}>
+                  {ep.thumbnail ? (
+                    <img src={ep.thumbnail} alt={ep.title || ''} className="w-full h-full object-cover" loading="lazy" />
                   ) : (
-                    <span className={currentEpisode?.id === ep.id ? 'text-brand-primary' : 'text-light-muted dark:text-dark-muted'}>{ep.episode}</span>
+                    <span className={currentEpisode?.episode === ep.episode ? 'text-brand-primary' : 'text-light-muted dark:text-dark-muted'}>{ep.episode}</span>
                   )}
                 </div>
                 <div className="flex-1 text-right">
                   <p className="text-sm font-medium text-light-text dark:text-dark-text line-clamp-1">{ep.title || `الحلقة ${ep.episode}`}</p>
-                  <div className="flex items-center gap-2 mt-0.5">
-                    {ep.duration && <span className="text-xs text-light-muted dark:text-dark-muted">{ep.duration}</span>}
-                    {ep.resolution && ep.resolution !== '0x0' && <span className="text-xs text-light-muted dark:text-dark-muted bg-light-input dark:bg-dark-input px-1 rounded">{ep.resolution.includes('1920') ? 'HD' : ep.resolution.includes('1280') ? 'HD' : ep.resolution.includes('3840') ? '4K' : 'SD'}</span>}
-                  </div>
+                  {ep.released && <span className="text-xs text-light-muted dark:text-dark-muted mt-0.5 block">{ep.released}</span>}
                 </div>
               </button>
             ))}
@@ -266,18 +257,12 @@ function DetailContent() {
               <div className="flex-1 pb-2">
                 <MetaBadges />
                 <h1 className="text-lg md:text-2xl lg:text-3xl font-black text-light-text dark:text-white leading-tight">{title}</h1>
-                {detail?.o_name && detail.o_name !== title && (
-                  <p className="text-xs text-light-muted dark:text-dark-muted mt-0.5">{detail.o_name}</p>
-                )}
-                {detail?.genre && (
+                {detail?.genres && detail.genres.length > 0 && (
                   <div className="flex flex-wrap gap-1.5 mt-2">
-                    {detail.genre.split(/[,،]/).slice(0, 5).map((g: string) => (
-                      <span key={g.trim()} className="px-2 py-0.5 rounded-full bg-white/10 dark:bg-white/10 bg-light-input text-light-muted dark:text-white/70 text-xs">{g.trim()}</span>
+                    {detail.genres.slice(0, 5).map((g: string) => (
+                      <span key={g} className="px-2 py-0.5 rounded-full bg-white/10 dark:bg-white/10 bg-light-input text-light-muted dark:text-white/70 text-xs">{g}</span>
                     ))}
                   </div>
-                )}
-                {detail?.releaseDate && (
-                  <p className="text-xs text-light-muted dark:text-dark-muted mt-1.5">{detail.releaseDate}</p>
                 )}
               </div>
             </div>

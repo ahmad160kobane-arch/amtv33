@@ -1,7 +1,7 @@
 'use client';
 import React, { useEffect, useState, useCallback, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { fetchIptvMovies, fetchIptvSeries, fetchIptvSearch, IptvVodItem } from '@/constants/api';
+import { fetchVidsrcBrowse, searchVidsrc, VidsrcItem } from '@/constants/api';
 import ContentCard from '@/components/ContentCard';
 import { SkeletonGrid } from '@/components/Skeleton';
 
@@ -10,7 +10,7 @@ const TYPES = [{ id: '', label: 'الكل' }, { id: 'movie', label: 'أفلام'
 function AllContentContent() {
   const params = useSearchParams();
   const router = useRouter();
-  const [items, setItems] = useState<IptvVodItem[]>([]);
+  const [items, setItems] = useState<VidsrcItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [page, setPage] = useState(1);
@@ -18,22 +18,17 @@ function AllContentContent() {
   const [search, setSearch] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [activeType, setActiveType] = useState(params.get('type') || '');
-  const [activeCategoryId, setActiveCategoryId] = useState(params.get('categoryId') || '');
 
   const load = useCallback(async (p = 1, reset = false) => {
     if (p === 1) setLoading(true); else setLoadingMore(true);
     try {
       if (searchQuery.trim()) {
-        const data = await fetchIptvSearch(searchQuery, p);
-        setItems(prev => reset ? (data.items || []) : [...prev, ...(data.items || [])]);
-        setHasMore(data.hasMore ?? false);
-      } else if (activeType === 'series') {
-        const data = await fetchIptvSeries({ categoryId: activeCategoryId || undefined, page: p, search: undefined });
-        const newItems = data.items || [];
-        setItems(prev => reset ? newItems : [...prev, ...newItems]);
-        setHasMore(data.hasMore ?? newItems.length >= 20);
+        const results = await searchVidsrc(searchQuery);
+        setItems(reset ? results : prev => [...prev, ...results]);
+        setHasMore(false);
       } else {
-        const data = await fetchIptvMovies({ categoryId: activeCategoryId || undefined, page: p, search: undefined });
+        const apiType = activeType === 'series' ? 'tv' : (activeType === 'movie' ? 'movie' : undefined);
+        const data = await fetchVidsrcBrowse({ type: apiType, page: p });
         const newItems = data.items || [];
         setItems(prev => reset ? newItems : [...prev, ...newItems]);
         setHasMore(data.hasMore ?? newItems.length >= 20);
@@ -44,9 +39,9 @@ function AllContentContent() {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [activeType, activeCategoryId, searchQuery]);
+  }, [activeType, searchQuery]);
 
-  useEffect(() => { setPage(1); load(1, true); }, [activeType, activeCategoryId, searchQuery]);
+  useEffect(() => { setPage(1); load(1, true); }, [activeType, searchQuery]);
 
   const loadMore = () => {
     const next = page + 1;
@@ -59,9 +54,9 @@ function AllContentContent() {
     setSearchQuery(search);
   };
 
-  const toCard = (item: IptvVodItem) => ({
+  const toCard = (item: VidsrcItem) => ({
     id: item.id,
-    title: item.name,
+    title: item.title,
     poster: item.poster,
     vod_type: item.vod_type,
     year: item.year,
@@ -91,7 +86,7 @@ function AllContentContent() {
 
           <div className="flex gap-2 overflow-x-auto no-scrollbar pb-2 mb-2">
             {TYPES.map(t => (
-              <button key={t.id} onClick={() => { setActiveType(t.id); setActiveCategoryId(''); setSearchQuery(''); setSearch(''); }}
+              <button key={t.id} onClick={() => { setActiveType(t.id); setSearchQuery(''); setSearch(''); }}
                 className={`flex-shrink-0 px-3 py-1.5 rounded-lg text-sm font-medium transition ${activeType === t.id ? 'bg-brand-primary text-black' : 'bg-light-input dark:bg-dark-input text-light-muted dark:text-dark-muted hover:text-light-text dark:hover:text-dark-text'}`}
               >{t.label}</button>
             ))}

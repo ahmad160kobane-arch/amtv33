@@ -2,7 +2,6 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View, Text, FlatList, Image, TouchableOpacity, StyleSheet,
   RefreshControl, Dimensions, ActivityIndicator, Animated, TextInput,
-  ScrollView,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -12,8 +11,7 @@ import { useRouter } from 'expo-router';
 import { useColorScheme } from '@/hooks/useColorScheme';
 import Colors from '@/constants/Colors';
 import {
-  fetchIptvMovies, fetchIptvSeries, fetchIptvSearch, fetchIptvHome,
-  IptvVodItem,
+  fetchVidsrcBrowse, fetchVidsrcSearch, VidsrcItem,
 } from '@/constants/Api';
 
 const { width } = Dimensions.get('window');
@@ -58,12 +56,10 @@ export default function EntertainmentScreen() {
   const insets = useSafeAreaInsets();
 
   const [activeType, setActiveType] = useState('');
-  const [activeCategoryId, setActiveCategoryId] = useState('');
   const [search, setSearch] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
 
-  const [items, setItems] = useState<IptvVodItem[]>([]);
+  const [items, setItems] = useState<VidsrcItem[]>([]); 
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -72,36 +68,17 @@ export default function EntertainmentScreen() {
   const pageRef = useRef(1);
   const loadingMoreRef = useRef(false);
 
-  useEffect(() => {
-    fetchIptvHome().then(home => {
-      const type = activeType;
-      if (type === 'series') {
-        setCategories(home.seriesCategories || []);
-      } else if (type === 'movie') {
-        setCategories(home.vodCategories || []);
-      } else {
-        const all = [...(home.vodCategories || []), ...(home.seriesCategories || [])];
-        const seen = new Set<string>();
-        setCategories(all.filter(c => { if (seen.has(c.id)) return false; seen.add(c.id); return true; }));
-      }
-    }).catch(() => {});
-  }, [activeType]);
-
   const load = useCallback(async (page: number, reset: boolean) => {
     try {
       setError('');
       if (searchQuery.trim()) {
-        const data = await fetchIptvSearch(searchQuery, page);
+        const data = await fetchVidsrcSearch(searchQuery, page);
         const newItems = data.items || [];
         if (reset) setItems(newItems); else setItems(prev => [...prev, ...newItems]);
-        setHasMore(data.hasMore ?? newItems.length >= 24);
-      } else if (activeType === 'series') {
-        const data = await fetchIptvSeries({ categoryId: activeCategoryId || undefined, page });
-        const newItems = data.items || [];
-        if (reset) setItems(newItems); else setItems(prev => [...prev, ...newItems]);
-        setHasMore(data.hasMore ?? newItems.length >= 24);
+        setHasMore(data.hasMore ?? false);
       } else {
-        const data = await fetchIptvMovies({ categoryId: activeCategoryId || undefined, page });
+        const apiType = activeType === 'series' ? 'tv' : (activeType === 'movie' ? 'movie' : undefined);
+        const data = await fetchVidsrcBrowse({ type: apiType, page });
         const newItems = data.items || [];
         if (reset) setItems(newItems); else setItems(prev => [...prev, ...newItems]);
         setHasMore(data.hasMore ?? newItems.length >= 24);
@@ -115,7 +92,7 @@ export default function EntertainmentScreen() {
       loadingMoreRef.current = false;
       setLoadingMore(false);
     }
-  }, [activeType, activeCategoryId, searchQuery]);
+  }, [activeType, searchQuery]);
 
   useEffect(() => {
     setItems([]);
@@ -123,7 +100,7 @@ export default function EntertainmentScreen() {
     setHasMore(true);
     pageRef.current = 1;
     load(1, true);
-  }, [activeType, activeCategoryId, searchQuery, load]);
+  }, [activeType, searchQuery, load]);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
@@ -143,12 +120,12 @@ export default function EntertainmentScreen() {
     setSearchQuery(search);
   }, [search]);
 
-  const handlePress = useCallback((item: IptvVodItem) => {
+  const handlePress = useCallback((item: VidsrcItem) => {
     const type = item.vod_type === 'series' ? 'series' : 'movie';
-    router.push({ pathname: '/detail', params: { xtreamId: item.id, vodType: type, title: item.name, poster: item.poster } });
+    router.push({ pathname: '/detail', params: { tmdbId: item.tmdb_id || item.id, vodType: type, title: item.title, poster: item.poster } });
   }, [router]);
 
-  const renderItem = useCallback(({ item }: { item: IptvVodItem }) => {
+  const renderItem = useCallback(({ item }: { item: VidsrcItem }) => {
     const ratingVal = item.rating ? parseFloat(item.rating) : 0;
     const isSeries = item.vod_type === 'series';
     return (
@@ -175,7 +152,7 @@ export default function EntertainmentScreen() {
           </View>
         )}
         <View style={styles.cardBottom}>
-          <Text style={styles.cardTitle} numberOfLines={2}>{item.name}</Text>
+          <Text style={styles.cardTitle} numberOfLines={2}>{item.title}</Text>
           {item.year ? <Text style={styles.cardYear}>{item.year}</Text> : null}
         </View>
       </TouchableOpacity>
@@ -214,7 +191,7 @@ export default function EntertainmentScreen() {
           <TouchableOpacity
             key={t.id}
             style={[styles.typeBtn, activeType === t.id && styles.typeBtnActive]}
-            onPress={() => { setActiveType(t.id); setActiveCategoryId(''); setSearchQuery(''); setSearch(''); }}
+            onPress={() => { setActiveType(t.id); setSearchQuery(''); setSearch(''); }}
             activeOpacity={0.7}
           >
             <Text style={[styles.typeBtnText, { color: activeType === t.id ? '#000' : colors.textSecondary }]}>{t.label}</Text>
@@ -222,28 +199,6 @@ export default function EntertainmentScreen() {
         ))}
       </View>
 
-      {/* Category filter */}
-      {categories.length > 0 && (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.catRow}>
-          <TouchableOpacity
-            style={[styles.catChip, activeCategoryId === '' && styles.catChipActive]}
-            onPress={() => { setActiveCategoryId(''); setSearchQuery(''); setSearch(''); }}
-            activeOpacity={0.7}
-          >
-            <Text style={[styles.catChipText, { color: activeCategoryId === '' ? Colors.brand.primary : colors.textSecondary }]}>الكل</Text>
-          </TouchableOpacity>
-          {categories.map(c => (
-            <TouchableOpacity
-              key={c.id}
-              style={[styles.catChip, activeCategoryId === c.id && styles.catChipActive]}
-              onPress={() => { setActiveCategoryId(c.id); setSearchQuery(''); setSearch(''); }}
-              activeOpacity={0.7}
-            >
-              <Text style={[styles.catChipText, { color: activeCategoryId === c.id ? Colors.brand.primary : colors.textSecondary }]}>{c.name}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      )}
 
       {/* Content */}
       {error ? (

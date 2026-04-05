@@ -676,6 +676,21 @@ export async function fetchAgentCodes(params?: { status?: string; limit?: number
   } catch { return { codes: [], total: 0 }; }
 }
 
+// ─── VidSrc Streaming ────────────────────────────────────
+export async function requestVidsrcStream(opts: {
+  tmdbId?: string; type?: 'movie' | 'tv'; season?: number; episode?: number; title?: string;
+}): Promise<{ success: boolean; hlsUrl?: string; vodUrl?: string; embedUrl?: string; subtitles?: any[]; error?: string; requiresSubscription?: boolean }> {
+  try {
+    const res = await apiFetch('/api/stream/vidsrc', {
+      method: 'POST',
+      body: JSON.stringify(opts),
+    });
+    const data = await res.json();
+    if (!res.ok) return { success: false, error: data.error || data.message, requiresSubscription: !!data.requiresSubscription };
+    return { success: true, ...data };
+  } catch (err: any) { return { success: false, error: err.message }; }
+}
+
 // ─── Session Management (cloud-server) ──────────────────
 const CLOUD_URL = 'http://62.171.153.204:8090';
 
