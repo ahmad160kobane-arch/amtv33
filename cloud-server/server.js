@@ -1500,7 +1500,7 @@ const server = app.listen(config.PORT, config.HOST, async () => {
   vodProxy.start();
   hlsProxy.start();
   liveProxy.start();
-
+  xtreamProxy.start();
 
   // Sync Xtream IPTV data on startup
   const { syncXtreamChannels } = require('./lib/xtream');
