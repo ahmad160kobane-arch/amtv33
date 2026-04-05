@@ -660,6 +660,33 @@ const WEBVIEW_INJECT_JS = `
 })();
 `;
 
+function srtTimeToSec(t: string): number {
+  const clean = t.trim().replace(',', '.');
+  const dotIdx = clean.lastIndexOf('.');
+  const hms = dotIdx >= 0 ? clean.slice(0, dotIdx) : clean;
+  const ms2 = dotIdx >= 0 ? clean.slice(dotIdx + 1) : '0';
+  const parts = hms.split(':').map(Number);
+  const h = parts.length === 3 ? parts[0] : 0;
+  const m = parts.length === 3 ? parts[1] : (parts[0] ?? 0);
+  const s = parts.length === 3 ? parts[2] : (parts[1] ?? 0);
+  return h * 3600 + m * 60 + s + parseInt(ms2.padEnd(3, '0').slice(0, 3)) / 1000;
+}
+
+function parseSrtMobile(raw: string): { start: number; end: number; text: string }[] {
+  const cues: { start: number; end: number; text: string }[] = [];
+  const blocks = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim().split(/\n\s*\n/);
+  for (const block of blocks) {
+    const lines = block.trim().split('\n');
+    const ti = lines.findIndex(l => l.includes('-->'));
+    if (ti < 0) continue;
+    const arrow = lines[ti].split('-->');
+    if (arrow.length < 2) continue;
+    const text = lines.slice(ti + 1).join('\n').replace(/<[^>]+>/g, '').trim();
+    if (text) cues.push({ start: srtTimeToSec(arrow[0]), end: srtTimeToSec(arrow[1]), text });
+  }
+  return cues;
+}
+
 function formatTime(ms: number) {
   const totalSec = Math.floor(ms / 1000);
   const h = Math.floor(totalSec / 3600);
@@ -741,6 +768,10 @@ export default function PlayerScreen() {
   const [sourceIndex, setSourceIndex] = useState(0);
   const [currentSourceName, setCurrentSourceName] = useState('');
   const webviewRef = useRef<WebView>(null);
+  const [subtitles, setSubtitles] = useState<any[]>([]);
+  const [activeSubtitle, setActiveSubtitle] = useState<any | null>(null);
+  const [showSubMenu, setShowSubMenu] = useState(false);
+  const [subLoading, setSubLoading] = useState(false);
   const { width: screenWidth } = Dimensions.get('window');
 
   const channelId = Array.isArray(params.channelId) ? params.channelId[0] : params.channelId;
@@ -983,6 +1014,75 @@ export default function PlayerScreen() {
   }, [channelId, freeChannelId, premiumChannelId, tmdbId, vidsrcType, seasonNum, episodeNum, xtreamVodId, xtreamEpisodeId, xtreamExt, retryKey, sourceIndex]);
 
   // دالة للتبديل إلى المصدر الاحتياطي التالي
+  const fetchSubtitlesMobile = useCallback(async () => {
+    if (!tmdbId) return;
+    try {
+      const cloudUrl = await getCloudServerUrl();
+      let url = `${cloudUrl}/api/subtitles?tmdbId=${tmdbId}&type=${vidsrcType || 'movie'}`;
+      if (vidsrcType === 'tv' && seasonNum && episodeNum) {
+        url += `&season=${seasonNum}&episode=${episodeNum}`;
+      }
+      const token = await getToken();
+      const res = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      const data = await res.json();
+      if (data.subtitles?.length) setSubtitles(data.subtitles);
+    } catch {}
+  }, [tmdbId, vidsrcType, seasonNum, episodeNum]);
+
+  const selectSubtitleMobile = useCallback(async (sub: any | null) => {
+    setShowSubMenu(false);
+    if (!sub) {
+      setActiveSubtitle(null);
+      webviewRef.current?.injectJavaScript(`window.__subCues=[];if(window.__subOverlay)window.__subOverlay.style.display='none';true;`);
+      return;
+    }
+    setActiveSubtitle(sub);
+    setSubLoading(true);
+    try {
+      const cloudUrl = await getCloudServerUrl();
+      const proxyUrl = `${cloudUrl}/api/subtitle-proxy?url=${encodeURIComponent(sub.url)}`;
+      const r = await fetch(proxyUrl);
+      const text = await r.text();
+      const cues = parseSrtMobile(text);
+      const cuesJson = JSON.stringify(cues);
+      webviewRef.current?.injectJavaScript(`
+(function(){
+  window.__subCues=${cuesJson};
+  if(!window.__subOverlay){
+    var div=document.createElement('div');
+    div.style.cssText='position:fixed;bottom:15%;left:0;right:0;text-align:center;z-index:2147483647;pointer-events:none;padding:0 12px;';
+    document.body.appendChild(div);
+    window.__subOverlay=div;
+    document.addEventListener('timeupdate',function(e){
+      if(e.target.tagName!=='VIDEO'||!window.__subCues)return;
+      var t=e.target.currentTime;
+      var cue=window.__subCues.find(function(c){return t>=c.start&&t<=c.end;});
+      if(window.__subOverlay){
+        if(cue){
+          window.__subOverlay.innerHTML='<div style="display:inline-block;background:rgba(0,0,0,0.85);color:#fff;padding:8px 16px;border-radius:8px;font-size:16px;line-height:1.6;max-width:90vw;direction:rtl;text-align:center;">'+cue.text.replace(/\\n/g,'<br>')+'</div>';
+          window.__subOverlay.style.display='block';
+        }else{
+          window.__subOverlay.style.display='none';
+        }
+      }
+    },true);
+  }
+  window.__subOverlay.style.display='none';
+})();
+true;
+      `);
+    } catch {}
+    finally { setSubLoading(false); }
+  }, []);
+
+  useEffect(() => {
+    if (isVidsrc && embedUrl) {
+      setSubtitles([]);
+      setActiveSubtitle(null);
+      fetchSubtitlesMobile();
+    }
+  }, [isVidsrc, embedUrl, fetchSubtitlesMobile]);
+
   const tryNextSource = useCallback(() => {
     if (sourceIndex < EMBED_SOURCES.length - 1) {
       console.log(`[Player] Trying next source: ${sourceIndex + 1}`);
@@ -1277,13 +1377,36 @@ export default function PlayerScreen() {
             <Text style={styles.embedTitle} numberOfLines={1}>
               {titleParam || 'مشغل'}
             </Text>
-            <TouchableOpacity style={styles.ctrlCircle} onPress={toggleOrientation}>
-              <RotateIcon
-                size={18}
-                color="#fff"
-              />
-            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              {subtitles.length > 0 && (
+                <TouchableOpacity
+                  style={[styles.ctrlCircle, activeSubtitle ? { backgroundColor: 'rgba(255,165,0,0.25)', borderWidth: 1, borderColor: Colors.brand.primary } : {}]}
+                  onPress={() => setShowSubMenu(v => !v)}
+                >
+                  {subLoading ? (
+                    <ActivityIndicator size="small" color={Colors.brand.primary} />
+                  ) : (
+                    <Text style={{ color: activeSubtitle ? Colors.brand.primary : '#fff', fontSize: 10, fontWeight: 'bold', letterSpacing: 0.5 }}>CC</Text>
+                  )}
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity style={styles.ctrlCircle} onPress={toggleOrientation}>
+                <RotateIcon size={18} color="#fff" />
+              </TouchableOpacity>
+            </View>
           </View>
+          {showSubMenu && subtitles.length > 0 && (
+            <View style={styles.subMenuPanel}>
+              <TouchableOpacity style={styles.subMenuRow} onPress={() => selectSubtitleMobile(null)}>
+                <Text style={[styles.subMenuText, !activeSubtitle && { color: Colors.brand.primary }]}>إيقاف الترجمة</Text>
+              </TouchableOpacity>
+              {subtitles.map((sub: any, i: number) => (
+                <TouchableOpacity key={i} style={styles.subMenuRow} onPress={() => selectSubtitleMobile(sub)}>
+                  <Text style={[styles.subMenuText, activeSubtitle?.url === sub.url && { color: Colors.brand.primary }]}>{sub.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
         </View>
 
         {loadingStream && (
@@ -1744,6 +1867,33 @@ const styles = StyleSheet.create({
     fontFamily: Colors.fonts.bold,
     color: '#fff',
     fontSize: 14,
+  },
+  subMenuPanel: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 100 : 62,
+    right: 12,
+    backgroundColor: 'rgba(0,0,0,0.92)',
+    borderRadius: 12,
+    paddingVertical: 6,
+    minWidth: 150,
+    zIndex: 100,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.5,
+    shadowRadius: 8,
+    elevation: 10,
+  },
+  subMenuRow: {
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+  },
+  subMenuText: {
+    color: 'rgba(255,255,255,0.75)',
+    fontSize: 13,
+    fontFamily: Colors.fonts.medium,
+    textAlign: 'right',
   },
   sourceText: {
     fontFamily: Colors.fonts.regular,

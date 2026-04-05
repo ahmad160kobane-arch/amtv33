@@ -492,7 +492,7 @@ export default function VodPlayer({ streamUrl, title, poster, subtitle, subtitle
               </div>
 
               {/* Subtitle selector */}
-              {subtitles && subtitles.length > 0 && (
+              {subtitles !== undefined && (
                 <div className="relative" data-menu>
                   <button
                     onClick={(e) => { e.stopPropagation(); setShowSubMenu(v => !v); setShowSpeedMenu(false); }}
@@ -506,16 +506,24 @@ export default function VodPlayer({ streamUrl, title, poster, subtitle, subtitle
                   </button>
                   {showSubMenu && (
                     <div className="absolute bottom-full mb-2 right-0 bg-black/90 backdrop-blur-xl rounded-xl border border-white/10 py-1.5 min-w-[140px] shadow-2xl max-h-52 overflow-y-auto" data-menu>
-                      <button onClick={(e) => { e.stopPropagation(); selectSubtitle(null); }}
-                        className={`block w-full text-right px-3 py-1.5 text-xs font-medium transition ${!activeSubtitle ? 'text-brand-primary bg-brand-primary/10' : 'text-white/70 hover:text-white hover:bg-white/5'}`}>
-                        إيقاف الترجمة
-                      </button>
-                      {subtitles.map((sub, i) => (
-                        <button key={i} onClick={(e) => { e.stopPropagation(); selectSubtitle(sub); }}
-                          className={`block w-full text-right px-3 py-1.5 text-xs font-medium transition ${activeSubtitle?.url === sub.url ? 'text-brand-primary bg-brand-primary/10' : 'text-white/70 hover:text-white hover:bg-white/5'}`}>
-                          {sub.label}
-                        </button>
-                      ))}
+                      {subtitles.length === 0 ? (
+                        <div className="px-3 py-2 text-xs text-white/40 text-right">
+                          {subLoading ? 'جارٍ البحث...' : 'لا توجد ترجمات'}
+                        </div>
+                      ) : (
+                        <>
+                          <button onClick={(e) => { e.stopPropagation(); selectSubtitle(null); }}
+                            className={`block w-full text-right px-3 py-1.5 text-xs font-medium transition ${!activeSubtitle ? 'text-brand-primary bg-brand-primary/10' : 'text-white/70 hover:text-white hover:bg-white/5'}`}>
+                            إيقاف الترجمة
+                          </button>
+                          {subtitles.map((sub, i) => (
+                            <button key={i} onClick={(e) => { e.stopPropagation(); selectSubtitle(sub); }}
+                              className={`block w-full text-right px-3 py-1.5 text-xs font-medium transition ${activeSubtitle?.url === sub.url ? 'text-brand-primary bg-brand-primary/10' : 'text-white/70 hover:text-white hover:bg-white/5'}`}>
+                              {sub.label}
+                            </button>
+                          ))}
+                        </>
+                      )}
                     </div>
                   )}
                 </div>
