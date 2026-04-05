@@ -983,14 +983,10 @@ app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => 
   const season = type === 'tv' ? (parseInt(req.body.season) || 1) : undefined;
   const episode = type === 'tv' ? (parseInt(req.body.episode) || 1) : undefined;
 
-  // ═══ Connection limit check ═══
-  const vidsrcStreamId = `vidsrc_${type}_${tmdbId}${type === 'tv' ? `_s${season}e${episode}` : ''}`;
-  const connCheck = await checkConnectionLimit(req.user.id, vidsrcStreamId, 'vod');
-  if (!connCheck.allowed) {
-    return res.status(429).json({ error: connCheck.error, message: connCheck.message, active: connCheck.active, max: connCheck.max });
-  }
-  
-  if (!tmdbId) return res.status(400).json({ error: 'tmdbId Ù…Ø·Ù„ÙˆØ¨' });
+  // ملاحظة: لا يوجد فحص لحد الاتصالات هنا — VidSrc embed يذهب للمصادر الخارجية مباشرةً
+  // ولا يستهلك موارد السيرفر (عكس البث المباشر IPTV)
+
+  if (!tmdbId) return res.status(400).json({ error: 'tmdbId مطلوب' });
 
   const streamId = `vidsrc_${type}_${tmdbId}${type === 'tv' ? `_s${season}e${episode}` : ''}`;
   const label = `tmdb=${tmdbId} type=${type}${type === 'tv' ? ` s${season}e${episode}` : ''}`;
