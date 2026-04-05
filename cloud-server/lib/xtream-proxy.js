@@ -29,8 +29,9 @@ const SESSION_TTL      = 60000;  // 60s  — viewer idle timeout
 const GC_INTERVAL      = 15000;  // 15s  — cleanup cycle
 const MAX_SEG_CACHE    = 300;    // max cached segments (~300MB worst case, prevent OOM)
 const MAX_SEG_BYTES    = 400 * 1024 * 1024; // 400MB hard limit for segment cache
-const MAX_MANIFEST_PARALLEL = 5; // max parallel manifest fetches (100+ users, many channels)
-const MAX_SEG_PARALLEL = 20;     // max parallel segment downloads (CDN, not IPTV)
+const MAX_MANIFEST_PARALLEL = 1; // MUST be 1: IPTV subscription allows ~1 concurrent connection
+const MAX_SEG_PARALLEL = 8;      // parallel segment downloads (CDN-bound, keep reasonable)
+const MAX_PROACTIVE_PER_CYCLE = 3; // max channels refreshed per proactive cycle (prevents burst)
 
 const SERVERS = [XTREAM.primary, ...(XTREAM.backup !== XTREAM.primary ? [XTREAM.backup] : [])];
 
@@ -79,7 +80,7 @@ class XtreamProxy {
   start() {
     this._gcTimer = setInterval(() => this._gc(), GC_INTERVAL);
     this._proactiveTimer = setInterval(() => this._proactiveRefresh(), MANIFEST_TTL - PROACTIVE_MS);
-    console.log(`[XtreamProxy] v2 Ready — manifests parallel(${MAX_MANIFEST_PARALLEL}), segments parallel(${MAX_SEG_PARALLEL}), cache ${MANIFEST_TTL/1000}s+coalesce+proactive`);
+    console.log(`[XtreamProxy] v3 Ready — manifests serialized(${MAX_MANIFEST_PARALLEL}), segments parallel(${MAX_SEG_PARALLEL}), proactive batch(${MAX_PROACTIVE_PER_CYCLE}), cache ${MANIFEST_TTL/1000}s+coalesce+stale`);
   }
 
   stop() {
@@ -115,6 +116,13 @@ class XtreamProxy {
       try { await this._pendingManifests.get(streamId); } catch {}
       const c = this._manifests.get(streamId);
       if (c && !c.failed) return c.rewritten;
+      // Thundering herd fix: after a coalesced failure, respect cooldown instead of
+      // letting ALL waiters fall through and create simultaneous new fetches.
+      if (c && c.failed && Date.now() - c.ts < MANIFEST_TTL) {
+        throw new Error('IPTV temporarily unavailable (cooldown)');
+      }
+      // Has stale good cache → serve it
+      if (c && c.rewritten) return c.rewritten;
     }
 
     // 3. Fetch from IPTV (parallel across channels, semaphore-bounded)
@@ -403,20 +411,27 @@ class XtreamProxy {
   }
 
   // ─── Proactive manifest refresh ─────────────────────────
-  // For channels with active viewers, refresh manifest BEFORE cache expires
-  // so users never wait for a cold fetch
+  // Refreshes manifests for active channels BEFORE cache expires.
+  // KEY FIX: Limited to MAX_PROACTIVE_PER_CYCLE channels per cycle,
+  // prioritized by viewer count — prevents flooding IPTV with burst requests.
   _proactiveRefresh() {
     const now = Date.now();
+    // Collect candidates needing refresh
+    const candidates = [];
     for (const [streamId, m] of this._manifests) {
-      // Skip failed entries
       if (m.failed) continue;
-      // Skip if still fresh (not near expiry)
-      if (now - m.ts < MANIFEST_TTL - PROACTIVE_MS) continue;
-      // Skip if already fetching
-      if (this._pendingManifests.has(streamId)) continue;
-      // Only refresh if channel has active viewers
-      if (this.getViewerCount(streamId) === 0) continue;
-
+      if (now - m.ts < MANIFEST_TTL - PROACTIVE_MS) continue; // still fresh
+      if (this._pendingManifests.has(streamId)) continue;      // already fetching
+      const viewers = this.getViewerCount(streamId);
+      if (viewers === 0) continue;
+      candidates.push({ streamId, viewers, m });
+    }
+    if (candidates.length === 0) return;
+    // Sort by viewer count descending — refresh most-watched first
+    candidates.sort((a, b) => b.viewers - a.viewers);
+    // Only refresh up to MAX_PROACTIVE_PER_CYCLE per cycle
+    // (remaining channels will be picked up next cycle or on-demand)
+    for (const { streamId, m } of candidates.slice(0, MAX_PROACTIVE_PER_CYCLE)) {
       const baseUrl = m.baseUrl || XTREAM.primary;
       const p = this._fetchManifest(streamId, baseUrl)
         .then(result => {
@@ -426,7 +441,7 @@ class XtreamProxy {
             baseUrl, ts: Date.now(), rewritten,
           });
         })
-        .catch(() => { /* silent — users will get stale or retry */ })
+        .catch(() => { /* silent — stale cache or on-demand retry will cover it */ })
         .finally(() => this._pendingManifests.delete(streamId));
       this._pendingManifests.set(streamId, p);
     }
