@@ -19,6 +19,7 @@ const StreamManager = require('./lib/stream-manager');
 const VodProxy = require('./lib/vod-proxy');
 const IptvUpdater = require('./lib/iptv-updater');
 const { resolveStream } = require('./lib/vidsrc-resolver');
+const { resolveConsumetStream } = require('./lib/consumet-resolver');
 const { extractStream } = require('./lib/stream-extractor');
 const { scrapeEmbedSources } = require('./lib/embed-scraper');
 const { puppeteerExtract } = require('./lib/puppeteer-extractor');
@@ -995,29 +996,62 @@ app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => 
   const label = `tmdb=${tmdbId} type=${type}${type === 'tv' ? ` s${season}e${episode}` : ''}`;
 
   try {
-    // Ø¥Ø±Ø¬Ø§Ø¹ Embed URL ÙÙˆØ±Ø§Ù‹ â€” Ø¨Ø¯ÙˆÙ† Ù…Ø­Ø§ÙˆÙ„Ø© Ø§Ø³ØªØ®Ø±Ø§Ø¬
-    console.log(`[Stream] â†’ Embed URL (ÙÙˆØ±ÙŠ): ${label}`);
-    const stream = await resolveStream(tmdbId, type, season, episode, imdbId);
+    const { randomUUID } = require('crypto');
 
-    if (stream && stream.embedUrl) {
-      console.log(`[Stream] âœ“ Embed: ${stream.provider} â€” ${stream.embedUrl}`);
-      // ØªØ³Ø¬ÙŠÙ„ ÙÙŠ Ø³Ø¬Ù„ Ø§Ù„Ù…Ø´Ø§Ù‡Ø¯Ø©
+    const recordHistory = async () => {
       try {
-        const { randomUUID } = require('crypto');
         await db.prepare('INSERT INTO watch_history (id, user_id, item_id, item_type) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING')
           .run(randomUUID(), req.user.id, tmdbId, 'vod');
       } catch (_) {}
+    };
+
+    // ═══ 1. Consumet — HLS مباشر (بدون إعلانات) ═══
+    try {
+      let englishTitle = req.body.title || '';
+      let year;
+      try {
+        const meta = await vidsrcApi.getDetail(tmdbId, type);
+        if (meta) {
+          englishTitle = meta.original_title || meta.title || englishTitle;
+          year = meta.year;
+        }
+      } catch (_) {}
+
+      if (englishTitle) {
+        console.log(`[Stream] → Consumet: "${englishTitle}" (${type})`);
+        const consumet = await resolveConsumetStream({ tmdbId, title: englishTitle, type, year, season, episode });
+        if (consumet && consumet.url) {
+          console.log(`[Stream] ✓ HLS via ${consumet.provider}`);
+          await recordHistory();
+          return res.json({
+            success: true, streamId, ready: true,
+            hlsUrl: consumet.url,
+            provider: consumet.provider,
+            headers: consumet.headers || {},
+            subtitles: consumet.subtitles || [],
+          });
+        }
+      }
+    } catch (ce) {
+      console.log(`[Stream] Consumet failed: ${ce.message}`);
+    }
+
+    // ═══ 2. Fallback: Embed URLs ═══
+    console.log(`[Stream] → Embed fallback: ${label}`);
+    const stream = await resolveStream(tmdbId, type, season, episode, imdbId);
+    if (stream && stream.embedUrl) {
+      console.log(`[Stream] ✓ Embed: ${stream.provider} — ${stream.embedUrl}`);
+      await recordHistory();
       return res.json({
-        success: true, 
-        streamId, 
-        ready: true,
-        embedUrl: stream.embedUrl, 
-        provider: stream.provider, 
+        success: true, streamId, ready: true,
+        embedUrl: stream.embedUrl,
+        provider: stream.provider,
         sources: stream.sources,
+        allEmbedUrls: stream.allEmbedUrls || [],
       });
     }
 
-    return res.status(404).json({ success: false, error: 'Ù„Ø§ ØªÙˆØ¬Ø¯ Ù…ØµØ§Ø¯Ø± Ø¨Ø« Ù…ØªØ§Ø­Ø©' });
+    return res.status(404).json({ success: false, error: 'لا توجد مصادر بث متاحة' });
   } catch (e) {
     console.error(`[Stream] Error:`, e.message);
     res.status(500).json({ success: false, error: e.message });

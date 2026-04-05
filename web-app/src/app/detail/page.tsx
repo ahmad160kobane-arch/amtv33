@@ -19,6 +19,9 @@ function DetailContent() {
   const [currentSeason, setCurrentSeason] = useState(1);
   const [currentEpisode, setCurrentEpisode] = useState<VidsrcEpisode | null>(null);
   const [streamUrl, setStreamUrl] = useState('');
+  const [embedUrl, setEmbedUrl] = useState('');
+  const [allEmbedUrls, setAllEmbedUrls] = useState<string[]>([]);
+  const [embedSourceIdx, setEmbedSourceIdx] = useState(0);
   const [streamLoading, setStreamLoading] = useState(false);
   const [streamError, setStreamError] = useState('');
   const [descExpanded, setDescExpanded] = useState(false);
@@ -62,20 +65,33 @@ function DetailContent() {
     setTimeout(() => playerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
   }, []);
 
+  const applyStreamResult = (result: any) => {
+    const hls = result.hlsUrl || result.vodUrl || '';
+    if (hls) {
+      setStreamUrl(hls);
+      setEmbedUrl('');
+      setAllEmbedUrls([]);
+    } else if (result.embedUrl) {
+      const urls: string[] = result.allEmbedUrls?.length ? result.allEmbedUrls : [result.embedUrl];
+      setAllEmbedUrls(urls);
+      setEmbedSourceIdx(0);
+      setEmbedUrl(urls[0]);
+      setStreamUrl('');
+    } else {
+      setStreamError(result.error || 'فشل تحميل المحتوى');
+    }
+  };
+
   const handleWatch = async () => {
     setStreamLoading(true);
     setStreamError('');
     setStreamUrl('');
+    setEmbedUrl('');
     scrollToPlayer();
     try {
       const result = await requestVidsrcStream({ tmdbId: detail?.tmdb_id || contentId, type: 'movie', title });
-      const url = result.hlsUrl || result.vodUrl || '';
-      if (result.success && url) {
-        setStreamUrl(url);
-        recordHistory();
-      } else {
-        setStreamError(result.error || 'فشل تحميل الفيلم');
-      }
+      if (result.success) { applyStreamResult(result); recordHistory(); }
+      else setStreamError(result.error || 'فشل تحميل الفيلم');
     } catch {
       setStreamError('خطأ في الاتصال');
     } finally {
@@ -88,16 +104,12 @@ function DetailContent() {
     setStreamLoading(true);
     setStreamError('');
     setStreamUrl('');
+    setEmbedUrl('');
     scrollToPlayer();
     try {
       const result = await requestVidsrcStream({ tmdbId: detail?.tmdb_id || contentId, type: 'tv', season: ep.season, episode: ep.episode, title });
-      const url = result.hlsUrl || result.vodUrl || '';
-      if (result.success && url) {
-        setStreamUrl(url);
-        recordHistory();
-      } else {
-        setStreamError(result.error || 'فشل تحميل الحلقة');
-      }
+      if (result.success) { applyStreamResult(result); recordHistory(); }
+      else setStreamError(result.error || 'فشل تحميل الحلقة');
     } catch {
       setStreamError('خطأ في الاتصال');
     } finally {
@@ -311,7 +323,7 @@ function DetailContent() {
             </div>
 
             {/* Video Player */}
-            {(streamUrl || streamLoading || streamError) && (
+            {(streamUrl || embedUrl || streamLoading || streamError) && (
               <div className="mb-6" ref={playerRef}>
                 {streamLoading && (
                   <div className="relative w-full bg-black rounded-2xl overflow-hidden shadow-2xl" style={{ paddingTop: '56.25%' }}>
@@ -341,6 +353,32 @@ function DetailContent() {
                     onNext={isSeries ? () => { const next = getNextEpisode(); if (next) handleEpisodePlay(next); } : undefined}
                     onPrev={isSeries ? () => { const prev = getPrevEpisode(); if (prev) handleEpisodePlay(prev); } : undefined}
                   />
+                )}
+                {embedUrl && !streamUrl && !streamLoading && !streamError && (
+                  <div className="relative w-full bg-black rounded-2xl overflow-hidden shadow-2xl">
+                    <div className="flex items-center justify-between px-3 py-2 bg-black/80">
+                      <button onClick={() => { setEmbedUrl(''); setStreamUrl(''); setStreamError(''); }} className="text-white/60 hover:text-white text-xs transition">✕ إغلاق</button>
+                      <div className="flex items-center gap-2">
+                        {allEmbedUrls.length > 1 && allEmbedUrls.map((_, i) => (
+                          <button key={i} onClick={() => { setEmbedSourceIdx(i); setEmbedUrl(allEmbedUrls[i]); }}
+                            className={`text-xs px-2 py-0.5 rounded-full transition ${i === embedSourceIdx ? 'bg-brand-primary text-black font-bold' : 'bg-white/10 text-white/60 hover:bg-white/20'}`}>
+                            {i + 1}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div style={{ paddingTop: '56.25%', position: 'relative' }}>
+                      <iframe
+                        key={embedUrl}
+                        src={embedUrl}
+                        className="absolute inset-0 w-full h-full border-0"
+                        allowFullScreen
+                        allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
+                        referrerPolicy="no-referrer"
+                        sandbox="allow-scripts allow-same-origin allow-forms allow-orientation-lock allow-pointer-lock allow-presentation allow-fullscreen"
+                      />
+                    </div>
+                  </div>
                 )}
               </div>
             )}
