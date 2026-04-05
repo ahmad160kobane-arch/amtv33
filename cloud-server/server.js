@@ -909,15 +909,65 @@ function _pipeVodResponse(upRes, req, res) {
 }
 
 // ═══════════════════════════════════════════════════════
-// DISABLED: Old VidSrc/TMDB Content API (kept for reference)
+// VidSrc/TMDB Content API
 // ═══════════════════════════════════════════════════════
-/*
-app.get('/api/vidsrc/home', async (req, res) => { ... });
-app.get('/api/vidsrc/browse', async (req, res) => { ... });
-app.get('/api/vidsrc/search', async (req, res) => { ... });
-app.get('/api/vidsrc/detail/:type/:id', async (req, res) => { ... });
-app.get('/api/vidsrc/episodes', async (req, res) => { ... });
-*/
+
+app.get('/api/vidsrc/home', async (req, res) => {
+  try {
+    const data = await vidsrcApi.getHome();
+    res.json(data);
+  } catch (e) {
+    console.error('[vidsrc/home]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/vidsrc/browse', async (req, res) => {
+  try {
+    const { type, page = 1, category = 'popular' } = req.query;
+    const data = await vidsrcApi.browse({ type, page: parseInt(page), category });
+    res.json(data);
+  } catch (e) {
+    console.error('[vidsrc/browse]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/vidsrc/search', async (req, res) => {
+  try {
+    const { q, page = 1 } = req.query;
+    if (!q) return res.json({ items: [], hasMore: false });
+    const data = await vidsrcApi.search(q, parseInt(page));
+    res.json(data);
+  } catch (e) {
+    console.error('[vidsrc/search]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/vidsrc/detail/:type/:id', async (req, res) => {
+  try {
+    const { type, id } = req.params;
+    const tmdbId = id.startsWith('tmdb_') ? id.replace('tmdb_', '') : id;
+    const data = await vidsrcApi.getDetail(tmdbId, type);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    res.json(data);
+  } catch (e) {
+    console.error('[vidsrc/detail]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/vidsrc/episodes', async (req, res) => {
+  try {
+    const { page = 1 } = req.query;
+    const data = await vidsrcApi.getLatestEpisodes(parseInt(page));
+    res.json({ items: data, hasMore: false });
+  } catch (e) {
+    console.error('[vidsrc/episodes]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 /**
  * POST /api/stream/vidsrc
