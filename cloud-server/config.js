@@ -40,6 +40,9 @@ module.exports = {
   PORT: parseInt(process.env.PORT) || 8090,
   HOST: '0.0.0.0',
 
+  // ─── رابط السيرفر العام (للبث المباشر) ──────
+  PUBLIC_URL: process.env.PUBLIC_URL || '',
+
   // ─── الباك اند (Railway) ───────────────────
   BACKEND_URL: process.env.BACKEND_URL || 'http://localhost:3000',
 

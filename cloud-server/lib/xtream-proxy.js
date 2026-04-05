@@ -114,8 +114,12 @@ class XtreamProxy {
 
     // 1. Fresh cache → return immediately (all users share this)
     const cached = this._manifests.get(streamId);
-    if (cached && Date.now() - cached.ts < MANIFEST_TTL) {
+    if (cached && !cached.failed && Date.now() - cached.ts < MANIFEST_TTL) {
       return cached.rewritten;
+    }
+    // Cooldown: if last attempt failed recently, don't flood IPTV
+    if (cached && cached.failed && Date.now() - cached.ts < MANIFEST_TTL * 2) {
+      throw new Error('IPTV temporarily unavailable (cooldown)');
     }
 
     // 2. Already fetching → wait for result (coalescing)
@@ -139,9 +143,13 @@ class XtreamProxy {
       });
       return rewritten;
     } catch (err) {
-      // Stale fallback — serve old manifest if available (up to 30s old)
-      if (cached && Date.now() - cached.ts < MANIFEST_STALE) {
-        console.log(`[Proxy] Manifest ${streamId}: upstream error, serving stale cache`);
+      // On 403/error: set cooldown so we don't flood IPTV with retries
+      if (!cached) {
+        // No stale cache → set a "failed" placeholder to prevent retry storm
+        this._manifests.set(streamId, { ts: Date.now(), failed: true });
+      } else if (Date.now() - cached.ts < MANIFEST_STALE) {
+        // Has stale cache → serve it and bump timestamp to prevent immediate retry
+        cached.ts = Date.now();
         return cached.rewritten;
       }
       throw err;

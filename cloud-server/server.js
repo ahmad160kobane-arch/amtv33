@@ -1256,8 +1256,8 @@ app.get('/api/xtream/stream/:channelId', async (req, res) => {
       name     : ch.name,
       logo     : ch.logo,
       category : ch.category,
-      // hlsUrl: HLS proxy — segment caching, no persistent connections, multi-channel safe
-      hlsUrl   : `/proxy/live/${ch.stream_id}/index.m3u8?sid=${sid}&base=${base}`,
+      // hlsUrl: HLS proxy — absolute URL so browser connects directly to VPS (no Next.js middleman)
+      hlsUrl   : `${config.PUBLIC_URL}/proxy/live/${ch.stream_id}/index.m3u8?sid=${sid}&base=${base}`,
       // directUrl: mobile/ExoPlayer follows 302 redirect directly to IPTV
       directUrl: `/xtream-play/${token}/index.m3u8`,
       // proxyUrl: raw TS pipe (legacy, persistent connection — avoid for multi-channel)
