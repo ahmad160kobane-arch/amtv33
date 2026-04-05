@@ -21,11 +21,12 @@ const { XTREAM } = require('./xtream');
 const UA               = 'VLC/3.0.20 LibVLC/3.0.20';
 const MANIFEST_TIMEOUT = 6000;   // 6s   — manifest fetch timeout (fail fast)
 const SEGMENT_TIMEOUT  = 10000;  // 10s  — segment fetch timeout
-const MANIFEST_TTL     = 4000;   // 4s   — manifest cache (matches HLS segment duration)
-const MANIFEST_STALE   = 20000;  // 20s  — serve stale manifest on error
-const PROACTIVE_MS     = 1500;   // 1.5s — refresh manifest 1.5s before TTL expires
+const MANIFEST_TTL     = 8000;   // 8s   — manifest cache (less frequent = fewer 403s)
+const MANIFEST_STALE   = 90000;  // 90s  — serve stale manifest on error (long enough to outlast 403 periods)
+const COOLDOWN_403     = 30000;  // 30s  — longer cooldown specifically for 403/rate-limit errors
+const PROACTIVE_MS     = 2000;   // 2s   — refresh manifest 2s before TTL expires
 const SEG_TTL          = 60000;  // 60s  — segment cache
-const SESSION_TTL      = 60000;  // 60s  — viewer idle timeout
+const SESSION_TTL      = 20000;  // 20s  — viewer idle timeout (shorter = accurate count on channel switch)
 const GC_INTERVAL      = 15000;  // 15s  — cleanup cycle
 const MAX_SEG_CACHE    = 300;    // max cached segments (~300MB worst case, prevent OOM)
 const MAX_SEG_BYTES    = 400 * 1024 * 1024; // 400MB hard limit for segment cache
@@ -80,7 +81,7 @@ class XtreamProxy {
   start() {
     this._gcTimer = setInterval(() => this._gc(), GC_INTERVAL);
     this._proactiveTimer = setInterval(() => this._proactiveRefresh(), MANIFEST_TTL - PROACTIVE_MS);
-    console.log(`[XtreamProxy] v3 Ready — manifests serialized(${MAX_MANIFEST_PARALLEL}), segments parallel(${MAX_SEG_PARALLEL}), proactive batch(${MAX_PROACTIVE_PER_CYCLE}), cache ${MANIFEST_TTL/1000}s+coalesce+stale`);
+    console.log(`[XtreamProxy] v4 Ready — serialized(${MAX_MANIFEST_PARALLEL}), seg parallel(${MAX_SEG_PARALLEL}), TTL ${MANIFEST_TTL/1000}s, stale ${MANIFEST_STALE/1000}s, 403-cooldown ${COOLDOWN_403/1000}s, proactive batch(${MAX_PROACTIVE_PER_CYCLE})`);
   }
 
   stop() {
@@ -100,15 +101,48 @@ class XtreamProxy {
    */
   async getManifest(streamId, baseUrl, sessionId) {
     this._touch(streamId, sessionId);
+    const now = Date.now();
+
+    // Helper: return last known-good manifest if still within stale window
+    const serveStale = (c) => {
+      if (c && c.lastGoodRewritten && now - c.lastGoodTs < MANIFEST_STALE) {
+        return c.lastGoodRewritten;
+      }
+      return null;
+    };
 
     // 1. Fresh cache → return immediately (all users share this)
     const cached = this._manifests.get(streamId);
-    if (cached && !cached.failed && Date.now() - cached.ts < MANIFEST_TTL) {
+    if (cached && !cached.failed && now - cached.ts < MANIFEST_TTL) {
       return cached.rewritten;
     }
-    // Cooldown: if last attempt failed recently, don't flood IPTV
-    if (cached && cached.failed && Date.now() - cached.ts < MANIFEST_TTL) {
-      throw new Error('IPTV temporarily unavailable (cooldown)');
+
+    // 1b. Stale-while-revalidate: expired but has good stale → serve instantly + refresh in background
+    // This makes channel switching instant (0ms wait) instead of blocking on IPTV fetch
+    if (cached && !cached.failed && cached.lastGoodRewritten && now - cached.lastGoodTs < MANIFEST_STALE) {
+      if (!this._pendingManifests.has(streamId)) {
+        const bgUrl = cached.baseUrl || baseUrl;
+        const p = this._fetchManifest(streamId, bgUrl)
+          .then(result => {
+            const rewritten = this._rewriteManifest(result.content, streamId, result.srv);
+            const ts = Date.now();
+            this._manifests.set(streamId, { content: result.content, srv: result.srv, baseUrl: bgUrl, ts, rewritten, lastGoodTs: ts, lastGoodRewritten: rewritten });
+          })
+          .catch(() => {})
+          .finally(() => this._pendingManifests.delete(streamId));
+        this._pendingManifests.set(streamId, p);
+      }
+      return cached.lastGoodRewritten; // instant response, fresh data arrives on next poll
+    }
+
+    // Cooldown after failure — longer for 403 (rate-limit) vs generic errors
+    if (cached && cached.failed) {
+      const cooldown = cached.is403 ? COOLDOWN_403 : MANIFEST_TTL;
+      if (now - cached.ts < cooldown) {
+        const stale = serveStale(cached);
+        if (stale) return stale;  // serve last known-good during cooldown
+        throw new Error('IPTV temporarily unavailable (cooldown)');
+      }
     }
 
     // 2. Already fetching this channel → wait for result (per-channel coalescing)
@@ -116,16 +150,20 @@ class XtreamProxy {
       try { await this._pendingManifests.get(streamId); } catch {}
       const c = this._manifests.get(streamId);
       if (c && !c.failed) return c.rewritten;
-      // Thundering herd fix: after a coalesced failure, respect cooldown instead of
-      // letting ALL waiters fall through and create simultaneous new fetches.
-      if (c && c.failed && Date.now() - c.ts < MANIFEST_TTL) {
-        throw new Error('IPTV temporarily unavailable (cooldown)');
+      // Thundering herd fix: after coalesced failure, check cooldown before retrying
+      if (c && c.failed) {
+        const cooldown = c.is403 ? COOLDOWN_403 : MANIFEST_TTL;
+        if (Date.now() - c.ts < cooldown) {
+          const stale = serveStale(c);
+          if (stale) return stale;
+          throw new Error('IPTV temporarily unavailable (cooldown)');
+        }
       }
-      // Has stale good cache → serve it
-      if (c && c.rewritten) return c.rewritten;
+      const stale = serveStale(c || cached);
+      if (stale) return stale;
     }
 
-    // 3. Fetch from IPTV (parallel across channels, semaphore-bounded)
+    // 3. Fetch from IPTV (serialized via semaphore — MAX_MANIFEST_PARALLEL=1)
     const p = this._fetchManifest(streamId, baseUrl)
       .finally(() => this._pendingManifests.delete(streamId));
     this._pendingManifests.set(streamId, p);
@@ -133,19 +171,28 @@ class XtreamProxy {
     try {
       const result = await p;
       const rewritten = this._rewriteManifest(result.content, streamId, result.srv);
+      const ts = Date.now();
       this._manifests.set(streamId, {
-        content: result.content, srv: result.srv,
-        baseUrl, ts: Date.now(), rewritten,
+        content: result.content, srv: result.srv, baseUrl,
+        ts, rewritten,
+        // Preserve last-good for stale fallback
+        lastGoodTs: ts, lastGoodRewritten: rewritten,
       });
       return rewritten;
     } catch (err) {
-      // On 403/error: set cooldown so we don't flood IPTV with retries
-      if (!cached || cached.failed) {
-        this._manifests.set(streamId, { ts: Date.now(), failed: true });
-      } else if (Date.now() - cached.ts < MANIFEST_STALE) {
-        // Has stale cache → serve it (don't bump ts — allow retry soon)
-        return cached.rewritten;
-      }
+      // Determine if this is a 403 (rate-limit / subscription limit)
+      const is403 = err.message?.includes('403');
+      // Preserve lastGood from previous cache so stale serving survives repeated failures
+      const prevLastGoodTs = cached?.lastGoodTs || 0;
+      const prevLastGoodRewritten = cached?.lastGoodRewritten || null;
+      this._manifests.set(streamId, {
+        ts: Date.now(), failed: true, is403,
+        lastGoodTs: prevLastGoodTs,
+        lastGoodRewritten: prevLastGoodRewritten,
+      });
+      // Serve stale if available (handles 403 gracefully for active viewers)
+      const stale = serveStale(this._manifests.get(streamId));
+      if (stale) return stale;
       throw err;
     }
   }
@@ -186,11 +233,15 @@ class XtreamProxy {
       return this._pendingSegments.get(cacheKey);
     }
 
-    // 3. Fetch via Semaphore (parallel, up to 3)
+    // 3. Fetch via Semaphore
     const p = this._fetchSegment(candidates, cacheKey)
       .catch(err => {
-        // Segment failed → invalidate manifest cache so next request gets fresh IPTV session
-        this._manifests.delete(streamId);
+        // Segment failed → force manifest re-fetch on next request BUT preserve lastGoodRewritten
+        // (previously used delete() which wiped lastGoodRewritten, causing stale serving to fail)
+        const entry = this._manifests.get(streamId);
+        if (entry) {
+          this._manifests.set(streamId, { ...entry, ts: 0 }); // expire ts → forces re-fetch, keeps lastGood
+        }
         throw err;
       })
       .finally(() => this._pendingSegments.delete(cacheKey));
@@ -381,8 +432,11 @@ class XtreamProxy {
     const now = Date.now();
 
     // Expire old manifests
+    // For failed entries, keep alive as long as lastGoodRewritten is still within MANIFEST_STALE
+    // (we're still serving stale to users, don't evict early)
     for (const [id, m] of this._manifests) {
-      if (now - m.ts > MANIFEST_STALE) this._manifests.delete(id);
+      const lastRelevant = m.failed ? Math.max(m.ts, m.lastGoodTs || 0) : m.ts;
+      if (now - lastRelevant > MANIFEST_STALE) this._manifests.delete(id);
     }
 
     // Expire old segments
@@ -436,9 +490,11 @@ class XtreamProxy {
       const p = this._fetchManifest(streamId, baseUrl)
         .then(result => {
           const rewritten = this._rewriteManifest(result.content, streamId, result.srv);
+          const ts = Date.now();
           this._manifests.set(streamId, {
             content: result.content, srv: result.srv,
-            baseUrl, ts: Date.now(), rewritten,
+            baseUrl, ts, rewritten,
+            lastGoodTs: ts, lastGoodRewritten: rewritten, // CRITICAL: must survive future 403s
           });
         })
         .catch(() => { /* silent — stale cache or on-demand retry will cover it */ })
