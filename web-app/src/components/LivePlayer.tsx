@@ -22,6 +22,7 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
   const [error, setError] = useState('');
   const [buffering, setBuffering] = useState(true);
   const [viewerCount] = useState(Math.floor(Math.random() * 50) + 5);
+  const [isAtLive, setIsAtLive] = useState(true);
 
   const scheduleHide = useCallback(() => {
     if (hideTimer.current) clearTimeout(hideTimer.current);
@@ -71,6 +72,18 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
     video.addEventListener('playing', onPlaying);
     video.addEventListener('error', onError);
 
+    // Seek to live edge helper
+    const seekToLive = () => {
+      try {
+        if (video.seekable && video.seekable.length > 0) {
+          const edge = video.seekable.end(0);
+          if (edge > 5 && video.currentTime < edge - 5) {
+            video.currentTime = Math.max(0, edge - 2);
+          }
+        }
+      } catch {}
+    };
+
     if (isTs) {
       const loadMpegts = () => {
         const Mpegts = (window as any).mpegts;
@@ -111,52 +124,70 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
           if (Hls && Hls.isSupported()) {
             hlsInstance = new Hls({
               enableWorker: true,
-              lowLatencyMode: true,
-              // ═══ Fast startup + live streaming ═══
-              startLevel: -1,                      // auto quality selection (fastest start)
-              liveSyncDurationCount: 2,            // sync to 2 segments behind live edge (faster)
-              liveMaxLatencyDurationCount: 5,      // max 5 segments behind before seeking
-              liveDurationInfinity: true,           // treat as infinite live stream
-              maxBufferLength: 15,                  // buffer 15s (faster initial load)
-              maxMaxBufferLength: 30,               // hard max 30s buffer
-              maxBufferSize: 30 * 1024 * 1024,     // 30MB buffer
-              maxBufferHole: 0.5,                   // tolerate 0.5s gaps
-              backBufferLength: 15,                 // keep only 15s back buffer (save memory)
-              // ═══ Faster loading ═══
-              manifestLoadingTimeOut: 8000,         // 8s manifest timeout (fail fast)
-              fragLoadingTimeOut: 10000,            // 10s segment timeout
-              levelLoadingTimeOut: 8000,            // 8s level timeout
-              // ═══ Error recovery ═══
-              fragLoadingMaxRetry: 6,               // retry segment load 6 times
-              fragLoadingRetryDelay: 500,           // start with 0.5s retry delay (faster)
-              fragLoadingMaxRetryTimeout: 6000,     // max 6s retry delay
-              manifestLoadingMaxRetry: 4,           // retry manifest 4 times
-              manifestLoadingRetryDelay: 500,       // 0.5s retry delay (faster)
+              lowLatencyMode: false,               // stream is standard HLS, NOT LL-HLS
+              startLevel: -1,                      // auto quality
+              // ═══ Live edge sync — minimize latency ═══
+              liveSyncDurationCount: 1,            // stay 1 segment behind live edge
+              liveMaxLatencyDurationCount: 2,      // if >2 segments behind → seek to live edge
+              liveDurationInfinity: true,
+              // ═══ Buffer — keep small to avoid accumulated delay ═══
+              maxBufferLength: 6,                  // only 6s ahead (was 15)
+              maxMaxBufferLength: 12,              // hard max 12s (was 30)
+              maxBufferSize: 20 * 1024 * 1024,    // 20MB
+              maxBufferHole: 1.0,                  // tolerate 1s gaps (live streams skip)
+              backBufferLength: 8,                 // 8s back buffer
+              // ═══ Timeouts ═══
+              manifestLoadingTimeOut: 8000,
+              fragLoadingTimeOut: 12000,
+              levelLoadingTimeOut: 8000,
+              // ═══ Retries — fewer on segments (dead segs should trigger manifest refresh) ═══
+              fragLoadingMaxRetry: 2,              // only 2 retries (was 6 — was hanging 20s)
+              fragLoadingRetryDelay: 300,
+              fragLoadingMaxRetryTimeout: 2000,
+              manifestLoadingMaxRetry: 6,          // more manifest retries
+              manifestLoadingRetryDelay: 300,
               levelLoadingMaxRetry: 4,
-              levelLoadingRetryDelay: 500,
+              levelLoadingRetryDelay: 300,
             });
             hlsInstance.loadSource(streamUrl);
             hlsInstance.attachMedia(video);
-            hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
+
+            hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
+              video.play().catch(() => {});
+            });
+
+                    // Auto seek-to-live: if player falls >15s behind, jump to live edge
+            // This prevents the 120s+ accumulated delay from stale manifest cache
+            hlsInstance.on(Hls.Events.FRAG_CHANGED, () => {
+              try {
+                if (video.seekable.length > 0) {
+                  const edge = video.seekable.end(0);
+                  const latency = edge - video.currentTime;
+                  setIsAtLive(latency <= 12);
+                  if (!video.paused && latency > 15) {
+                    video.currentTime = Math.max(0, edge - 2);
+                    setIsAtLive(true);
+                  }
+                }
+              } catch {}
+            });
+
             hlsInstance.on(Hls.Events.ERROR, (_: any, data: any) => {
               if (data.fatal) {
                 switch (data.type) {
                   case Hls.ErrorTypes.NETWORK_ERROR:
                     if (retryCount < MAX_AUTO_RETRY) {
                       retryCount++;
-                      console.log(`[LivePlayer] HLS network error, recovering (${retryCount}/${MAX_AUTO_RETRY})`);
                       hlsInstance.startLoad();
                     } else {
                       setError('فشل الاتصال بالبث — تحقق من الشبكة');
                     }
                     break;
                   case Hls.ErrorTypes.MEDIA_ERROR:
-                    console.log('[LivePlayer] HLS media error, recovering');
                     hlsInstance.recoverMediaError();
                     break;
                   default:
                     setError('فشل تحميل البث المباشر');
-                    break;
                 }
               }
             });
@@ -194,6 +225,18 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
     if (!videoRef.current) return;
     if (videoRef.current.paused) videoRef.current.play().catch(() => {});
     else videoRef.current.pause();
+  };
+
+  const handleSeekLive = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    try {
+      if (video.seekable && video.seekable.length > 0) {
+        video.currentTime = Math.max(0, video.seekable.end(0) - 1);
+      }
+      video.play().catch(() => {});
+      setIsAtLive(true);
+    } catch {}
   };
 
   const toggleMute = () => {
@@ -334,6 +377,17 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
             </div>
 
             <div className="flex items-center gap-2">
+              {/* Go Live button — shown when player falls behind */}
+              {!isAtLive && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleSeekLive(); }}
+                  className="flex items-center gap-1 bg-red-600 hover:bg-red-500 rounded-full px-2.5 py-1 transition animate-pulse"
+                >
+                  <div className="w-1.5 h-1.5 rounded-full bg-white" />
+                  <span className="text-white text-[10px] font-bold">مباشر</span>
+                </button>
+              )}
+
               {/* Viewer count badge */}
               <div className="flex items-center gap-1 bg-white/10 backdrop-blur-sm rounded-full px-2.5 py-1">
                 <svg className="w-3 h-3 text-white/70" fill="currentColor" viewBox="0 0 20 20">
