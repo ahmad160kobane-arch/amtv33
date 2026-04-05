@@ -519,12 +519,25 @@ export async function requestFreeStream(channelId: string): Promise<FreeStreamRe
     const res = await apiFetch(`/api/xtream/stream/${encodeURIComponent(channelId)}`);
     if (!res.ok) return { success: false, error: 'فشل جلب الرابط' };
     const data = await res.json();
+    let streamUrl = data.hlsUrl || data.proxyUrl || data.directUrl || '';
+    // On HTTPS pages: convert absolute HTTP URL to relative path (Next.js rewrite handles it)
+    // On HTTP pages: keep absolute URL for direct VPS access (faster)
+    if (
+      streamUrl.startsWith('http://') &&
+      typeof window !== 'undefined' &&
+      window.location.protocol === 'https:'
+    ) {
+      try {
+        const u = new URL(streamUrl);
+        streamUrl = u.pathname + u.search;
+      } catch {}
+    }
     return {
       success: true,
       name: data.name,
       logo: data.logo,
       group: data.category,
-      streamUrl: data.hlsUrl || data.proxyUrl || data.directUrl,
+      streamUrl,
     };
   } catch { return { success: false, error: 'خطأ في الاتصال' }; }
 }
