@@ -1049,12 +1049,73 @@ app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => 
 
     return res.status(404).json({ success: false, error: 'لا توجد مصادر بث متاحة' });
   } catch (e) {
-    console.error(`[Stream] Error:`, e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });
 
-// â•â•â• Ø¥Ù†Ø´Ø§Ø¡ Ø¬Ù„Ø³Ø© HLS Proxy Ù…Ù† Ø±Ø§Ø¨Ø· Ù…Ø³ØªØ®Ø±Ø¬ Ø¨Ø§Ù„ØªØ·Ø¨ÙŠÙ‚ (WebView) â•â•â•
+// ═══ Embed HTML Proxy — injects CSS to hide cast/server icons from 2embed.cc ═══
+app.get('/api/embed-proxy', async (req, res) => {
+  const rawUrl = req.query.url;
+  if (!rawUrl) return res.status(400).end();
+  const targetUrl = decodeURIComponent(rawUrl);
+  if (!targetUrl.includes('2embed.cc')) return res.status(403).end();
+
+  try {
+    const response = await fetch(targetUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Referer': 'https://www.2embed.cc/',
+      },
+      redirect: 'follow',
+    });
+
+    let html = await response.text();
+
+    const inject = `
+<base href="https://www.2embed.cc/">
+<style>
+/* Hide Chromecast / AirPlay / Cast icon */
+.jw-icon-cast,.jw-cast,[class*="cast-btn"],[class*="chromecast"],
+[class*="airplay"],[class*="Airplay"],[class*="AirPlay"],
+.plyr__control--airplay,.plyr__control--cast,
+[aria-label*="Cast"],[title*="Cast"],[title*="cast"],
+[data-tooltip*="Cast"],[data-tooltip*="cast"],
+/* Hide Server / Source selector icon */
+[class*="btn-server"],[class*="server-btn"],[class*="op-servers"],
+[class*="servers-list"],[class*="server-item"],[class*="source-btn"],
+[class*="provider-btn"],[class*="btn-source"],
+[aria-label*="Server"],[title*="Server"],[title*="server"],
+[data-tooltip*="Server"],[data-tooltip*="server"] {
+  display:none!important;
+  visibility:hidden!important;
+  pointer-events:none!important;
+  width:0!important;
+  height:0!important;
+  overflow:hidden!important;
+}
+</style>`;
+
+    if (html.includes('<head>')) {
+      html = html.replace('<head>', '<head>' + inject);
+    } else if (html.includes('<html')) {
+      html = html.replace(/<html[^>]*>/, (m) => m + inject);
+    } else {
+      html = inject + html;
+    }
+
+    res.removeHeader('X-Frame-Options');
+    res.removeHeader('Content-Security-Policy');
+    res.set('Content-Type', 'text/html; charset=utf-8');
+    res.send(html);
+  } catch (e) {
+    console.error('[EmbedProxy]', e.message);
+    res.status(502).send('<html><body></body></html>');
+  }
+});
+
+// ═══ HLS Proxy session from WebView-extracted URL ═══
 app.post('/api/stream/proxy-hls', requireAuth, requirePremium, (req, res) => {
   const { url, referer, streamId } = req.body;
   if (!url) return res.status(400).json({ error: 'url Ù…Ø·Ù„ÙˆØ¨' });

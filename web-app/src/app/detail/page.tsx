@@ -76,10 +76,11 @@ function DetailContent() {
       const srcs: {url:string,name:string}[] = result.sources?.length
         ? result.sources
         : (result.allEmbedUrls?.length ? result.allEmbedUrls.map((u:string,i:number)=>({url:u,name:`مصدر ${i+1}`})) : [{url:result.embedUrl,name:'مصدر 1'}]);
-      setEmbedSources(srcs);
-      setAllEmbedUrls(srcs.map(s=>s.url));
+      const toProxy = (u: string) => `/api/embed-proxy?url=${encodeURIComponent(u)}`;
+      setEmbedSources(srcs.map(s => ({ ...s, url: toProxy(s.url) })));
+      setAllEmbedUrls(srcs.map(s => toProxy(s.url)));
       setEmbedSourceIdx(0);
-      setEmbedUrl(srcs[0].url);
+      setEmbedUrl(toProxy(srcs[0].url));
       setStreamUrl('');
     } else {
       setStreamError(result.error || 'فشل تحميل المحتوى');
