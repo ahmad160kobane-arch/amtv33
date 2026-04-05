@@ -360,20 +360,6 @@ function DetailContent() {
                 )}
                 {embedUrl && !streamUrl && !streamLoading && !streamError && (
                   <div className="relative w-full bg-black rounded-2xl overflow-hidden shadow-2xl">
-                    <div className="flex items-center justify-between px-3 py-2 bg-black/80 gap-2">
-                      <button onClick={() => { setEmbedUrl(''); setStreamUrl(''); setStreamError(''); }} className="text-white/50 hover:text-white text-xs transition flex-shrink-0">✕ إغلاق</button>
-                      {embedSources.length > 1 && (
-                        <div className="flex items-center gap-1.5 overflow-x-auto flex-1 justify-end">
-                          <span className="text-white/40 text-xs flex-shrink-0">المصدر:</span>
-                          {embedSources.map((src, i) => (
-                            <button key={i} onClick={() => { setEmbedSourceIdx(i); setEmbedUrl(src.url); }}
-                              className={`text-xs px-2.5 py-1 rounded-full whitespace-nowrap transition flex-shrink-0 ${i === embedSourceIdx ? 'bg-brand-primary text-black font-bold' : 'bg-white/10 text-white/60 hover:bg-white/20'}`}>
-                              {src.name}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
                     <div style={{ paddingTop: '56.25%', position: 'relative' }}>
                       <iframe
                         key={embedUrl}
@@ -384,12 +370,16 @@ function DetailContent() {
                         referrerPolicy="no-referrer-when-downgrade"
                         sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-presentation allow-fullscreen"
                       />
+                      <button
+                        onClick={() => { setEmbedUrl(''); setStreamUrl(''); setStreamError(''); }}
+                        className="absolute top-2 left-2 z-10 w-7 h-7 rounded-full bg-black/60 hover:bg-black/90 flex items-center justify-center transition opacity-0 hover:opacity-100 group-hover:opacity-100"
+                        style={{ pointerEvents: 'auto' }}
+                      >
+                        <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
                     </div>
-                    {embedSources.length > 1 && (
-                      <div className="px-3 py-2 bg-black/60 text-center">
-                        <p className="text-white/40 text-xs">إذا لم يعمل المشغّل، جرّب مصدراً آخر أعلاه</p>
-                      </div>
-                    )}
                   </div>
                 )}
               </div>
