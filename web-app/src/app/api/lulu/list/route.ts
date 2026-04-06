@@ -1,0 +1,14 @@
+import { NextRequest, NextResponse } from 'next/server';
+
+const VPS = 'http://62.171.153.204:8090';
+
+export async function GET(req: NextRequest) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const res = await fetch(`${VPS}/api/lulu/list?${searchParams.toString()}`);
+    const data = await res.json();
+    return NextResponse.json(data);
+  } catch {
+    return NextResponse.json({ items: [], page: 1, total: 0, hasMore: false });
+  }
+}

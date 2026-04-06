@@ -694,7 +694,6 @@ export async function requestVidsrcStream(opts: {
 }
 
 // ─── LuluStream: جلب HLS للمحتوى المرفوع ────────────────
-const LULU_CLOUD = 'http://62.171.153.204:8090';
 export async function requestLuluStream(opts: {
   type: 'movie' | 'series';
   id?: string;
@@ -704,7 +703,7 @@ export async function requestLuluStream(opts: {
     const p = new URLSearchParams({ type: opts.type });
     if (opts.id)    p.set('id', opts.id);
     if (opts.ep_id) p.set('ep_id', opts.ep_id);
-    const res = await fetch(`${LULU_CLOUD}/api/lulu/stream?${p}`);
+    const res = await apiFetch(`/api/lulu/stream?${p}`);
     if (!res.ok) return { available: false };
     return await res.json();
   } catch { return { available: false }; }
@@ -751,7 +750,7 @@ export interface LuluDetail extends LuluItem {
 
 export async function fetchLuluHome(): Promise<{ latestMovies: LuluItem[]; latestSeries: LuluItem[] }> {
   try {
-    const res = await fetch(`${LULU_CLOUD}/api/lulu/home`);
+    const res = await apiFetch('/api/lulu/home');
     if (!res.ok) throw new Error();
     return await res.json();
   } catch { return { latestMovies: [], latestSeries: [] }; }
@@ -764,7 +763,7 @@ export async function fetchLuluList(params?: {
     const p = new URLSearchParams({ type: params?.type || 'movie', page: String(params?.page || 1) });
     if (params?.search) p.set('search', params.search);
     if (params?.cat)    p.set('cat', params.cat);
-    const res = await fetch(`${LULU_CLOUD}/api/lulu/list?${p}`);
+    const res = await apiFetch(`/api/lulu/list?${p}`);
     if (!res.ok) throw new Error();
     return await res.json();
   } catch { return { items: [], page: 1, total: 0, hasMore: false }; }
@@ -775,7 +774,7 @@ export async function fetchLuluDetail(id: string, type: 'movie' | 'series'): Pro
     const p = new URLSearchParams({ type });
     if (type === 'movie')  p.set('id', id);
     else                   p.set('show', id.startsWith('lulu:') ? id.slice(5) : id);
-    const res = await fetch(`${LULU_CLOUD}/api/lulu/detail?${p}`);
+    const res = await apiFetch(`/api/lulu/detail?${p}`);
     if (!res.ok) return null;
     return await res.json();
   } catch { return null; }
