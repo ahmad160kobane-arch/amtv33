@@ -211,17 +211,9 @@ function DetailContent() {
         {/* Embed iframe player */}
         {embedUrl && !streamUrl && !streamLoading && !streamError && (
           <div className="absolute inset-0 flex flex-col bg-black">
-            {/* Source bar — always visible */}
-            <div className="flex items-center gap-1.5 px-3 py-2 bg-black/95 overflow-x-auto no-scrollbar flex-shrink-0 border-b border-white/10">
-              <span className="text-white/40 text-[10px] font-semibold flex-shrink-0 uppercase tracking-wide">مصدر:</span>
-              {embedSources.map((src, i) => (
-                <button key={i} onClick={() => { setEmbedSourceIdx(i); setEmbedUrl(src.url); }}
-                  className={`text-xs px-3 py-1.5 rounded-full whitespace-nowrap transition-all flex-shrink-0 font-semibold ${i === embedSourceIdx ? 'bg-brand-primary text-black shadow-lg shadow-brand-primary/30' : 'bg-white/10 text-white/60 hover:bg-white/25 hover:text-white'}`}>
-                  {src.name}
-                </button>
-              ))}
-              <button onClick={() => { setEmbedUrl(''); setStreamError(''); }} className="mr-auto text-white/30 hover:text-white/70 transition flex-shrink-0 pl-2 text-lg leading-none">✕</button>
-            </div>
+            {/* Close button only */}
+            <button onClick={() => { setEmbedUrl(''); setStreamError(''); }}
+              className="absolute top-2 right-2 z-10 w-8 h-8 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center hover:bg-black/80 transition text-white/50 hover:text-white text-lg leading-none">✕</button>
             <iframe
               key={embedUrl}
               src={embedUrl}
