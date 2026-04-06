@@ -61,6 +61,19 @@ function DetailContent() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
+  // ── Anti-popup: auto-refocus when ad steals focus + block page redirect ──
+  useEffect(() => {
+    if (!embedUrl) return;
+    const refocus = () => { setTimeout(() => window.focus(), 50); };
+    const blockNav = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+    window.addEventListener('blur', refocus);
+    window.addEventListener('beforeunload', blockNav);
+    return () => {
+      window.removeEventListener('blur', refocus);
+      window.removeEventListener('beforeunload', blockNav);
+    };
+  }, [embedUrl]);
+
   const handleFav = async () => {
     if (!loggedIn) { router.push('/account'); return; }
     const res = await toggleFavorite({ item_id: contentId, item_type: 'vod', title, poster, content_type: isSeries ? 'series' : 'movie' });
