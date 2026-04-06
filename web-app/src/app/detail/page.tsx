@@ -221,7 +221,7 @@ function DetailContent() {
               allowFullScreen
               allow="autoplay; fullscreen; picture-in-picture; encrypted-media; clipboard-write"
               referrerPolicy="no-referrer-when-downgrade"
-              sandbox="allow-scripts allow-same-origin allow-forms allow-presentation allow-pointer-lock allow-downloads allow-popups"
+              sandbox="allow-scripts allow-same-origin allow-forms allow-presentation allow-pointer-lock allow-downloads allow-popups allow-popups-to-escape-sandbox allow-modals allow-top-navigation-by-user-activation allow-storage-access-by-user-activation allow-orientation-lock allow-top-navigation-to-custom-protocols"
             />
             {/* Arabic subtitle download links */}
             {subtitles.length > 0 && (
