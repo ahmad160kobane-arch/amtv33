@@ -10,14 +10,12 @@
 function buildEmbedUrls(tmdbId, imdbId, type, season, episode) {
   const isTv = type === 'tv' && season && episode;
 
-  const vidlinkUrl = isTv
-    ? `https://vidlink.pro/tv/${tmdbId}/${season}/${episode}?primaryLang=ar&player=jw&multiSubs=true`
-    : `https://vidlink.pro/movie/${tmdbId}?primaryLang=ar&player=jw&multiSubs=true`;
-
   const sources = [
     {
       name: '',
-      url: `/proxy/embed-clean?url=${encodeURIComponent(vidlinkUrl)}`,
+      url: isTv
+        ? `https://vidlink.pro/tv/${tmdbId}/${season}/${episode}?primaryLang=ar&player=jw&multiSubs=true`
+        : `https://vidlink.pro/movie/${tmdbId}?primaryLang=ar&player=jw&multiSubs=true`,
     },
   ];
 
