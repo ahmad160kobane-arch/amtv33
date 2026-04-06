@@ -691,6 +691,23 @@ export async function requestVidsrcStream(opts: {
   } catch (err: any) { return { success: false, error: err.message }; }
 }
 
+// ─── LuluStream: جلب HLS للمحتوى المرفوع ────────────────
+const LULU_CLOUD = 'http://62.171.153.204:8090';
+export async function requestLuluStream(opts: {
+  type: 'movie' | 'series';
+  id?: string;
+  ep_id?: string;
+}): Promise<{ available: boolean; hlsUrl?: string; embedUrl?: string; fileCode?: string }> {
+  try {
+    const p = new URLSearchParams({ type: opts.type });
+    if (opts.id)    p.set('id', opts.id);
+    if (opts.ep_id) p.set('ep_id', opts.ep_id);
+    const res = await fetch(`${LULU_CLOUD}/api/lulu/stream?${p}`);
+    if (!res.ok) return { available: false };
+    return await res.json();
+  } catch { return { available: false }; }
+}
+
 // ─── Session Management (cloud-server) ──────────────────
 const CLOUD_URL = 'http://62.171.153.204:8090';
 

@@ -1,7 +1,7 @@
 'use client';
 import React, { useEffect, useState, useCallback, useRef, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { fetchVidsrcDetail, requestVidsrcStream, checkFavorite, toggleFavorite, addWatchHistory, isLoggedIn, VidsrcDetail, VidsrcEpisode } from '@/constants/api';
+import { fetchVidsrcDetail, requestVidsrcStream, requestLuluStream, checkFavorite, toggleFavorite, addWatchHistory, isLoggedIn, VidsrcDetail, VidsrcEpisode } from '@/constants/api';
 import VodPlayer from '@/components/VodPlayer';
 
 /* ─── YouTube-style Detail Page ─────────────────────────────────── */
@@ -156,7 +156,32 @@ function DetailContent() {
     setEmbedUrl('');
     setSubtitles([]);
     setTimeout(() => playerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+
+    const recordHistory = (key: string) => {
+      if (key !== historyRecorded.current && loggedIn) {
+        historyRecorded.current = key;
+        addWatchHistory({ item_id: contentId, item_type: 'vod', title, poster, content_type: isSeries ? 'series' : 'movie' });
+      }
+    };
+
     try {
+      // ── 1. جرب LuluStream أولاً (بدون حد اتصال، HLS مباشر) ──
+      const luluOpts = ep
+        ? { type: 'series' as const, ep_id: ep.id || '' }
+        : { type: 'movie' as const, id: contentId };
+      const hasLuluId = ep ? !!ep.id : !!contentId;
+      if (hasLuluId) {
+        const lulu = await requestLuluStream(luluOpts);
+        if (lulu.available && lulu.hlsUrl) {
+          setStreamUrl(lulu.hlsUrl);
+          recordHistory(ep ? `${contentId}_${ep.season}_${ep.episode}` : contentId);
+          setStreamLoading(false);
+          fetchSubtitles(detail?.tmdb_id || contentId, ep ? 'tv' : 'movie', ep?.season, ep?.episode);
+          return;
+        }
+      }
+
+      // ── 2. Fallback: vidsrc ──
       const type = ep ? 'tv' : 'movie';
       const result = await requestVidsrcStream({
         tmdbId: detail?.tmdb_id || contentId,
@@ -166,11 +191,7 @@ function DetailContent() {
       });
       if (result.success) {
         applyStreamResult(result);
-        const key = ep ? `${contentId}_${ep.season}_${ep.episode}` : contentId;
-        if (key !== historyRecorded.current && loggedIn) {
-          historyRecorded.current = key;
-          addWatchHistory({ item_id: contentId, item_type: 'vod', title, poster, content_type: isSeries ? 'series' : 'movie' });
-        }
+        recordHistory(ep ? `${contentId}_${ep.season}_${ep.episode}` : contentId);
         if (!result.subtitles?.length) fetchSubtitles(detail?.tmdb_id || contentId, type, ep?.season, ep?.episode);
       } else {
         setStreamError(result.error || 'فشل تحميل المحتوى');
