@@ -1001,6 +1001,9 @@ app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => 
       } catch (_) {}
     };
 
+    // ═══ 0. Arabic subtitles — fetch in parallel (Subdl + OpenSubtitles) ═══
+    const arabicSubsPromise = fetchArabicSubtitles({ tmdbId, imdbId, type, season, episode }).catch(() => []);
+
     // ═══ 1. Consumet — HLS مباشر (بدون إعلانات) ═══
     try {
       let englishTitle = req.body.title || '';
@@ -1019,12 +1022,18 @@ app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => 
         if (consumet && consumet.url) {
           console.log(`[Stream] ✓ HLS via ${consumet.provider}`);
           await recordHistory();
+          const arabicSubs = await arabicSubsPromise;
+          // Arabic subs first, then provider subs (English etc.)
+          const allSubs = [
+            ...arabicSubs,
+            ...(consumet.subtitles || []).map(s => ({ ...s, label: s.language })),
+          ];
           return res.json({
             success: true, streamId, ready: true,
             hlsUrl: consumet.url,
             provider: consumet.provider,
             headers: consumet.headers || {},
-            subtitles: consumet.subtitles || [],
+            subtitles: allSubs,
           });
         }
       }
@@ -1034,7 +1043,10 @@ app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => 
 
     // ═══ 2. Fallback: Embed URLs ═══
     console.log(`[Stream] → Embed fallback: ${label}`);
-    const stream = await resolveStream(tmdbId, type, season, episode, imdbId);
+    const [stream, arabicSubs] = await Promise.all([
+      resolveStream(tmdbId, type, season, episode, imdbId),
+      arabicSubsPromise,
+    ]);
     if (stream && stream.embedUrl) {
       console.log(`[Stream] ✓ Embed: ${stream.provider} — ${stream.embedUrl}`);
       await recordHistory();
@@ -1044,6 +1056,7 @@ app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => 
         provider: stream.provider,
         sources: stream.sources,
         allEmbedUrls: stream.allEmbedUrls || [],
+        subtitles: arabicSubs, // Arabic subs available for download even with embed
       });
     }
 

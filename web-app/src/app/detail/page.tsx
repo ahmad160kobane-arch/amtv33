@@ -68,6 +68,7 @@ function DetailContent() {
   };
 
   const applyStreamResult = (result: any) => {
+    if (result.subtitles?.length) setSubtitles(result.subtitles);
     const hls = result.hlsUrl || result.vodUrl || '';
     if (hls) {
       setStreamUrl(hls);
@@ -120,7 +121,7 @@ function DetailContent() {
           historyRecorded.current = key;
           addWatchHistory({ item_id: contentId, item_type: 'vod', title, poster, content_type: isSeries ? 'series' : 'movie' });
         }
-        fetchSubtitles(detail?.tmdb_id || contentId, type, ep?.season, ep?.episode);
+        if (!result.subtitles?.length) fetchSubtitles(detail?.tmdb_id || contentId, type, ep?.season, ep?.episode);
       } else {
         setStreamError(result.error || 'فشل تحميل المحتوى');
       }
@@ -229,10 +230,27 @@ function DetailContent() {
               allow="autoplay; fullscreen; picture-in-picture; encrypted-media; clipboard-write"
               referrerPolicy="no-referrer-when-downgrade"
             />
+            {/* Arabic subtitle download links */}
+            {subtitles.length > 0 && (
+              <div className="flex-shrink-0 px-3 py-1.5 bg-black/95 border-t border-white/10 flex items-center gap-2 overflow-x-auto no-scrollbar">
+                <svg className="w-3.5 h-3.5 text-brand-primary flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h6m-3 4h2M5 3h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z" />
+                </svg>
+                <span className="text-white/40 text-[10px] font-semibold flex-shrink-0">ترجمة:</span>
+                {subtitles.map((sub: any, i: number) => (
+                  <a key={i} href={sub.url} target="_blank" rel="noopener noreferrer" download
+                    className="text-[10px] px-2.5 py-1 rounded-full bg-brand-primary/20 text-brand-primary hover:bg-brand-primary/40 transition whitespace-nowrap flex-shrink-0 font-semibold">
+                    ⬇ {sub.label || sub.language || 'العربية'}
+                  </a>
+                ))}
+              </div>
+            )}
             {/* Hint bar at bottom */}
-            <div className="flex-shrink-0 px-3 py-1.5 bg-black/90 border-t border-white/5 text-center">
-              <p className="text-white/30 text-[10px]">إذا لم يعمل المصدر الحالي، جرّب مصدراً آخر من الأعلى</p>
-            </div>
+            {subtitles.length === 0 && (
+              <div className="flex-shrink-0 px-3 py-1.5 bg-black/90 border-t border-white/5 text-center">
+                <p className="text-white/30 text-[10px]">vidsrc.xyz يحتوي على ترجمة عربية مدمجة — اضغط CC داخل المشغّل</p>
+              </div>
+            )}
           </div>
         )}
 

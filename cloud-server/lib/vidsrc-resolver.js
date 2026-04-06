@@ -11,7 +11,13 @@ function buildEmbedUrls(tmdbId, imdbId, type, season, episode) {
   const isTv = type === 'tv' && season && episode;
   const sources = [];
 
-  /* ── Most reliable first ── */
+  /* ── vidsrc.xyz FIRST — best coverage + built-in Arabic subtitle selector ── */
+  sources.push({
+    name: 'vidsrc.xyz ★',
+    url: isTv
+      ? `https://vidsrc.xyz/embed/tv?tmdb=${tmdbId}&season=${season}&episode=${episode}`
+      : `https://vidsrc.xyz/embed/movie?tmdb=${tmdbId}`,
+  });
 
   sources.push({
     name: 'vidsrc.cc',
