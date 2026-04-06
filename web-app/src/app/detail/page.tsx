@@ -210,27 +210,29 @@ function DetailContent() {
         {/* Embed iframe player */}
         {embedUrl && !streamUrl && !streamLoading && !streamError && (
           <div className="absolute inset-0 flex flex-col bg-black">
-            {embedSources.length > 1 && (
-              <div className="flex items-center gap-1.5 px-3 py-2 bg-black/90 overflow-x-auto no-scrollbar flex-shrink-0">
-                <span className="text-white/40 text-xs flex-shrink-0">المصدر:</span>
-                {embedSources.map((src, i) => (
-                  <button key={i} onClick={() => { setEmbedSourceIdx(i); setEmbedUrl(src.url); }}
-                    className={`text-xs px-3 py-1 rounded-full whitespace-nowrap transition flex-shrink-0 ${i === embedSourceIdx ? 'bg-brand-primary text-black font-bold' : 'bg-white/10 text-white/60 hover:bg-white/20'}`}>
-                    {src.name}
-                  </button>
-                ))}
-                <button onClick={() => { setEmbedUrl(''); setStreamError(''); }} className="mr-auto text-white/40 hover:text-white text-xs flex-shrink-0 pr-2">✕</button>
-              </div>
-            )}
+            {/* Source bar — always visible */}
+            <div className="flex items-center gap-1.5 px-3 py-2 bg-black/95 overflow-x-auto no-scrollbar flex-shrink-0 border-b border-white/10">
+              <span className="text-white/40 text-[10px] font-semibold flex-shrink-0 uppercase tracking-wide">مصدر:</span>
+              {embedSources.map((src, i) => (
+                <button key={i} onClick={() => { setEmbedSourceIdx(i); setEmbedUrl(src.url); }}
+                  className={`text-xs px-3 py-1.5 rounded-full whitespace-nowrap transition-all flex-shrink-0 font-semibold ${i === embedSourceIdx ? 'bg-brand-primary text-black shadow-lg shadow-brand-primary/30' : 'bg-white/10 text-white/60 hover:bg-white/25 hover:text-white'}`}>
+                  {src.name}
+                </button>
+              ))}
+              <button onClick={() => { setEmbedUrl(''); setStreamError(''); }} className="mr-auto text-white/30 hover:text-white/70 transition flex-shrink-0 pl-2 text-lg leading-none">✕</button>
+            </div>
             <iframe
               key={embedUrl}
               src={embedUrl}
               className="flex-1 w-full border-0"
               allowFullScreen
-              allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
+              allow="autoplay; fullscreen; picture-in-picture; encrypted-media; clipboard-write"
               referrerPolicy="no-referrer-when-downgrade"
-              sandbox="allow-scripts allow-same-origin allow-forms allow-presentation allow-fullscreen"
             />
+            {/* Hint bar at bottom */}
+            <div className="flex-shrink-0 px-3 py-1.5 bg-black/90 border-t border-white/5 text-center">
+              <p className="text-white/30 text-[10px]">إذا لم يعمل المصدر الحالي، جرّب مصدراً آخر من الأعلى</p>
+            </div>
           </div>
         )}
 
