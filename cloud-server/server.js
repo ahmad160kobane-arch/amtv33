@@ -130,6 +130,11 @@ app.use(cors());
 
 app.use(express.json());
 
+// ─── خدمة ملفات الترجمة ────────────────────────────────
+app.use('/subs', express.static('/root/subs', {
+  setHeaders: (res) => { res.set('Access-Control-Allow-Origin', '*'); }
+}));
+
 
 
 app.use((req, res, next) => {
@@ -1944,6 +1949,205 @@ app.get('/api/vidsrc/episodes', async (req, res) => {
 
 
 
+// ─── LuluStream: رابط HLS للمحتوى المرفوع ──────────────────────────────────
+const LULU_KEY          = '258176jfw9e96irnxai2fm';
+const LULU_PROGRESS_PATH = '/root/lulu_progress.json';
+let _luluProgress = null;
+let _luluProgressTs = 0;
+const _luluCanplayCache = new Map(); // fileCode → { canplay, ts }
+
+function getLuluProgress() {
+  const now = Date.now();
+  if (!_luluProgress || now - _luluProgressTs > 60000) {
+    try { _luluProgress = JSON.parse(fs.readFileSync(LULU_PROGRESS_PATH, 'utf8')); }
+    catch { _luluProgress = { uploaded: {}, failed: {} }; }
+    _luluProgressTs = now;
+  }
+  return _luluProgress;
+}
+
+async function checkLuluCanplay(fileCode) {
+  const cached = _luluCanplayCache.get(fileCode);
+  if (cached && Date.now() - cached.ts < 5 * 60 * 1000) return cached.canplay;
+  try {
+    const r = await fetch(
+      `https://api.lulustream.com/api/file/info?key=${LULU_KEY}&file_code=${fileCode}`,
+      { signal: AbortSignal.timeout(8000) }
+    );
+    const d = await r.json();
+    const canplay = d?.result?.[0]?.canplay === 1;
+    _luluCanplayCache.set(fileCode, { canplay, ts: Date.now() });
+    return canplay;
+  } catch {
+    return false;
+  }
+}
+
+app.get('/api/lulu/stream', async (req, res) => {
+  const { type, id, ep_id } = req.query;
+  const prog = getLuluProgress();
+  let entry = null;
+  if (type === 'movie' && id)          entry = prog.uploaded[`movie_${id}`];
+  else if (type === 'series' && ep_id) entry = prog.uploaded[`series_${ep_id}`];
+  if (!entry) return res.json({ available: false });
+
+  const fc = entry.fileCode;
+  const canplay = await checkLuluCanplay(fc);
+  if (!canplay) return res.json({ available: false, reason: 'encoding' });
+
+  res.json({
+    available : true,
+    fileCode  : fc,
+    hlsUrl    : `https://luluvdo.com/hls/${fc}/master.m3u8`,
+    embedUrl  : `https://lulustream.com/e/${fc}`,
+    title     : entry.title,
+  });
+});
+
+
+
+// ─── LuluStream: بناء قائمة الأفلام من progress.json ─────────────────────
+function buildLuluMovieItem(streamId, entry) {
+  return {
+    id          : streamId,
+    title       : entry.title       || '',
+    poster      : entry.poster      || '',
+    year        : entry.year        || '',
+    genre       : entry.genre       || '',
+    rating      : entry.rating      || '',
+    lang        : entry.lang        || '',
+    cat         : entry.cat         || '',
+    vod_type    : 'movie',
+  };
+}
+
+function buildLuluSeriesMap(prog) {
+  const showMap = {};
+  for (const [k, v] of Object.entries(prog.uploaded)) {
+    if (!k.startsWith('series_')) continue;
+    const show = v.show || v.title || k;
+    if (!showMap[show]) {
+      showMap[show] = {
+        id           : 'lulu:' + encodeURIComponent(show),
+        title        : show,
+        poster       : v.poster || '',
+        genre        : v.genre  || '',
+        rating       : v.rating || '',
+        lang         : v.lang   || '',
+        vod_type     : 'series',
+        ts           : v.ts     || 0,
+        episodeCount : 0,
+      };
+    }
+    showMap[show].episodeCount = (showMap[show].episodeCount || 0) + 1;
+    if ((v.ts || 0) > showMap[show].ts) { showMap[show].ts = v.ts; showMap[show].poster = v.poster || showMap[show].poster; }
+  }
+  return Object.values(showMap);
+}
+
+// GET /api/lulu/home
+app.get('/api/lulu/home', (req, res) => {
+  const prog = getLuluProgress();
+  const movies = Object.entries(prog.uploaded)
+    .filter(([k]) => k.startsWith('movie_'))
+    .sort(([, a], [, b]) => (b.ts || 0) - (a.ts || 0))
+    .slice(0, 24)
+    .map(([k, v]) => buildLuluMovieItem(k.replace('movie_', ''), v));
+  const series = buildLuluSeriesMap(prog)
+    .sort((a, b) => (b.ts || 0) - (a.ts || 0))
+    .slice(0, 24);
+  res.json({ latestMovies: movies, latestSeries: series });
+});
+
+// GET /api/lulu/list?type=movie|series&page=1&search=&cat=
+app.get('/api/lulu/list', (req, res) => {
+  const { type = 'movie', page = '1', search = '', cat = '' } = req.query;
+  const prog  = getLuluProgress();
+  const pg    = Math.max(1, parseInt(page));
+  const limit = 24;
+  const q     = String(search).toLowerCase();
+
+  let items = [];
+  if (type === 'movie') {
+    items = Object.entries(prog.uploaded)
+      .filter(([k]) => k.startsWith('movie_'))
+      .map(([k, v]) => buildLuluMovieItem(k.replace('movie_', ''), v));
+    if (q)   items = items.filter(i => i.title.toLowerCase().includes(q));
+    if (cat) items = items.filter(i => i.cat === cat);
+    items.sort((a, b) => 0); // preserve insertion order (newest first from sync)
+  } else {
+    items = buildLuluSeriesMap(prog).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    if (q) items = items.filter(i => i.title.toLowerCase().includes(q));
+  }
+
+  const total = items.length;
+  res.json({ items: items.slice((pg - 1) * limit, pg * limit), page: pg, total, hasMore: pg * limit < total });
+});
+
+// GET /api/lulu/detail?type=movie&id={stream_id}
+// GET /api/lulu/detail?type=series&show={encoded_show_name}
+app.get('/api/lulu/detail', (req, res) => {
+  const { type, id, show } = req.query;
+  const prog = getLuluProgress();
+
+  if (type === 'movie' && id) {
+    const entry = prog.uploaded[`movie_${id}`];
+    if (!entry) return res.status(404).json({ error: 'not found' });
+    const fc = entry.fileCode;
+    return res.json({
+      id, title: entry.title, poster: entry.poster || '', backdrop: entry.poster || '',
+      year: entry.year || '', genre: entry.genre || '', rating: entry.rating || '',
+      lang: entry.lang || '', cat: entry.cat || '', vod_type: 'movie',
+      fileCode    : fc,
+      hlsUrl      : `https://luluvdo.com/hls/${fc}/master.m3u8`,
+      embedUrl    : `https://lulustream.com/e/${fc}`,
+      subtitleUrls: entry.subtitleUrls || null,
+    });
+  }
+
+  if (type === 'series' && show) {
+    const showName = decodeURIComponent(String(show));
+    const epEntries = Object.entries(prog.uploaded)
+      .filter(([k, v]) => k.startsWith('series_') && (v.show || '') === showName);
+    if (!epEntries.length) return res.status(404).json({ error: 'not found' });
+
+    const first   = epEntries[0][1];
+    const seasonMap = {};
+    for (const [k, v] of epEntries) {
+      const s = String(v.season || 1);
+      if (!seasonMap[s]) seasonMap[s] = [];
+      const fc = v.fileCode;
+      seasonMap[s].push({
+        id      : k.replace('series_', ''),
+        episode : v.ep || 1,
+        season  : Number(s),
+        title   : v.title || `الحلقة ${v.ep}`,
+        fileCode: fc,
+        hlsUrl      : `https://luluvdo.com/hls/${fc}/master.m3u8`,
+        embedUrl    : `https://lulustream.com/e/${fc}`,
+        subtitleUrls: v.subtitleUrls || null,
+        ext         : 'mp4',
+      });
+    }
+    const seasons = Object.entries(seasonMap)
+      .sort(([a], [b]) => Number(a) - Number(b))
+      .map(([s, eps]) => ({ season: Number(s), episodes: eps.sort((a, b) => a.episode - b.episode) }));
+
+    return res.json({
+      id: showName, title: showName, vod_type: 'series',
+      poster: first.poster || '', backdrop: first.poster || '',
+      genre: first.genre || '', rating: first.rating || '', lang: first.lang || '',
+      subtitleUrls: first.subtitleUrls || null,
+      seasons,
+      episodes: seasons.flatMap(s => s.episodes),
+    });
+  }
+
+  res.status(400).json({ error: 'invalid params' });
+});
+
+
+
 /**
 
  * POST /api/stream/vidsrc
@@ -2146,7 +2350,8 @@ app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => 
 
     if (stream && stream.embedUrl) {
 
-      console.log(`[Stream] ✓ Embed direct: ${stream.provider} — ${stream.embedUrl}`);
+      const proxiedUrl = `/api/embed-proxy?url=${encodeURIComponent(stream.embedUrl)}`;
+      console.log(`[Stream] ✓ Embed proxy: ${stream.provider} — ${stream.embedUrl}`);
 
       await recordHistory();
 
@@ -2154,13 +2359,13 @@ app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => 
 
         success: true, streamId, ready: true,
 
-        embedUrl: stream.embedUrl,
+        embedUrl: proxiedUrl,
 
         provider: stream.provider,
 
-        sources: stream.sources || [],
+        sources: (stream.sources || []).map(s => ({ ...s, url: `/api/embed-proxy?url=${encodeURIComponent(s.url)}` })),
 
-        allEmbedUrls: stream.allEmbedUrls || [],
+        allEmbedUrls: (stream.allEmbedUrls || []).map(u => `/api/embed-proxy?url=${encodeURIComponent(u)}`),
 
         subtitles: arabicSubs,
 
@@ -2185,6 +2390,7 @@ app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => 
 // ═══ Embed HTML Proxy — يدعم vidsrc.icu + يحجب الإعلانات والروابط العشوائية ═══
 
 const ALLOWED_EMBED_HOSTS = [
+  'vidsrcme.vidsrc.icu',
   'vidsrc.icu', 'www.vidsrc.icu',
   'vidsrc-embed.ru', 'www.vidsrc-embed.ru',
   '2embed.cc', 'www.2embed.cc',
@@ -2208,21 +2414,22 @@ app.get('/api/embed-proxy', async (req, res) => {
   try {
 
     const response = await fetch(targetUrl, {
-
+      signal: AbortSignal.timeout(12000),
       headers: {
-
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-
-        'Accept-Language': 'en-US,en;q=0.5',
-
-        'Referer': `${parsedTarget.protocol}//${parsedTarget.host}/`,
-
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'iframe',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'cross-site',
+        'Referer': 'https://vidsrc.icu/',
+        'Origin': 'https://vidsrc.icu',
+        'Cache-Control': 'no-cache',
       },
-
       redirect: 'follow',
-
     });
 
 

@@ -91,6 +91,7 @@ export interface VidsrcDetail {
   episodes?: VidsrcEpisode[];
   luluHls?: string;
   luluEmbed?: string;
+  subtitleUrls?: { ar?: string; ku?: string } | null;
 }
 
 export interface VidsrcEpisode {
@@ -104,6 +105,7 @@ export interface VidsrcEpisode {
   air_date?: string;
   luluHls?: string;
   luluEmbed?: string;
+  subtitleUrls?: { ar?: string; ku?: string } | null;
 }
 
 export interface UserProfile {
@@ -733,6 +735,7 @@ export interface LuluEpisode {
   fileCode: string;
   hlsUrl: string;
   embedUrl: string;
+  subtitleUrls?: { ar?: string; ku?: string } | null;
   ext: string;
 }
 
@@ -748,6 +751,7 @@ export interface LuluDetail extends LuluItem {
   fileCode?: string;
   hlsUrl?: string;
   embedUrl?: string;
+  subtitleUrls?: { ar?: string; ku?: string } | null;
 }
 
 export async function fetchLuluHome(): Promise<{ latestMovies: LuluItem[]; latestSeries: LuluItem[] }> {

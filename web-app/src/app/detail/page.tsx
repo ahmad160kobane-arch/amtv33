@@ -57,8 +57,9 @@ function DetailContent() {
             episode   : e.episode,
             season    : e.season,
             title     : e.title,
-            luluHls   : e.hlsUrl,
-            luluEmbed : e.embedUrl,
+            luluHls      : e.hlsUrl,
+            luluEmbed    : e.embedUrl,
+            subtitleUrls : e.subtitleUrls || null,
           }));
           const seasonNums = Array.from(new Set(episodes.map(e => e.season))).sort((a, b) => a - b);
           setDetail({
@@ -72,8 +73,9 @@ function DetailContent() {
             rating     : lData.rating || '',
             seasons    : seasonNums,
             episodes,
-            luluHls    : lData.hlsUrl,
-            luluEmbed  : lData.embedUrl,
+            luluHls      : lData.hlsUrl,
+            luluEmbed    : lData.embedUrl,
+            subtitleUrls : lData.subtitleUrls || null,
           } as VidsrcDetail);
         }
       } else {
@@ -206,6 +208,14 @@ function DetailContent() {
           setEmbedSourceIdx(0);
           setEmbedUrl(embedU);
           setStreamUrl('');
+          // ترجمات من SubDL
+          const subUrls = (ep?.subtitleUrls || detail?.subtitleUrls) as { ar?: string; ku?: string } | null | undefined;
+          if (subUrls) {
+            const subs: any[] = [];
+            if (subUrls.ar) subs.push({ url: subUrls.ar, label: '🇸🇦 عربي', language: 'ar' });
+            if (subUrls.ku) subs.push({ url: subUrls.ku, label: '🏳️ كردي', language: 'ku' });
+            setSubtitles(subs);
+          }
           recordHistory(ep ? `${contentId}_${ep.season}_${ep.episode}` : contentId);
           setStreamLoading(false);
           return;

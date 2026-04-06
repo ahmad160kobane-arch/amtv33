@@ -79,6 +79,14 @@
       "static/chunks/949-23ab9466d80e5d85.js",
       "static/chunks/app/kids/page-4dfeef9a93012625.js"
     ],
+    "/live/page": [
+      "static/chunks/webpack-616e068a201ad621.js",
+      "static/chunks/fd9d1056-70c94968177d287a.js",
+      "static/chunks/117-baa1caa680274865.js",
+      "static/chunks/main-app-1f30feae0b2efb7c.js",
+      "static/chunks/949-23ab9466d80e5d85.js",
+      "static/chunks/app/live/page-fe6c22d59a28bb72.js"
+    ],
     "/mylist/page": [
       "static/chunks/webpack-616e068a201ad621.js",
       "static/chunks/fd9d1056-70c94968177d287a.js",
@@ -88,22 +96,6 @@
       "static/chunks/949-23ab9466d80e5d85.js",
       "static/chunks/app/mylist/page-e48935dc62abc33b.js"
     ],
-    "/live/page": [
-      "static/chunks/webpack-616e068a201ad621.js",
-      "static/chunks/fd9d1056-70c94968177d287a.js",
-      "static/chunks/117-baa1caa680274865.js",
-      "static/chunks/main-app-1f30feae0b2efb7c.js",
-      "static/chunks/949-23ab9466d80e5d85.js",
-      "static/chunks/app/live/page-fe6c22d59a28bb72.js"
-    ],
-    "/offline/page": [
-      "static/chunks/webpack-616e068a201ad621.js",
-      "static/chunks/fd9d1056-70c94968177d287a.js",
-      "static/chunks/117-baa1caa680274865.js",
-      "static/chunks/main-app-1f30feae0b2efb7c.js",
-      "static/chunks/648-de9c3002379c4aad.js",
-      "static/chunks/app/offline/page-6b40210aabeb611a.js"
-    ],
     "/page": [
       "static/chunks/webpack-616e068a201ad621.js",
       "static/chunks/fd9d1056-70c94968177d287a.js",
@@ -112,6 +104,14 @@
       "static/chunks/648-de9c3002379c4aad.js",
       "static/chunks/949-23ab9466d80e5d85.js",
       "static/chunks/app/page-b83b50cb289f0568.js"
+    ],
+    "/offline/page": [
+      "static/chunks/webpack-616e068a201ad621.js",
+      "static/chunks/fd9d1056-70c94968177d287a.js",
+      "static/chunks/117-baa1caa680274865.js",
+      "static/chunks/main-app-1f30feae0b2efb7c.js",
+      "static/chunks/648-de9c3002379c4aad.js",
+      "static/chunks/app/offline/page-6b40210aabeb611a.js"
     ],
     "/sports/page": [
       "static/chunks/webpack-616e068a201ad621.js",
@@ -136,7 +136,7 @@
       "static/chunks/117-baa1caa680274865.js",
       "static/chunks/main-app-1f30feae0b2efb7c.js",
       "static/chunks/949-23ab9466d80e5d85.js",
-      "static/chunks/app/detail/page-2bd17db13052a4c2.js"
+      "static/chunks/app/detail/page-52149b5abd1dc107.js"
     ]
   }
 }

@@ -1,10 +1,10 @@
 /**
- * Stream Resolver — vidsrc.icu
+ * Stream Resolver — vidsrcme.vidsrc.icu (الـ player الفعلي بدون wrapper)
  * يدعم TMDB + IMDB + ترجمات متعددة اللغات
  */
 
 // ═══════════════════════════════════════════════════════
-// vidsrc.icu — مصدر سريع متوافق مع TMDB/IMDB
+// vidsrcme.vidsrc.icu — المشغل الفعلي (تأكد بـ curl)
 // ═══════════════════════════════════════════════════════
 
 function buildEmbedUrls(tmdbId, imdbId, type, season, episode) {
@@ -13,9 +13,9 @@ function buildEmbedUrls(tmdbId, imdbId, type, season, episode) {
 
   let url;
   if (isTv) {
-    url = `https://vidsrc.icu/embed/tv/${id}/${season}/${episode}`;
+    url = `https://vidsrcme.vidsrc.icu/embed/tv?tmdb=${id}&season=${season}&episode=${episode}&autoplay=1&ds_lang=ar`;
   } else {
-    url = `https://vidsrc.icu/embed/movie/${id}`;
+    url = `https://vidsrcme.vidsrc.icu/embed/movie?tmdb=${id}&autoplay=1&ds_lang=ar`;
   }
 
   const sources = [{ name: 'vidsrc', url }];
