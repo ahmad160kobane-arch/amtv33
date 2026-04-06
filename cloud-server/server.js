@@ -19,6 +19,7 @@ const StreamManager = require('./lib/stream-manager');
 const VodProxy = require('./lib/vod-proxy');
 const IptvUpdater = require('./lib/iptv-updater');
 const { resolveStream } = require('./lib/vidsrc-resolver');
+const { resolveVidlinkStream } = require('./lib/vidlink-resolver');
 const { resolveConsumetStream } = require('./lib/consumet-resolver');
 const { extractStream } = require('./lib/stream-extractor');
 const { scrapeEmbedSources } = require('./lib/embed-scraper');
@@ -1041,7 +1042,30 @@ app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => 
       console.log(`[Stream] Consumet failed: ${ce.message}`);
     }
 
-    // ═══ 2. Fallback: Embed URLs ═══
+    // ═══ 2. Vidlink.pro — HLS مباشر (بدون iframe = بدون إعلانات) ═══
+    try {
+      console.log(`[Stream] → Vidlink HLS: ${label}`);
+      const vidlink = await resolveVidlinkStream(tmdbId, type, season, episode);
+      if (vidlink && vidlink.hlsUrl) {
+        console.log(`[Stream] ✓ Vidlink HLS found`);
+        await recordHistory();
+        const arabicSubs = await arabicSubsPromise;
+        const allSubs = [
+          ...arabicSubs,
+          ...(vidlink.subtitles || []),
+        ];
+        return res.json({
+          success: true, streamId, ready: true,
+          hlsUrl: vidlink.hlsUrl,
+          provider: 'vidlink',
+          subtitles: allSubs,
+        });
+      }
+    } catch (ve) {
+      console.log(`[Stream] Vidlink failed: ${ve.message}`);
+    }
+
+    // ═══ 3. Fallback: Embed URLs ═══
     console.log(`[Stream] → Embed fallback: ${label}`);
     const [stream, arabicSubs] = await Promise.all([
       resolveStream(tmdbId, type, season, episode, imdbId),
@@ -1056,7 +1080,7 @@ app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => 
         provider: stream.provider,
         sources: stream.sources,
         allEmbedUrls: stream.allEmbedUrls || [],
-        subtitles: arabicSubs, // Arabic subs available for download even with embed
+        subtitles: arabicSubs,
       });
     }
 
