@@ -980,12 +980,12 @@ app.get('/api/vidsrc/episodes', async (req, res) => {
  * WebView ÙÙŠ Ø§Ù„ØªØ·Ø¨ÙŠÙ‚ ÙŠØªØ¹Ø§Ù…Ù„ Ù…Ø¹ Ø§Ù„Ø¥Ø¹Ù„Ø§Ù†Ø§Øª ÙˆØ§Ù„ØªØ´ØºÙŠÙ„ Ù…Ø¨Ø§Ø´Ø±Ø©
  */
 app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => {
-  const { tmdbId, imdbId, type = 'movie' } = req.body;
+  const raw = req.body.tmdbId || '';
+  const tmdbId = raw.replace(/^tmdb_/i, '') || null;
+  const imdbId = req.body.imdbId;
+  const type = req.body.type || 'movie';
   const season = type === 'tv' ? (parseInt(req.body.season) || 1) : undefined;
   const episode = type === 'tv' ? (parseInt(req.body.episode) || 1) : undefined;
-
-  // ملاحظة: لا يوجد فحص لحد الاتصالات هنا — VidSrc embed يذهب للمصادر الخارجية مباشرةً
-  // ولا يستهلك موارد السيرفر (عكس البث المباشر IPTV)
 
   if (!tmdbId) return res.status(400).json({ error: 'tmdbId مطلوب' });
 
