@@ -248,7 +248,7 @@ function DetailContent() {
             {/* Hint bar at bottom */}
             {subtitles.length === 0 && (
               <div className="flex-shrink-0 px-3 py-1.5 bg-black/90 border-t border-white/5 text-center">
-                <p className="text-white/30 text-[10px]">vidsrc.xyz يحتوي على ترجمة عربية مدمجة — اضغط CC داخل المشغّل</p>
+                <p className="text-white/30 text-[10px]">vidlink — اضغط زر CC أو الترجمة داخل المشغّل لاختيار العربية</p>
               </div>
             )}
           </div>
