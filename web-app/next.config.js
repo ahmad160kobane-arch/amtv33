@@ -70,9 +70,10 @@ const nextConfig = {
   async rewrites() {
     return [
       // Cloud server endpoints (port 8090)
-      { source: '/api/vidsrc/:path*',   destination: `${CLOUD_URL}/api/vidsrc/:path*`   },
-      { source: '/api/stream/:path*',   destination: `${CLOUD_URL}/api/stream/:path*`   },
-      { source: '/api/xtream/:path*',   destination: `${CLOUD_URL}/api/xtream/:path*`   },
+      { source: '/api/vidsrc/:path*',     destination: `${CLOUD_URL}/api/vidsrc/:path*`     },
+      { source: '/api/stream/:path*',     destination: `${CLOUD_URL}/api/stream/:path*`     },
+      { source: '/api/xtream/:path*',     destination: `${CLOUD_URL}/api/xtream/:path*`     },
+      { source: '/api/embed-proxy',       destination: `${CLOUD_URL}/api/embed-proxy`        },
       { source: '/proxy/live/:path*',   destination: `${CLOUD_URL}/proxy/live/:path*`   },
       { source: '/free-hls/:path*',     destination: `${CLOUD_URL}/free-hls/:path*`     },
       { source: '/xtream-play/:path*',  destination: `${CLOUD_URL}/xtream-play/:path*`  },

@@ -1,10 +1,10 @@
 /**
- * Stream Resolver — مصدر واحد عربي
- * vidlink.pro — يدعم اختيار اللغة العربية تلقائياً (ترجمة أو دبلجة)
+ * Stream Resolver — 2embed.cc (TMDB متوافق 100%)
+ * يعمل عبر embed-proxy على سيرفرنا الذي يحجب الإعلانات
  */
 
 // ═══════════════════════════════════════════════════════
-// vidlink.pro — مصدر عربي مجاني + TMDB
+// 2embed.cc — متوافق TMDB ID + يدعم العربية
 // ═══════════════════════════════════════════════════════
 
 function buildEmbedUrls(tmdbId, imdbId, type, season, episode) {
@@ -12,10 +12,10 @@ function buildEmbedUrls(tmdbId, imdbId, type, season, episode) {
 
   const sources = [
     {
-      name: '',
+      name: '2embed',
       url: isTv
-        ? `https://vidlink.pro/tv/${tmdbId}/${season}/${episode}?primaryLang=ar&player=jw&multiSubs=true`
-        : `https://vidlink.pro/movie/${tmdbId}?primaryLang=ar&player=jw&multiSubs=true`,
+        ? `https://www.2embed.cc/embedtv/${tmdbId}&s=${season}&e=${episode}`
+        : `https://www.2embed.cc/embed/${tmdbId}`,
     },
   ];
 
@@ -29,7 +29,7 @@ function buildEmbedUrls(tmdbId, imdbId, type, season, episode) {
 async function resolveStream(tmdbId, type = 'movie', season, episode, imdbId) {
   const sources = buildEmbedUrls(tmdbId, imdbId, type, season, episode);
   const tv = type === 'tv' && season && episode;
-  console.log(`[Resolver] tmdb=${tmdbId} type=${type}${tv ? ` s${season}e${episode}` : ''} → vidlink.pro (ar)`);
+  console.log(`[Resolver] tmdb=${tmdbId} type=${type}${tv ? ` s${season}e${episode}` : ''} → 2embed.cc`);
 
   return {
     embedUrl: sources[0].url,

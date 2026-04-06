@@ -1065,21 +1065,22 @@ app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => 
       console.log(`[Stream] Vidlink failed: ${ve.message}`);
     }
 
-    // ═══ 3. Fallback: Embed URLs ═══
+    // ═══ 3. Fallback: Embed via proxy (blocks ads/popups) ═══
     console.log(`[Stream] → Embed fallback: ${label}`);
     const [stream, arabicSubs] = await Promise.all([
       resolveStream(tmdbId, type, season, episode, imdbId),
       arabicSubsPromise,
     ]);
     if (stream && stream.embedUrl) {
-      console.log(`[Stream] ✓ Embed: ${stream.provider} — ${stream.embedUrl}`);
+      const proxied = `/api/embed-proxy?url=${encodeURIComponent(stream.embedUrl)}`;
+      console.log(`[Stream] ✓ Embed proxy: ${stream.provider} — ${stream.embedUrl}`);
       await recordHistory();
       return res.json({
         success: true, streamId, ready: true,
-        embedUrl: stream.embedUrl,
+        embedUrl: proxied,
         provider: stream.provider,
-        sources: stream.sources,
-        allEmbedUrls: stream.allEmbedUrls || [],
+        sources: (stream.sources || []).map(s => ({ ...s, url: `/api/embed-proxy?url=${encodeURIComponent(s.url)}` })),
+        allEmbedUrls: (stream.allEmbedUrls || []).map(u => `/api/embed-proxy?url=${encodeURIComponent(u)}`),
         subtitles: arabicSubs,
       });
     }
@@ -1090,12 +1091,24 @@ app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => 
   }
 });
 
-// ═══ Embed HTML Proxy — injects CSS to hide cast/server icons from 2embed.cc ═══
+// ═══ Embed HTML Proxy — blocks ads/popups + injects CSS cleanup ═══
+const ALLOWED_EMBED_HOSTS = [
+  '2embed.cc', 'www.2embed.cc',
+  'vidlink.pro', 'www.vidlink.pro',
+  '2embed.skin', 'www.2embed.skin',
+];
+
 app.get('/api/embed-proxy', async (req, res) => {
   const rawUrl = req.query.url;
   if (!rawUrl) return res.status(400).end();
   const targetUrl = decodeURIComponent(rawUrl);
-  if (!targetUrl.includes('2embed.cc')) return res.status(403).end();
+
+  let parsedTarget;
+  try { parsedTarget = new URL(targetUrl); } catch { return res.status(400).end(); }
+  if (!ALLOWED_EMBED_HOSTS.includes(parsedTarget.hostname)) return res.status(403).end();
+
+  const baseHref = `${parsedTarget.protocol}//${parsedTarget.host}/`;
+  const referer  = baseHref;
 
   try {
     const response = await fetch(targetUrl, {
@@ -1103,34 +1116,38 @@ app.get('/api/embed-proxy', async (req, res) => {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.5',
-        'Referer': 'https://www.2embed.cc/',
+        'Referer': referer,
       },
       redirect: 'follow',
+      signal: AbortSignal.timeout(12000),
     });
 
     let html = await response.text();
 
-    const inject = `
-<base href="https://www.2embed.cc/">
+    const inject = `<base href="${baseHref}">
+<script>
+(function(){
+  var noop = function(){ return {focus:function(){},close:function(){},document:{write:function(){}},location:{}}; };
+  try { Object.defineProperty(window,'open',{value:noop,writable:false,configurable:false}); } catch(e){ window.open=noop; }
+  document.addEventListener('click',function(e){
+    var el=e.target;
+    while(el){ if(el.tagName==='A'&&(el.target==='_blank'||el.rel==='noopener')){e.preventDefault();e.stopPropagation();return false;} el=el.parentElement; }
+  },true);
+  window.addEventListener('beforeunload',function(e){e.preventDefault();e.returnValue='';},true);
+})();
+</script>
 <style>
-/* Hide Chromecast / AirPlay / Cast icon */
 .jw-icon-cast,.jw-cast,[class*="cast-btn"],[class*="chromecast"],
 [class*="airplay"],[class*="Airplay"],[class*="AirPlay"],
 .plyr__control--airplay,.plyr__control--cast,
 [aria-label*="Cast"],[title*="Cast"],[title*="cast"],
-[data-tooltip*="Cast"],[data-tooltip*="cast"],
-/* Hide Server / Source selector icon */
 [class*="btn-server"],[class*="server-btn"],[class*="op-servers"],
 [class*="servers-list"],[class*="server-item"],[class*="source-btn"],
 [class*="provider-btn"],[class*="btn-source"],
 [aria-label*="Server"],[title*="Server"],[title*="server"],
 [data-tooltip*="Server"],[data-tooltip*="server"] {
-  display:none!important;
-  visibility:hidden!important;
-  pointer-events:none!important;
-  width:0!important;
-  height:0!important;
-  overflow:hidden!important;
+  display:none!important;visibility:hidden!important;pointer-events:none!important;
+  width:0!important;height:0!important;overflow:hidden!important;
 }
 </style>`;
 
