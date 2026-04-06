@@ -29,8 +29,8 @@ function DetailContent() {
   const [descExpanded, setDescExpanded] = useState(false);
   const [posterError, setPosterError] = useState(false);
   const [subtitles, setSubtitles] = useState<any[]>([]);
-  const [clickShield, setClickShield] = useState(true);
   const historyRecorded = useRef('');
+  const autoStarted = useRef(false);
   const playerRef = useRef<HTMLDivElement>(null);
   const episodesRef = useRef<HTMLDivElement>(null);
 
@@ -65,8 +65,6 @@ function DetailContent() {
   // ── Anti-popup: block ALL popups/new tabs/redirects globally ──
   useEffect(() => {
     if (!embedUrl) return;
-    setClickShield(true);
-
     // 1. Override window.open completely
     const origOpen = window.open;
     const fakeWin = { focus(){}, blur(){}, close(){}, closed: true, document: { write(){} }, location: { href: '' } };
@@ -189,6 +187,20 @@ function DetailContent() {
     startStream(ep);
   }, [startStream]);
 
+  // ── Auto-start: يبدأ الفيديو تلقائياً بعد تحميل البيانات ──
+  useEffect(() => {
+    if (!detail || loading || autoStarted.current) return;
+    autoStarted.current = true;
+    if (isSeries) {
+      const firstEp = (detail.episodes || []).find(e => e.season === 1) || (detail.episodes || [])[0];
+      const ep = firstEp || ({ season: 1, episode: 1 } as VidsrcEpisode);
+      setCurrentEpisode(ep);
+      startStream(ep);
+    } else {
+      startStream();
+    }
+  }, [detail, loading, isSeries, startStream]);
+
   const seasons: number[] = detail?.seasons || [];
   const episodes: VidsrcEpisode[] = (detail?.episodes || []).filter(e => e.season === currentSeason);
 
@@ -266,16 +278,6 @@ function DetailContent() {
             {/* Close button only */}
             <button onClick={() => { setEmbedUrl(''); setStreamError(''); }}
               className="absolute top-2 right-2 z-10 w-8 h-8 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center hover:bg-black/80 transition text-white/50 hover:text-white text-lg leading-none">✕</button>
-            {/* Click shield — absorbs first click (ad trigger) then disappears */}
-            {clickShield && (
-              <div className="absolute inset-0 z-[15] flex items-center justify-center cursor-pointer bg-transparent"
-                onClick={(e) => { e.preventDefault(); e.stopPropagation(); setClickShield(false); }}>
-                <div className="bg-black/70 backdrop-blur-sm rounded-2xl px-6 py-3 flex items-center gap-2 pointer-events-none">
-                  <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-                  <span className="text-white text-sm font-semibold">اضغط لتشغيل</span>
-                </div>
-              </div>
-            )}
             <iframe
               key={embedUrl}
               src={embedUrl}
@@ -302,19 +304,6 @@ function DetailContent() {
           </div>
         )}
 
-        {/* Big Play Button overlay (not active) */}
-        {!isActive && (
-          <div className="absolute inset-0 flex items-center justify-center z-10">
-            <button
-              onClick={() => isSeries ? handleEpisodePlay(episodes[0] || { season: 1, episode: 1 } as VidsrcEpisode) : startStream()}
-              className="group flex items-center gap-3 bg-brand-primary hover:bg-brand-dark text-black font-black px-8 py-4 rounded-2xl text-lg shadow-2xl shadow-brand-primary/40 transition-all hover:scale-105 active:scale-95">
-              <svg className="w-7 h-7" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M8 5v14l11-7z" />
-              </svg>
-              {isSeries ? (loading ? 'تحميل...' : `الحلقة ${currentEpisode?.episode || 1}`) : 'مشاهدة الآن'}
-            </button>
-          </div>
-        )}
 
         {/* Back button */}
         <button onClick={() => router.back()}
