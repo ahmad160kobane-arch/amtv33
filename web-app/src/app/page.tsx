@@ -1,33 +1,18 @@
 'use client';
 import React, { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { fetchVidsrcHome, fetchFreeChannels, fetchLuluHome, VidsrcItem, FreeChannel, LuluItem } from '@/constants/api';
+import { fetchFreeChannels, fetchLuluHome, FreeChannel, LuluItem } from '@/constants/api';
 import ContentRow from '@/components/ContentRow';
 import HeroSlider from '@/components/HeroSlider';
 import { SkeletonRow, SkeletonHero } from '@/components/Skeleton';
 
-function toContentItem(v: VidsrcItem) {
-  return { id: v.id, title: v.title, poster: v.poster, vod_type: v.vod_type, year: v.year, rating: v.rating };
-}
 function luluToContentItem(v: LuluItem) {
   return { id: v.id, title: v.title, poster: v.poster, vod_type: v.vod_type, year: v.year, rating: v.rating, source: 'lulu' };
 }
 
-function toHeroItem(v: VidsrcItem) {
-  return {
-    id: v.id, title: v.title, poster: v.poster,
-    backdrop: v.backdrop || v.poster,
-    vod_type: v.vod_type, year: v.year, rating: v.rating,
-    genres: v.genres || [],
-    tmdb_id: v.tmdb_id || v.id,
-  } as any;
-}
 
 export default function HomePage() {
   const router = useRouter();
-  const [movies, setMovies] = useState<VidsrcItem[]>([]);
-  const [tvShows, setTvShows] = useState<VidsrcItem[]>([]);
-  const [trending, setTrending] = useState<VidsrcItem[]>([]);
   const [channels, setChannels] = useState<FreeChannel[]>([]);
   const [logoErrors, setLogoErrors] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
@@ -36,14 +21,10 @@ export default function HomePage() {
 
   const loadData = useCallback(async () => {
     try {
-      const [homeData, chData, luluData] = await Promise.all([
-        fetchVidsrcHome(),
+      const [chData, luluData] = await Promise.all([
         fetchFreeChannels({ limit: 12 }),
         fetchLuluHome(),
       ]);
-      setMovies(homeData.latestMovies || []);
-      setTvShows(homeData.latestTvShows || []);
-      setTrending(homeData.trending || []);
       setChannels(chData?.channels || []);
       setLuluMovies(luluData.latestMovies || []);
       setLuluSeries(luluData.latestSeries || []);
@@ -56,7 +37,7 @@ export default function HomePage() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  const heroItems = [...(trending.slice(0, 3)), ...(movies.slice(0, 2)), ...(tvShows.slice(0, 1))].map(toHeroItem);
+  const heroItems = luluMovies.slice(0, 5).map(v => ({ id: v.id, title: v.title, poster: v.poster, backdrop: v.poster, vod_type: v.vod_type, year: v.year, rating: v.rating, genres: [], tmdb_id: v.id, source: 'lulu' }));
 
   return (
     <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-20 md:pb-6">
@@ -130,20 +111,11 @@ export default function HomePage() {
           </>
         ) : (
           <>
-            {trending.length > 0 && (
-              <ContentRow title="الأكثر مشاهدةً" items={trending.map(toContentItem)} seeAllHref="/allcontent" showBadge />
-            )}
             {luluMovies.length > 0 && (
-              <ContentRow title="🎬 أفلام LuluStream" items={luluMovies.map(luluToContentItem)} seeAllHref="/allcontent?type=movie" showBadge />
+              <ContentRow title="أحدث الأفلام" items={luluMovies.map(luluToContentItem)} seeAllHref="/allcontent?type=movie" showBadge />
             )}
             {luluSeries.length > 0 && (
-              <ContentRow title="📺 مسلسلات LuluStream" items={luluSeries.map(luluToContentItem)} seeAllHref="/allcontent?type=series" showBadge />
-            )}
-            {movies.length > 0 && (
-              <ContentRow title="أحدث الأفلام" items={movies.map(toContentItem)} seeAllHref="/allcontent?type=movie" showBadge />
-            )}
-            {tvShows.length > 0 && (
-              <ContentRow title="أحدث المسلسلات" items={tvShows.map(toContentItem)} seeAllHref="/allcontent?type=series" showBadge />
+              <ContentRow title="أحدث المسلسلات" items={luluSeries.map(luluToContentItem)} seeAllHref="/allcontent?type=series" showBadge />
             )}
           </>
         )}

@@ -89,6 +89,7 @@ export interface VidsrcDetail {
   trailer?: string;
   seasons?: number[];      // array of season numbers e.g. [1, 2, 3]
   episodes?: VidsrcEpisode[];
+  luluHls?: string;
 }
 
 export interface VidsrcEpisode {
@@ -100,6 +101,7 @@ export interface VidsrcEpisode {
   thumbnail?: string;
   released?: string;
   air_date?: string;
+  luluHls?: string;
 }
 
 export interface UserProfile {

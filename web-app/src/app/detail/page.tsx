@@ -57,7 +57,7 @@ function DetailContent() {
             episode : e.episode,
             season  : e.season,
             title   : e.title,
-            ext     : e.ext || 'mp4',
+            luluHls : e.hlsUrl,
           }));
           const seasonNums = Array.from(new Set(episodes.map(e => e.season))).sort((a, b) => a - b);
           setDetail({
@@ -65,12 +65,13 @@ function DetailContent() {
             title      : lData.title,
             poster     : lData.poster || paramPoster,
             backdrop   : lData.backdrop || lData.poster || paramPoster,
-            description: lData.genre ? `🌐 ${lData.lang || ''}  🎭 ${lData.genre}` : '',
+            description: [lData.lang && `🌐 ${lData.lang}`, lData.genre && `🎭 ${lData.genre}`].filter(Boolean).join('   '),
             vod_type   : lData.vod_type,
             year       : lData.year || '',
             rating     : lData.rating || '',
             seasons    : seasonNums,
             episodes,
+            luluHls    : lData.hlsUrl,
           } as VidsrcDetail);
         }
       } else {
@@ -195,13 +196,44 @@ function DetailContent() {
     };
 
     try {
-      // ── 1. جرب LuluStream أولاً (بدون حد اتصال، HLS مباشر) ──
-      const luluOpts = ep
+      // ── 1. مصدر LuluStream: استعمل hlsUrl المخزّن مباشرة ──
+      if (sourceLulu) {
+        const directHls = ep ? ep.luluHls : detail?.luluHls;
+        if (directHls) {
+          setStreamUrl(directHls);
+          recordHistory(ep ? `${contentId}_${ep.season}_${ep.episode}` : contentId);
+          setStreamLoading(false);
+          return;
+        }
+        // fallback: requestLuluStream بـ id مباشر
+        const luluOpts = ep
+          ? { type: 'series' as const, ep_id: ep.id || '' }
+          : { type: 'movie' as const, id: contentId };
+        const lulu = await requestLuluStream(luluOpts);
+        if (lulu.available && lulu.hlsUrl) {
+          setStreamUrl(lulu.hlsUrl);
+          recordHistory(ep ? `${contentId}_${ep.season}_${ep.episode}` : contentId);
+          setStreamLoading(false);
+          return;
+        }
+        // آخر fallback: embed
+        if (lulu.embedUrl) {
+          setEmbedSources([{ url: lulu.embedUrl, name: 'LuluStream' }]);
+          setEmbedUrl(lulu.embedUrl);
+          setStreamLoading(false);
+          return;
+        }
+        setStreamError('لم يتوفر الفيديو بعد، جاري المعالجة...');
+        setStreamLoading(false);
+        return;
+      }
+
+      // ── 2. مصدر آخر: جرب LuluStream بالـ ID ──
+      const luluOpts2 = ep
         ? { type: 'series' as const, ep_id: ep.id || '' }
         : { type: 'movie' as const, id: contentId };
-      const hasLuluId = ep ? !!ep.id : !!contentId;
-      if (hasLuluId) {
-        const lulu = await requestLuluStream(luluOpts);
+      if (ep?.id || contentId) {
+        const lulu = await requestLuluStream(luluOpts2);
         if (lulu.available && lulu.hlsUrl) {
           setStreamUrl(lulu.hlsUrl);
           recordHistory(ep ? `${contentId}_${ep.season}_${ep.episode}` : contentId);
