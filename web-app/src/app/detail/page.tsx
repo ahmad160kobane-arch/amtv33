@@ -257,7 +257,6 @@ function DetailContent() {
               src={embedUrl}
               className="flex-1 w-full border-0"
               allowFullScreen
-              sandbox="allow-scripts allow-same-origin allow-forms allow-presentation allow-pointer-lock"
               allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
               referrerPolicy="no-referrer-when-downgrade"
             />
