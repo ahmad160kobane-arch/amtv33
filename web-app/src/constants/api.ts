@@ -708,6 +708,77 @@ export async function requestLuluStream(opts: {
   } catch { return { available: false }; }
 }
 
+// ─── LuluStream: Browse & Detail ────────────────────────
+export interface LuluItem {
+  id: string;
+  title: string;
+  poster: string;
+  year: string;
+  genre: string;
+  rating: string;
+  lang: string;
+  cat?: string;
+  vod_type: 'movie' | 'series';
+  episodeCount?: number;
+}
+
+export interface LuluEpisode {
+  id: string;
+  episode: number;
+  season: number;
+  title: string;
+  fileCode: string;
+  hlsUrl: string;
+  embedUrl: string;
+  ext: string;
+}
+
+export interface LuluSeason {
+  season: number;
+  episodes: LuluEpisode[];
+}
+
+export interface LuluDetail extends LuluItem {
+  backdrop?: string;
+  seasons?: LuluSeason[];
+  episodes?: LuluEpisode[];
+  fileCode?: string;
+  hlsUrl?: string;
+  embedUrl?: string;
+}
+
+export async function fetchLuluHome(): Promise<{ latestMovies: LuluItem[]; latestSeries: LuluItem[] }> {
+  try {
+    const res = await fetch(`${LULU_CLOUD}/api/lulu/home`);
+    if (!res.ok) throw new Error();
+    return await res.json();
+  } catch { return { latestMovies: [], latestSeries: [] }; }
+}
+
+export async function fetchLuluList(params?: {
+  type?: 'movie' | 'series'; page?: number; search?: string; cat?: string;
+}): Promise<{ items: LuluItem[]; page: number; total: number; hasMore: boolean }> {
+  try {
+    const p = new URLSearchParams({ type: params?.type || 'movie', page: String(params?.page || 1) });
+    if (params?.search) p.set('search', params.search);
+    if (params?.cat)    p.set('cat', params.cat);
+    const res = await fetch(`${LULU_CLOUD}/api/lulu/list?${p}`);
+    if (!res.ok) throw new Error();
+    return await res.json();
+  } catch { return { items: [], page: 1, total: 0, hasMore: false }; }
+}
+
+export async function fetchLuluDetail(id: string, type: 'movie' | 'series'): Promise<LuluDetail | null> {
+  try {
+    const p = new URLSearchParams({ type });
+    if (type === 'movie')  p.set('id', id);
+    else                   p.set('show', id.startsWith('lulu:') ? id.slice(5) : id);
+    const res = await fetch(`${LULU_CLOUD}/api/lulu/detail?${p}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
 // ─── Session Management (cloud-server) ──────────────────
 const CLOUD_URL = 'http://62.171.153.204:8090';
 

@@ -1,7 +1,7 @@
 'use client';
 import React, { useEffect, useState, useCallback, useRef, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { fetchVidsrcDetail, requestVidsrcStream, requestLuluStream, checkFavorite, toggleFavorite, addWatchHistory, isLoggedIn, VidsrcDetail, VidsrcEpisode } from '@/constants/api';
+import { fetchVidsrcDetail, fetchLuluDetail, requestVidsrcStream, requestLuluStream, checkFavorite, toggleFavorite, addWatchHistory, isLoggedIn, VidsrcDetail, VidsrcEpisode } from '@/constants/api';
 import VodPlayer from '@/components/VodPlayer';
 
 /* ─── YouTube-style Detail Page ─────────────────────────────────── */
@@ -10,9 +10,10 @@ function DetailContent() {
   const params = useSearchParams();
   const router = useRouter();
   const contentId = params.get('id') || '';
-  const vodType = params.get('type') || params.get('vodType') || 'movie';
+  const vodType   = params.get('type') || params.get('vodType') || 'movie';
   const paramTitle = params.get('title') || '';
   const paramPoster = params.get('poster') || '';
+  const sourceLulu  = params.get('source') === 'lulu';
 
   const [detail, setDetail] = useState<VidsrcDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -45,8 +46,37 @@ function DetailContent() {
   const loadData = useCallback(async () => {
     if (!contentId) return;
     try {
-      const data = await fetchVidsrcDetail(fetchType as 'movie' | 'tv', contentId);
-      setDetail(data);
+      if (sourceLulu) {
+        // ── جلب التفاصيل من LuluStream مباشرة ──
+        const luluType = (vodType === 'series' || vodType === 'tv') ? 'series' : 'movie';
+        const lData = await fetchLuluDetail(contentId, luluType);
+        if (lData) {
+          // تحويل LuluDetail → VidsrcDetail
+          const episodes: VidsrcEpisode[] = (lData.episodes || []).map(e => ({
+            id      : e.id,
+            episode : e.episode,
+            season  : e.season,
+            title   : e.title,
+            ext     : e.ext || 'mp4',
+          }));
+          const seasonNums = Array.from(new Set(episodes.map(e => e.season))).sort((a, b) => a - b);
+          setDetail({
+            id         : lData.id,
+            title      : lData.title,
+            poster     : lData.poster || paramPoster,
+            backdrop   : lData.backdrop || lData.poster || paramPoster,
+            description: lData.genre ? `🌐 ${lData.lang || ''}  🎭 ${lData.genre}` : '',
+            vod_type   : lData.vod_type,
+            year       : lData.year || '',
+            rating     : lData.rating || '',
+            seasons    : seasonNums,
+            episodes,
+          } as VidsrcDetail);
+        }
+      } else {
+        const data = await fetchVidsrcDetail(fetchType as 'movie' | 'tv', contentId);
+        setDetail(data);
+      }
       const logged = await isLoggedIn();
       setLoggedIn(logged);
       if (logged) {
@@ -58,7 +88,7 @@ function DetailContent() {
     } finally {
       setLoading(false);
     }
-  }, [contentId, fetchType]);
+  }, [contentId, fetchType, sourceLulu, vodType, paramPoster]);
 
   useEffect(() => { loadData(); }, [loadData]);
 

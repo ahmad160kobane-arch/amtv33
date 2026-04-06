@@ -9,6 +9,7 @@ interface ContentItem {
   year?: string;
   rating?: string;
   tmdb_id?: string;
+  source?: string;
 }
 
 interface Props {
@@ -18,7 +19,7 @@ interface Props {
 export default function ContentCard({ item }: Props) {
   const [imgError, setImgError] = useState(false);
   const type = item.vod_type === 'series' ? 'series' : 'movie';
-  const href = `/detail?id=${item.id}&type=${type}&title=${encodeURIComponent(item.title)}&poster=${encodeURIComponent(item.poster || '')}`;
+  const href = `/detail?id=${item.id}&type=${type}&title=${encodeURIComponent(item.title)}&poster=${encodeURIComponent(item.poster || '')}${item.source ? '&source=' + item.source : ''}`;
 
   return (
     <Link href={href} className="block w-full group cursor-pointer card-hover">
