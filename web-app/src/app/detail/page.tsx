@@ -415,7 +415,8 @@ function DetailContent() {
   );
 
   /* ── Episodes sidebar / list ── */
-  const EpisodesPanel = ({ compact = false }: { compact?: boolean }) => {
+  const EpisodesPanel = (props?: { compact?: boolean }) => {
+    const compact = props?.compact ?? false;
     if (!isSeries) return null;
     return (
       <div ref={episodesRef}>
@@ -506,15 +507,15 @@ function DetailContent() {
           <div className="flex-1 min-w-0">
             {/* Player — always at top, no margin on mobile */}
             <div className="lg:rounded-2xl overflow-hidden shadow-2xl">
-              <PlayerArea />
+              {PlayerArea()}
             </div>
 
             {/* Info below player */}
-            <InfoSection />
+            {InfoSection()}
 
             {/* Episodes on mobile (below info) */}
             <div className="lg:hidden pb-4">
-              <EpisodesPanel />
+              {EpisodesPanel()}
             </div>
           </div>
 
@@ -527,7 +528,7 @@ function DetailContent() {
                     {loading ? '...' : detail?.title || title}
                   </h2>
                 </div>
-                <EpisodesPanel compact />
+                {EpisodesPanel({ compact: true })}
               </div>
             </div>
           )}
