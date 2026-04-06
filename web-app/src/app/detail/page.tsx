@@ -62,30 +62,54 @@ function DetailContent() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  // ── Anti-popup: block ALL popups/new tabs globally ──
+  // ── Anti-popup: block ALL popups/new tabs/redirects globally ──
   useEffect(() => {
     if (!embedUrl) return;
     setClickShield(true);
 
-    // Override window.open to prevent any popup
+    // 1. Override window.open completely
     const origOpen = window.open;
-    window.open = function () { return null; };
+    const fakeWin = { focus(){}, blur(){}, close(){}, closed: true, document: { write(){} }, location: { href: '' } };
+    window.open = function () { return fakeWin as any; };
 
-    // Block clicks that try to open new tabs via anchor tags
-    const blockAnchors = (e: MouseEvent) => {
-      const a = (e.target as HTMLElement)?.closest?.('a[target="_blank"]') as HTMLAnchorElement | null;
-      if (a) { e.preventDefault(); e.stopPropagation(); }
+    // 2. Block clicks/mousedown/pointerdown on ad links
+    const blockEvent = (e: Event) => {
+      let el = e.target as HTMLElement | null;
+      while (el && el !== document.body) {
+        if (el.tagName === 'A') {
+          const a = el as HTMLAnchorElement;
+          const href = a.getAttribute('href') || '';
+          const tgt = a.getAttribute('target') || '';
+          if (tgt === '_blank' || href.startsWith('javascript:') ||
+              /\/\/(ad|click|track|pop)/.test(href)) {
+            e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+            return;
+          }
+        }
+        el = el.parentElement;
+      }
     };
-    document.addEventListener('click', blockAnchors, true);
+    const evts = ['click', 'mousedown', 'pointerdown', 'auxclick', 'touchstart'] as const;
+    evts.forEach(evt => document.addEventListener(evt, blockEvent as EventListener, true));
 
-    // Re-focus our window if something steals focus
-    const refocus = () => { setTimeout(() => window.focus(), 30); };
+    // 3. Re-focus window when popunder steals focus
+    const refocus = () => { setTimeout(() => window.focus(), 50); };
     window.addEventListener('blur', refocus);
+
+    // 4. Block any programmatic navigation attempts from ads
+    const blockNav = (e: BeforeUnloadEvent) => {
+      // only block if triggered by ad scripts (not user navigation)
+      if (document.activeElement?.tagName === 'IFRAME') {
+        e.preventDefault(); e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', blockNav, true);
 
     return () => {
       window.open = origOpen;
-      document.removeEventListener('click', blockAnchors, true);
+      evts.forEach(evt => document.removeEventListener(evt, blockEvent as EventListener, true));
       window.removeEventListener('blur', refocus);
+      window.removeEventListener('beforeunload', blockNav, true);
     };
   }, [embedUrl]);
 
