@@ -14,8 +14,8 @@ function buildEmbedUrls(tmdbId, imdbId, type, season, episode) {
     {
       name: '',
       url: isTv
-        ? `https://vidlink.pro/tv/${tmdbId}/${season}/${episode}?primaryLang=ar&player=jw&multiSubs=true`
-        : `https://vidlink.pro/movie/${tmdbId}?primaryLang=ar&player=jw&multiSubs=true`,
+        ? `https://vidsrc.xyz/embed/tv?tmdb=${tmdbId}&season=${season}&episode=${episode}`
+        : `https://vidsrc.xyz/embed/movie?tmdb=${tmdbId}`,
     },
   ];
 
