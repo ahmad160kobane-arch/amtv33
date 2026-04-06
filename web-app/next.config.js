@@ -79,6 +79,7 @@ const nextConfig = {
       { source: '/xtream-pipe/:path*',  destination: `${CLOUD_URL}/xtream-pipe/:path*`  },
       { source: '/vod-play/:path*',     destination: `${CLOUD_URL}/vod-play/:path*`     },
       { source: '/proxy/embed-clean',  destination: `${CLOUD_URL}/proxy/embed-clean`  },
+      { source: '/proxy/embed-fwd',    destination: `${CLOUD_URL}/proxy/embed-fwd`    },
       // Backend API (port 3000) — everything else
       { source: '/api/:path*',          destination: `${BACKEND_URL}/api/:path*`         },
     ];

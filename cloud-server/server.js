@@ -1100,19 +1100,28 @@ dispatchEvent:function(){return true},location:{href:'',replace:function(){},ass
 window.open=function(){return fakeWin};
 try{Object.defineProperty(window,'open',{value:window.open,writable:false,configurable:false})}catch(e){}
 
-// 2. Redirect relative fetch/XHR to original server
+// 2. Route ALL fetch/XHR through our proxy to avoid CORS
 var BASE='${baseHref}';
+var FWD='/proxy/embed-fwd?url=';
 var _fetch=window.fetch;
 window.fetch=function(u,o){
   if(typeof u==='string'){
-    if(u.startsWith('/'))u=BASE+u;
-    else if(!u.startsWith('http')&&!u.startsWith('blob:')&&!u.startsWith('data:'))u=BASE+'/'+u;
-  }else if(u&&u.url&&u.url.startsWith('/')){u=new Request(BASE+u.url,u)}
+    if(u.startsWith('/'))u=FWD+encodeURIComponent(BASE+u);
+    else if(u.startsWith(BASE))u=FWD+encodeURIComponent(u);
+    else if(!u.startsWith('http')&&!u.startsWith('blob:')&&!u.startsWith('data:'))u=FWD+encodeURIComponent(BASE+'/'+u);
+  }else if(u&&u.url){
+    var ru=u.url;
+    if(ru.startsWith('/'))u=new Request(FWD+encodeURIComponent(BASE+ru),u);
+    else if(ru.startsWith(BASE))u=new Request(FWD+encodeURIComponent(ru),u);
+  }
   return _fetch.call(this,u,o);
 };
 var _xo=XMLHttpRequest.prototype.open;
 XMLHttpRequest.prototype.open=function(m,u){
-  if(typeof u==='string'&&u.startsWith('/'))arguments[1]=BASE+u;
+  if(typeof u==='string'){
+    if(u.startsWith('/'))arguments[1]=FWD+encodeURIComponent(BASE+u);
+    else if(u.startsWith(BASE))arguments[1]=FWD+encodeURIComponent(u);
+  }
   return _xo.apply(this,arguments);
 };
 
@@ -1156,6 +1165,51 @@ div[style*="z-index: 99999"],div[style*="z-index:99999"]{display:none!important;
   } catch (e) {
     console.error('[EmbedClean]', e.message);
     res.status(502).send('<html><body style="background:#000;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;margin:0"><p>خطأ في تحميل المشغّل</p></body></html>');
+  }
+});
+
+// ═══ Embed Forward Proxy — forwards vidlink.pro API calls to avoid CORS ═══
+app.all('/proxy/embed-fwd', async (req, res) => {
+  const rawUrl = req.query.url;
+  if (!rawUrl) return res.status(400).end();
+  const targetUrl = decodeURIComponent(rawUrl);
+
+  try {
+    const upHeaders = {
+      'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Referer': 'https://vidlink.pro/',
+      'Origin': 'https://vidlink.pro',
+    };
+    if (req.headers['accept']) upHeaders['Accept'] = req.headers['accept'];
+    if (req.headers['accept-language']) upHeaders['Accept-Language'] = req.headers['accept-language'];
+    if (req.headers['content-type']) upHeaders['Content-Type'] = req.headers['content-type'];
+    if (req.headers['range']) upHeaders['Range'] = req.headers['range'];
+
+    const fetchOpts = { method: req.method, headers: upHeaders, signal: AbortSignal.timeout(20000) };
+    if (req.method !== 'GET' && req.method !== 'HEAD' && req.body) {
+      fetchOpts.body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+    }
+
+    const upstream = await fetch(targetUrl, fetchOpts);
+    res.status(upstream.status);
+
+    const fwd = ['content-type','content-length','content-range','accept-ranges','cache-control','etag','last-modified'];
+    for (const h of fwd) { const v = upstream.headers.get(h); if (v) res.setHeader(h, v); }
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', '*');
+    res.setHeader('Access-Control-Allow-Methods', '*');
+
+    const ct = upstream.headers.get('content-type') || '';
+    if (ct.includes('text/') || ct.includes('json') || ct.includes('javascript') || ct.includes('xml')) {
+      const text = await upstream.text();
+      res.send(text);
+    } else {
+      const { Readable } = require('stream');
+      Readable.fromWeb(upstream.body).pipe(res);
+    }
+  } catch (e) {
+    console.error('[EmbedFwd]', e.message);
+    if (!res.headersSent) res.status(502).json({ error: e.message });
   }
 });
 
