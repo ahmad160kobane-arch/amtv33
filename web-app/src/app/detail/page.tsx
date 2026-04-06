@@ -29,6 +29,7 @@ function DetailContent() {
   const [descExpanded, setDescExpanded] = useState(false);
   const [posterError, setPosterError] = useState(false);
   const [subtitles, setSubtitles] = useState<any[]>([]);
+  const [clickShield, setClickShield] = useState(true);
   const historyRecorded = useRef('');
   const playerRef = useRef<HTMLDivElement>(null);
   const episodesRef = useRef<HTMLDivElement>(null);
@@ -61,9 +62,10 @@ function DetailContent() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  // ── Anti-popup: auto-refocus when ad steals focus + block page redirect ──
+  // ── Anti-popup: reset click shield on new embed + refocus on blur ──
   useEffect(() => {
     if (!embedUrl) return;
+    setClickShield(true);
     const refocus = () => { setTimeout(() => window.focus(), 50); };
     const blockNav = (e: BeforeUnloadEvent) => { e.preventDefault(); };
     window.addEventListener('blur', refocus);
@@ -227,6 +229,16 @@ function DetailContent() {
             {/* Close button only */}
             <button onClick={() => { setEmbedUrl(''); setStreamError(''); }}
               className="absolute top-2 right-2 z-10 w-8 h-8 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center hover:bg-black/80 transition text-white/50 hover:text-white text-lg leading-none">✕</button>
+            {/* Click shield — absorbs first click (ad trigger) then disappears */}
+            {clickShield && (
+              <div className="absolute inset-0 z-[15] flex items-center justify-center cursor-pointer bg-transparent"
+                onClick={(e) => { e.preventDefault(); e.stopPropagation(); setClickShield(false); }}>
+                <div className="bg-black/70 backdrop-blur-sm rounded-2xl px-6 py-3 flex items-center gap-2 pointer-events-none">
+                  <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                  <span className="text-white text-sm font-semibold">اضغط لتشغيل</span>
+                </div>
+              </div>
+            )}
             <iframe
               key={embedUrl}
               src={embedUrl}
