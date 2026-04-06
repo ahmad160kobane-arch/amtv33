@@ -234,7 +234,6 @@ function DetailContent() {
               allowFullScreen
               allow="autoplay; fullscreen; picture-in-picture; encrypted-media; clipboard-write"
               referrerPolicy="no-referrer-when-downgrade"
-              sandbox="allow-scripts allow-same-origin allow-forms allow-presentation allow-pointer-lock"
             />
             {/* Arabic subtitle download links */}
             {subtitles.length > 0 && (
