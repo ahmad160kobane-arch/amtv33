@@ -62,17 +62,30 @@ function DetailContent() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  // ── Anti-popup: reset click shield on new embed + refocus on blur ──
+  // ── Anti-popup: block ALL popups/new tabs globally ──
   useEffect(() => {
     if (!embedUrl) return;
     setClickShield(true);
-    const refocus = () => { setTimeout(() => window.focus(), 50); };
-    const blockNav = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+
+    // Override window.open to prevent any popup
+    const origOpen = window.open;
+    window.open = function () { return null; };
+
+    // Block clicks that try to open new tabs via anchor tags
+    const blockAnchors = (e: MouseEvent) => {
+      const a = (e.target as HTMLElement)?.closest?.('a[target="_blank"]') as HTMLAnchorElement | null;
+      if (a) { e.preventDefault(); e.stopPropagation(); }
+    };
+    document.addEventListener('click', blockAnchors, true);
+
+    // Re-focus our window if something steals focus
+    const refocus = () => { setTimeout(() => window.focus(), 30); };
     window.addEventListener('blur', refocus);
-    window.addEventListener('beforeunload', blockNav);
+
     return () => {
+      window.open = origOpen;
+      document.removeEventListener('click', blockAnchors, true);
       window.removeEventListener('blur', refocus);
-      window.removeEventListener('beforeunload', blockNav);
     };
   }, [embedUrl]);
 
@@ -244,8 +257,9 @@ function DetailContent() {
               src={embedUrl}
               className="flex-1 w-full border-0"
               allowFullScreen
-              allow="autoplay; fullscreen; picture-in-picture; encrypted-media; clipboard-write"
-              referrerPolicy="no-referrer-when-downgrade"
+              sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"
+              allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
+              referrerPolicy="no-referrer"
             />
             {/* Arabic subtitle download links */}
             {subtitles.length > 0 && (
