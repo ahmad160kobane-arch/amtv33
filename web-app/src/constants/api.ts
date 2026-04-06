@@ -90,6 +90,7 @@ export interface VidsrcDetail {
   seasons?: number[];      // array of season numbers e.g. [1, 2, 3]
   episodes?: VidsrcEpisode[];
   luluHls?: string;
+  luluEmbed?: string;
 }
 
 export interface VidsrcEpisode {
@@ -102,6 +103,7 @@ export interface VidsrcEpisode {
   released?: string;
   air_date?: string;
   luluHls?: string;
+  luluEmbed?: string;
 }
 
 export interface UserProfile {

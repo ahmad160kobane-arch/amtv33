@@ -53,11 +53,12 @@ function DetailContent() {
         if (lData) {
           // تحويل LuluDetail → VidsrcDetail
           const episodes: VidsrcEpisode[] = (lData.episodes || []).map(e => ({
-            id      : e.id,
-            episode : e.episode,
-            season  : e.season,
-            title   : e.title,
-            luluHls : e.hlsUrl,
+            id        : e.id,
+            episode   : e.episode,
+            season    : e.season,
+            title     : e.title,
+            luluHls   : e.hlsUrl,
+            luluEmbed : e.embedUrl,
           }));
           const seasonNums = Array.from(new Set(episodes.map(e => e.season))).sort((a, b) => a - b);
           setDetail({
@@ -72,6 +73,7 @@ function DetailContent() {
             seasons    : seasonNums,
             episodes,
             luluHls    : lData.hlsUrl,
+            luluEmbed  : lData.embedUrl,
           } as VidsrcDetail);
         }
       } else {
@@ -196,30 +198,29 @@ function DetailContent() {
     };
 
     try {
-      // ── 1. مصدر LuluStream: استعمل hlsUrl المخزّن مباشرة ──
+      // ── 1. مصدر LuluStream: استعمل embedUrl (إيفرام LuluStream) ──
       if (sourceLulu) {
-        const directHls = ep ? ep.luluHls : detail?.luluHls;
-        if (directHls) {
-          setStreamUrl(directHls);
+        const embedU = ep ? ep.luluEmbed : detail?.luluEmbed;
+        if (embedU) {
+          setEmbedSources([{ url: embedU, name: 'LuluStream' }]);
+          setEmbedSourceIdx(0);
+          setEmbedUrl(embedU);
+          setStreamUrl('');
           recordHistory(ep ? `${contentId}_${ep.season}_${ep.episode}` : contentId);
           setStreamLoading(false);
           return;
         }
-        // fallback: requestLuluStream بـ id مباشر
+        // fallback: requestLuluStream
         const luluOpts = ep
           ? { type: 'series' as const, ep_id: ep.id || '' }
           : { type: 'movie' as const, id: contentId };
         const lulu = await requestLuluStream(luluOpts);
-        if (lulu.available && lulu.hlsUrl) {
-          setStreamUrl(lulu.hlsUrl);
-          recordHistory(ep ? `${contentId}_${ep.season}_${ep.episode}` : contentId);
-          setStreamLoading(false);
-          return;
-        }
-        // آخر fallback: embed
         if (lulu.embedUrl) {
           setEmbedSources([{ url: lulu.embedUrl, name: 'LuluStream' }]);
+          setEmbedSourceIdx(0);
           setEmbedUrl(lulu.embedUrl);
+          setStreamUrl('');
+          recordHistory(ep ? `${contentId}_${ep.season}_${ep.episode}` : contentId);
           setStreamLoading(false);
           return;
         }
