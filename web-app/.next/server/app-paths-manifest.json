@@ -8,11 +8,11 @@
   "/favorites/page": "app/favorites/page.js",
   "/history/page": "app/history/page.js",
   "/kids/page": "app/kids/page.js",
-  "/offline/page": "app/offline/page.js",
   "/live/page": "app/live/page.js",
-  "/page": "app/page.js",
   "/mylist/page": "app/mylist/page.js",
-  "/sports/page": "app/sports/page.js",
+  "/offline/page": "app/offline/page.js",
+  "/page": "app/page.js",
   "/subscription/page": "app/subscription/page.js",
+  "/sports/page": "app/sports/page.js",
   "/detail/page": "app/detail/page.js"
 }
