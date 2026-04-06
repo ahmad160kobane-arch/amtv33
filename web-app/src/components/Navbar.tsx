@@ -107,6 +107,7 @@ const NAV_ICONS: Record<string, React.FC<{ active: boolean }>> = {
   '/': IconHome,
   '/live': IconLive,
   '/entertainment': IconEntertainment,
+  '/kids': IconKids,
   '/mylist': IconMyList,
   '/account': IconAccount,
 };
@@ -115,6 +116,7 @@ const NAV_ITEMS = [
   { href: '/', label: 'الرئيسية' },
   { href: '/live', label: 'مباشر' },
   { href: '/entertainment', label: 'ترفيه' },
+  { href: '/kids', label: 'أطفال' },
   { href: '/mylist', label: 'قائمتي' },
   { href: '/account', label: 'حسابي' },
 ];
