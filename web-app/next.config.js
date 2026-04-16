@@ -1,6 +1,6 @@
 /** @type {import('next').NextConfig} */
-const BACKEND_URL  = process.env.BACKEND_URL  || 'http://localhost:3000';
-const CLOUD_URL    = process.env.CLOUD_URL    || 'http://localhost:8090';
+const BACKEND_URL  = process.env.BACKEND_URL  || 'http://62.171.153.204:3000';
+const CLOUD_URL    = process.env.CLOUD_URL    || 'http://62.171.153.204:8090';
 
 const SECURITY_HEADERS = [
   // Prevent this app from being embedded in other sites
