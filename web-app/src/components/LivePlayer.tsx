@@ -21,7 +21,6 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [error, setError] = useState('');
   const [buffering, setBuffering] = useState(true);
-  const [viewerCount] = useState(Math.floor(Math.random() * 50) + 5);
   const [isAtLive, setIsAtLive] = useState(true);
 
   const scheduleHide = useCallback(() => {
@@ -273,21 +272,22 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
   return (
     <div
       ref={containerRef}
-      className="relative w-full bg-black rounded-2xl overflow-hidden shadow-2xl shadow-black/40 group select-none"
-      style={{ paddingTop: isFullscreen ? '0' : '56.25%', height: isFullscreen ? '100vh' : undefined }}
+      className={`relative w-full bg-black ${isFullscreen ? '' : 'rounded-xl sm:rounded-2xl aspect-video'} overflow-hidden shadow-2xl shadow-black/40 group select-none`}
+      style={isFullscreen ? { height: '100vh' } : undefined}
       onMouseMove={scheduleHide}
+      onTouchStart={scheduleHide}
       onClick={(e) => { if ((e.target as HTMLElement).closest('button, input')) return; togglePlay(); scheduleHide(); }}
     >
       <video
         ref={videoRef}
-        className={`${isFullscreen ? 'w-full h-full' : 'absolute inset-0 w-full h-full'} object-contain bg-black`}
+        className="absolute inset-0 w-full h-full object-contain bg-black"
         playsInline
         autoPlay
       />
 
       {/* Buffering */}
       {buffering && !error && (
-        <div className={`${isFullscreen ? 'fixed' : 'absolute'} inset-0 flex items-center justify-center bg-black/40 z-20 pointer-events-none`}>
+        <div className="absolute inset-0 flex items-center justify-center bg-black/40 z-20 pointer-events-none">
           <div className="flex flex-col items-center gap-3">
             <div className="w-12 h-12 border-[3px] border-brand-primary border-t-transparent rounded-full animate-spin" />
             <span className="text-white/70 text-xs font-medium">جارٍ التحميل...</span>
@@ -297,7 +297,7 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
 
       {/* Error */}
       {error && (
-        <div className={`${isFullscreen ? 'fixed' : 'absolute'} inset-0 flex flex-col items-center justify-center bg-black/80 z-20 gap-3`}>
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 z-20 gap-3">
           <svg className="w-10 h-10 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
@@ -312,20 +312,20 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
       )}
 
       {/* Top gradient + channel info */}
-      <div className={`${isFullscreen ? 'fixed' : 'absolute'} top-0 left-0 right-0 z-10 transition-opacity duration-300 ${showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
-        <div className="bg-gradient-to-b from-black/80 via-black/40 to-transparent px-4 pt-3 pb-10">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
+      <div className={`absolute top-0 left-0 right-0 z-10 transition-opacity duration-300 ${showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+        <div className="bg-gradient-to-b from-black/80 via-black/40 to-transparent px-3 sm:px-4 pt-2 sm:pt-3 pb-8 sm:pb-10">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
               {logo && (
-                <div className="w-8 h-8 rounded-lg bg-white/10 overflow-hidden flex-shrink-0">
+                <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg bg-white/10 overflow-hidden flex-shrink-0">
                   <img src={logo} alt="" className="w-full h-full object-contain" onError={e => (e.target as HTMLImageElement).style.display = 'none'} />
                 </div>
               )}
-              <div>
-                <h3 className="text-white font-bold text-sm leading-tight">{title}</h3>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-white font-bold text-xs sm:text-sm leading-tight truncate">{title}</h3>
                 <div className="flex items-center gap-2 mt-0.5">
-                  {group && <span className="text-white/50 text-[10px]">{group}</span>}
-                  <div className="flex items-center gap-1">
+                  {group && <span className="text-white/50 text-[10px] truncate">{group}</span>}
+                  <div className="flex items-center gap-1 flex-shrink-0">
                     <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
                     <span className="text-red-400 text-[10px] font-bold">LIVE</span>
                   </div>
@@ -334,8 +334,9 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
             </div>
             {onClose && (
               <button onClick={(e) => { e.stopPropagation(); onClose(); }}
-                className="w-8 h-8 rounded-full bg-white/10 backdrop-blur-sm flex items-center justify-center hover:bg-white/20 transition">
-                <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                aria-label="إغلاق"
+                className="w-10 h-10 rounded-full bg-white/10 backdrop-blur-sm flex items-center justify-center hover:bg-white/20 active:bg-white/30 transition flex-shrink-0">
+                <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                 </svg>
               </button>
@@ -345,65 +346,60 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
       </div>
 
       {/* Bottom controls */}
-      <div className={`${isFullscreen ? 'fixed' : 'absolute'} bottom-0 left-0 right-0 z-10 transition-opacity duration-300 ${showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
-        <div className="bg-gradient-to-t from-black/80 via-black/40 to-transparent px-4 pb-3 pt-10">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              {/* Play/Pause */}
+      <div className={`absolute bottom-0 left-0 right-0 z-10 transition-opacity duration-300 ${showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+        <div className="bg-gradient-to-t from-black/80 via-black/40 to-transparent px-3 sm:px-4 pb-2 sm:pb-3 pt-8 sm:pt-10">
+          <div className="flex items-center justify-between gap-2">
+            {/* Left: play + volume */}
+            <div className="flex items-center gap-1.5 sm:gap-2">
               <button onClick={(e) => { e.stopPropagation(); togglePlay(); }}
-                className="w-9 h-9 rounded-full bg-white/10 backdrop-blur-sm flex items-center justify-center hover:bg-white/20 transition">
+                aria-label={playing ? 'إيقاف مؤقت' : 'تشغيل'}
+                className="w-10 h-10 sm:w-11 sm:h-11 rounded-full bg-white/10 backdrop-blur-sm flex items-center justify-center hover:bg-white/20 active:bg-white/30 transition">
                 {playing ? (
-                  <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M6 4h4v16H6zm8 0h4v16h-4z" /></svg>
+                  <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M6 4h4v16H6zm8 0h4v16h-4z" /></svg>
                 ) : (
-                  <svg className="w-4 h-4 text-white ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+                  <svg className="w-5 h-5 text-white ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
                 )}
               </button>
 
-              {/* Volume */}
               <button onClick={(e) => { e.stopPropagation(); toggleMute(); }}
-                className="w-9 h-9 rounded-full bg-white/10 backdrop-blur-sm flex items-center justify-center hover:bg-white/20 transition">
+                aria-label={muted ? 'إلغاء الكتم' : 'كتم'}
+                className="w-10 h-10 sm:w-11 sm:h-11 rounded-full bg-white/10 backdrop-blur-sm flex items-center justify-center hover:bg-white/20 active:bg-white/30 transition">
                 {muted || volume === 0 ? (
-                  <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" /></svg>
+                  <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" /></svg>
                 ) : (
-                  <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /></svg>
+                  <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /></svg>
                 )}
               </button>
+
+              {/* Volume slider — hidden on mobile (tap mute button instead) */}
               <input
                 type="range" min={0} max={1} step={0.05} value={muted ? 0 : volume}
                 onChange={e => { e.stopPropagation(); changeVolume(parseFloat(e.target.value)); }}
                 onClick={e => e.stopPropagation()}
-                className="w-16 h-1 appearance-none bg-white/20 rounded-full cursor-pointer accent-brand-primary [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-brand-primary"
+                aria-label="مستوى الصوت"
+                className="hidden sm:block w-20 h-1 appearance-none bg-white/20 rounded-full cursor-pointer accent-brand-primary [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-brand-primary"
               />
             </div>
 
-            <div className="flex items-center gap-2">
-              {/* Go Live button — shown when player falls behind */}
+            {/* Right: live + fullscreen */}
+            <div className="flex items-center gap-1.5 sm:gap-2">
               {!isAtLive && (
                 <button
                   onClick={(e) => { e.stopPropagation(); handleSeekLive(); }}
-                  className="flex items-center gap-1 bg-red-600 hover:bg-red-500 rounded-full px-2.5 py-1 transition animate-pulse"
+                  className="flex items-center gap-1 bg-red-600 hover:bg-red-500 active:bg-red-700 rounded-full px-3 py-1.5 transition animate-pulse"
                 >
                   <div className="w-1.5 h-1.5 rounded-full bg-white" />
-                  <span className="text-white text-[10px] font-bold">مباشر</span>
+                  <span className="text-white text-[11px] font-bold">مباشر</span>
                 </button>
               )}
 
-              {/* Viewer count badge */}
-              <div className="flex items-center gap-1 bg-white/10 backdrop-blur-sm rounded-full px-2.5 py-1">
-                <svg className="w-3 h-3 text-white/70" fill="currentColor" viewBox="0 0 20 20">
-                  <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
-                  <path fillRule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clipRule="evenodd" />
-                </svg>
-                <span className="text-white/70 text-[10px] font-bold">{viewerCount}</span>
-              </div>
-
-              {/* Fullscreen */}
               <button onClick={(e) => { e.stopPropagation(); toggleFullscreen(); }}
-                className="w-9 h-9 rounded-full bg-white/10 backdrop-blur-sm flex items-center justify-center hover:bg-white/20 transition">
+                aria-label={isFullscreen ? 'خروج من ملء الشاشة' : 'ملء الشاشة'}
+                className="w-10 h-10 sm:w-11 sm:h-11 rounded-full bg-white/10 backdrop-blur-sm flex items-center justify-center hover:bg-white/20 active:bg-white/30 transition">
                 {isFullscreen ? (
-                  <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5l5.25 5.25" /></svg>
+                  <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5l5.25 5.25" /></svg>
                 ) : (
-                  <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" /></svg>
+                  <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" /></svg>
                 )}
               </button>
             </div>

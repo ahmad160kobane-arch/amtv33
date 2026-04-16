@@ -3386,7 +3386,8 @@ app.get('/api/xtream/stream/:channelId', async (req, res) => {
 
       // hlsUrl: HLS proxy — absolute URL so browser connects directly to VPS (no Next.js middleman)
 
-      hlsUrl   : `${config.PUBLIC_URL}/proxy/live/${ch.stream_id}/index.m3u8?sid=${sid}&base=${base}`,
+      // Relative URL — web-app proxies via Next.js rewrites so HTTPS site can reach HTTP cloud
+      hlsUrl   : `/proxy/live/${ch.stream_id}/index.m3u8?sid=${sid}&base=${base}`,
 
       // directUrl: mobile/ExoPlayer follows 302 redirect directly to IPTV
 
