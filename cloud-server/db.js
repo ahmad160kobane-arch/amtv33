@@ -95,11 +95,26 @@ db.init = async function () {
   try { await pool.query("ALTER TABLE active_sessions ADD COLUMN IF NOT EXISTS device_info TEXT DEFAULT ''"); } catch(e) {}
   try { await pool.query("ALTER TABLE active_sessions ADD COLUMN IF NOT EXISTS ip TEXT DEFAULT ''"); } catch(e) {}
 
+  // ─── IPTV Accounts table (multi-account support) ───
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS iptv_accounts (
+      id          SERIAL PRIMARY KEY,
+      name        TEXT NOT NULL DEFAULT '',
+      server_url  TEXT NOT NULL,
+      username    TEXT NOT NULL,
+      password    TEXT NOT NULL,
+      max_connections INTEGER DEFAULT 1,
+      status      TEXT DEFAULT 'active',
+      created_at  BIGINT DEFAULT 0
+    );
+  `);
+
   // Migration: ensure xtream_channels has cloud-server columns
   try { await pool.query('ALTER TABLE xtream_channels ADD COLUMN IF NOT EXISTS raw_cat TEXT DEFAULT \'\''); } catch(e) {}
   try { await pool.query('ALTER TABLE xtream_channels ADD COLUMN IF NOT EXISTS cat_id TEXT DEFAULT \'\''); } catch(e) {}
   try { await pool.query('ALTER TABLE xtream_channels ADD COLUMN IF NOT EXISTS updated_at BIGINT DEFAULT 0'); } catch(e) {}
   try { await pool.query('ALTER TABLE xtream_channels ADD COLUMN IF NOT EXISTS base_url TEXT DEFAULT \'\''); } catch(e) {}
+  try { await pool.query('ALTER TABLE xtream_channels ADD COLUMN IF NOT EXISTS account_id INTEGER DEFAULT 0'); } catch(e) {}
 
   // Ensure xtream_channels id is TEXT (cloud-server uses stream_id as text id)
   // If table doesn't exist yet, create it
@@ -115,10 +130,29 @@ db.init = async function () {
       epg_id     TEXT DEFAULT '',
       sort_order INTEGER DEFAULT 99,
       base_url   TEXT DEFAULT '',
-      updated_at BIGINT DEFAULT 0
+      updated_at BIGINT DEFAULT 0,
+      account_id INTEGER DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_xtream_cat ON xtream_channels(category);
     CREATE INDEX IF NOT EXISTS idx_xtream_sort ON xtream_channels(sort_order);
+    CREATE INDEX IF NOT EXISTS idx_xtream_account ON xtream_channels(account_id);
+  `);
+
+  // Migration: add is_streaming column to xtream_channels
+  try { await pool.query("ALTER TABLE xtream_channels ADD COLUMN IF NOT EXISTS is_streaming BOOLEAN DEFAULT false"); } catch(e) {}
+
+  // ─── Stream Errors log table (global error log for all channels) ───
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS stream_errors (
+      id          SERIAL PRIMARY KEY,
+      account_id  INTEGER DEFAULT 0,
+      channel_id  TEXT DEFAULT '',
+      channel_name TEXT DEFAULT '',
+      error_type  TEXT DEFAULT '',
+      message     TEXT DEFAULT '',
+      created_at  BIGINT DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_stream_errors_time ON stream_errors(created_at);
   `);
 
   console.log('[DB] PostgreSQL connected + tables ready');

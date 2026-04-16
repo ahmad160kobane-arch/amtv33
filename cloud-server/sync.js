@@ -17,7 +17,7 @@ const { execSync }   = require('child_process');
 // الإعدادات
 // ══════════════════════════════════════════════════════
 const CFG = {
-  // IPTV (proxpanel)
+  // IPTV
   IPTV_HOST : process.env.IPTV_HOST || 'myhand.org',
   IPTV_PORT : process.env.IPTV_PORT || 8080,
   IPTV_USER : process.env.IPTV_USER || '3302196097',
@@ -33,6 +33,9 @@ const CFG = {
   SUBS_DIR  : '/root/subs',
   // رابط VPS لخدمة ملفات الترجمة
   VPS_URL   : process.env.VPS_URL   || 'http://62.171.153.204:8090',
+
+  // سر البروكسي (يجب أن يطابق server.js)
+  IPTV_PROXY_SECRET : 'lulu_iptv_proxy_2026',
 
   // ملفات النظام
   PROGRESS  : '/root/lulu_progress.json',
@@ -222,7 +225,7 @@ async function luluRemoteUpload(srcUrl, title, fldId = 0) {
   const p = new URLSearchParams({ key: CFG.LULU_KEY, ...params });
   const url = `https://api.lulustream.com/api/upload/url?${p}`;
   log(`  ↑ إرسال: ${title}`);
-  const res  = await httpGet(url, 60000);
+  const res  = await httpGet(url, 120000);
   const data = parseJson(res.body);
   if (data?.msg?.includes('max URLs limit')) throw new DailyLimitError();
   const fc = data?.result?.filecode || data?.result?.file_code
@@ -272,12 +275,12 @@ async function luluUploadSubtitle(fileCode, subUrl, lang) {
   }
 }
 
-// رابط بث IPTV
+// رابط بث IPTV عبر VPS proxy (بدون تخزين — pass-through مباشر)
 function vodStreamUrl(streamId, ext = 'mp4') {
-  return `http://${CFG.IPTV_HOST}:${CFG.IPTV_PORT}/movie/${CFG.IPTV_USER}/${CFG.IPTV_PASS}/${streamId}.${ext}`;
+  return `${CFG.VPS_URL}/iptv-proxy/${CFG.IPTV_PROXY_SECRET}/movie/${streamId}.${ext}`;
 }
 function episodeUrl(episodeId, ext = 'mp4') {
-  return `http://${CFG.IPTV_HOST}:${CFG.IPTV_PORT}/series/${CFG.IPTV_USER}/${CFG.IPTV_PASS}/${episodeId}.${ext}`;
+  return `${CFG.VPS_URL}/iptv-proxy/${CFG.IPTV_PROXY_SECRET}/series/${episodeId}.${ext}`;
 }
 
 // ══════════════════════════════════════════════════════
@@ -484,12 +487,6 @@ async function processVod(progress) {
           };
           saveProgress(progress);
           log(`  ✅ ${title} → ${fileCode}`);
-
-          // جلب ورفع الترجمات
-          await fetchAndUploadSubtitles(fileCode, title, year, meta.tmdb_id || '', 'movie');
-          // تحديث حالة الترجمة في progress
-          progress.uploaded[key].subtitles = { attempted: true, ts: Date.now() };
-          saveProgress(progress);
           break;
         } catch (e) {
           if (e instanceof DailyLimitError) { await sleepUntilMidnightUTC(); continue; }
@@ -591,13 +588,6 @@ async function processSeries(progress) {
               };
               saveProgress(progress);
               log(`  ✅ ${epTitle} → ${fileCode}`);
-
-              // جلب ورفع الترجمات للحلقة
-              await fetchAndUploadSubtitles(
-                fileCode, cleanShowName, showYear, showMeta.tmdb_id || '', 'tv'
-              );
-              progress.uploaded[key].subtitles = { attempted: true, ts: Date.now() };
-              saveProgress(progress);
               break;
             } catch (e) {
               if (e instanceof DailyLimitError) { await sleepUntilMidnightUTC(); continue; }

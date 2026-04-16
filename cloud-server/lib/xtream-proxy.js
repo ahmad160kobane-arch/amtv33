@@ -1,16 +1,14 @@
 /**
- * Xtream HLS Shared Proxy v2 — Multi-channel, multi-user, fast startup
+ * Xtream HLS Shared Proxy v3 — Multi-account, Multi-channel, multi-user
  *
- * Problem: IPTV provider allows limited concurrent connections per subscription.
- *          Multiple users → multiple upstream fetches → IPTV kicks everyone.
+ * Each channel has its own IPTV account credentials from DB.
+ * Multiple users share the same cached manifest/segments per channel.
  *
- * Solution v2 (rewritten for speed + concurrency):
- * - Manifests: bounded parallel (Semaphore, up to 3 concurrent) — different
- *   channels fetch simultaneously, same channel coalesced (1 in-flight)
- * - Segments:  parallel (up to 10 via Semaphore) — segments go to CDN, not IPTV
+ * - Manifests: bounded parallel (Semaphore) — different channels fetch simultaneously
+ * - Segments:  parallel via Semaphore — segments go to CDN, not IPTV
  * - Cache:     manifest 8s, segment 60s — fetch once, serve ALL users
  * - Coalesce:  if fetch already in-flight, other requests wait for same result
- * - Stale:     on upstream error, serve last good manifest (up to 30s old)
+ * - Stale:     on upstream error, serve last good manifest (up to 90s old)
  * - Proactive: refresh manifest for active channels BEFORE cache expires
  * - Cleanup:   expired caches + idle sessions auto-cleaned every 15s
  */
@@ -22,19 +20,17 @@ const UA               = 'VLC/3.0.20 LibVLC/3.0.20';
 const MANIFEST_TIMEOUT = 6000;   // 6s   — manifest fetch timeout (fail fast)
 const SEGMENT_TIMEOUT  = 10000;  // 10s  — segment fetch timeout
 const MANIFEST_TTL     = 8000;   // 8s   — manifest cache (less frequent = fewer 403s)
-const MANIFEST_STALE   = 90000;  // 90s  — serve stale manifest on error (long enough to outlast 403 periods)
-const COOLDOWN_403     = 30000;  // 30s  — longer cooldown specifically for 403/rate-limit errors
+const MANIFEST_STALE   = 90000;  // 90s  — serve stale manifest on error
+const COOLDOWN_403     = 30000;  // 30s  — longer cooldown for 403/rate-limit errors
 const PROACTIVE_MS     = 2000;   // 2s   — refresh manifest 2s before TTL expires
 const SEG_TTL          = 60000;  // 60s  — segment cache
-const SESSION_TTL      = 20000;  // 20s  — viewer idle timeout (shorter = accurate count on channel switch)
+const SESSION_TTL      = 20000;  // 20s  — viewer idle timeout
 const GC_INTERVAL      = 15000;  // 15s  — cleanup cycle
-const MAX_SEG_CACHE    = 300;    // max cached segments (~300MB worst case, prevent OOM)
+const MAX_SEG_CACHE    = 300;    // max cached segments
 const MAX_SEG_BYTES    = 400 * 1024 * 1024; // 400MB hard limit for segment cache
-const MAX_MANIFEST_PARALLEL = 1; // MUST be 1: IPTV subscription allows ~1 concurrent connection
-const MAX_SEG_PARALLEL = 8;      // parallel segment downloads (CDN-bound, keep reasonable)
-const MAX_PROACTIVE_PER_CYCLE = 1; // MUST be 1 with max_connections=1: refreshing 2+ channels kills the active session
-
-const SERVERS = [XTREAM.primary, ...(XTREAM.backup !== XTREAM.primary ? [XTREAM.backup] : [])];
+const MAX_MANIFEST_PARALLEL = 5; // Each channel has its own account, so we can fetch multiple channels in parallel
+const MAX_SEG_PARALLEL = 10;     // parallel segment downloads
+const MAX_PROACTIVE_PER_CYCLE = 3; // Multiple accounts = can refresh more channels per cycle
 
 // ─── Semaphore: bounded parallel execution ──────────────────
 class Semaphore {
@@ -65,7 +61,7 @@ let _totalSegBytes = 0; // track total segment cache memory usage
 // ═════════════════════════════════════════════════════════════
 class XtreamProxy {
   constructor() {
-    // Manifest cache: streamId → { content, srv, ts, rewritten }
+    // Manifest cache: streamId → { content, srv, ts, rewritten, user, pass }
     this._manifests = new Map();
     // Manifest in-flight: streamId → Promise (coalescing)
     this._pendingManifests = new Map();
@@ -75,13 +71,19 @@ class XtreamProxy {
     this._pendingSegments = new Map();
     // Viewer sessions: streamId → Map<sessionId, lastSeen>
     this.sessions = new Map();
+    // Channel credentials cache: streamId → { user, pass, baseUrl }
+    this._channelCreds = new Map();
     this._gcTimer = null;
+    // DB reference — set via setDB()
+    this._db = null;
   }
+
+  setDB(db) { this._db = db; }
 
   start() {
     this._gcTimer = setInterval(() => this._gc(), GC_INTERVAL);
     this._proactiveTimer = setInterval(() => this._proactiveRefresh(), MANIFEST_TTL - PROACTIVE_MS);
-    console.log(`[XtreamProxy] v5 Ready — serialized(${MAX_MANIFEST_PARALLEL}), seg parallel(${MAX_SEG_PARALLEL}), TTL ${MANIFEST_TTL/1000}s, stale ${MANIFEST_STALE/1000}s, 403-cooldown ${COOLDOWN_403/1000}s, proactive(${MAX_PROACTIVE_PER_CYCLE})`);
+    console.log(`[XtreamProxy] v6 Multi-Account Ready — manifest(${MAX_MANIFEST_PARALLEL}), seg(${MAX_SEG_PARALLEL}), TTL ${MANIFEST_TTL/1000}s, stale ${MANIFEST_STALE/1000}s, proactive(${MAX_PROACTIVE_PER_CYCLE})`);
   }
 
   stop() {
@@ -92,12 +94,51 @@ class XtreamProxy {
     this.sessions.clear();
   }
 
+  // ═══════════ Credential Resolution ═══════════════════════════
+
+  /**
+   * Resolve credentials for a channel — from cache, params, or DB lookup
+   */
+  async _resolveCredentials(streamId, baseUrl) {
+    // Check in-memory cache first
+    const cached = this._channelCreds.get(streamId);
+    if (cached) return cached;
+
+    // Try DB lookup
+    if (this._db) {
+      try {
+        const row = await this._db.prepare(
+          'SELECT c.stream_id, c.base_url, c.account_id, a.server_url, a.username, a.password FROM xtream_channels c LEFT JOIN iptv_accounts a ON c.account_id = a.id WHERE c.stream_id = ? OR c.id = ?'
+        ).get(Number(streamId) || 0, String(streamId));
+        if (row && row.username) {
+          const creds = { user: row.username, pass: row.password, baseUrl: row.server_url || row.base_url || baseUrl };
+          this._channelCreds.set(streamId, creds);
+          return creds;
+        }
+      } catch (e) {
+        // DB error — fall through to legacy
+      }
+    }
+
+    // Fallback to legacy XTREAM global (for channels not yet migrated)
+    if (XTREAM.user && XTREAM.pass) {
+      return { user: XTREAM.user, pass: XTREAM.pass, baseUrl: baseUrl || XTREAM.primary };
+    }
+    return null;
+  }
+
+  /**
+   * Set credentials for a channel explicitly (called from route when account info is known)
+   */
+  setChannelCredentials(streamId, user, pass, baseUrl) {
+    this._channelCreds.set(String(streamId), { user, pass, baseUrl });
+  }
+
   // ═══════════ Public API (called from Express routes) ═══════════
 
   /**
    * GET manifest — cached 8s, coalesced per-channel, stale fallback on error
-   * Parallel via Semaphore (up to 3 concurrent for different channels)
-   * Same-channel requests are coalesced (only 1 in-flight per channel)
+   * Each channel uses its own IPTV account credentials
    */
   async getManifest(streamId, baseUrl, sessionId) {
     this._touch(streamId, sessionId);
@@ -124,9 +165,9 @@ class XtreamProxy {
         const bgUrl = cached.baseUrl || baseUrl;
         const p = this._fetchManifest(streamId, bgUrl)
           .then(result => {
-            const rewritten = this._rewriteManifest(result.content, streamId, result.srv);
+            const rewritten = this._rewriteManifest(result.content, streamId, result.srv, result.user, result.pass);
             const ts = Date.now();
-            this._manifests.set(streamId, { content: result.content, srv: result.srv, baseUrl: bgUrl, ts, rewritten, lastGoodTs: ts, lastGoodRewritten: rewritten });
+            this._manifests.set(streamId, { content: result.content, srv: result.srv, baseUrl: bgUrl, ts, rewritten, lastGoodTs: ts, lastGoodRewritten: rewritten, user: result.user, pass: result.pass });
           })
           .catch(() => {})
           .finally(() => this._pendingManifests.delete(streamId));
@@ -170,11 +211,11 @@ class XtreamProxy {
 
     try {
       const result = await p;
-      const rewritten = this._rewriteManifest(result.content, streamId, result.srv);
+      const rewritten = this._rewriteManifest(result.content, streamId, result.srv, result.user, result.pass);
       const ts = Date.now();
       this._manifests.set(streamId, {
         content: result.content, srv: result.srv, baseUrl,
-        ts, rewritten,
+        ts, rewritten, user: result.user, pass: result.pass,
         // Preserve last-good for stale fallback
         lastGoodTs: ts, lastGoodRewritten: rewritten,
       });
@@ -209,17 +250,21 @@ class XtreamProxy {
     let decoded;
     try { decoded = decodeURIComponent(encodedPath); } catch { decoded = encodedPath; }
 
+    // Resolve per-channel credentials for segment URL building
+    const creds = await this._resolveCredentials(streamId, baseUrl);
+    const segUser = creds?.user || '';
+    const segPass = creds?.pass || '';
+
     // Build candidate URLs
     let candidates;
     if (decoded.startsWith('http')) {
       candidates = [decoded];
     } else if (decoded.startsWith('/')) {
-      candidates = [`${baseUrl}${decoded}`, ...SERVERS.filter(s => s !== baseUrl).map(s => `${s}${decoded}`)];
+      candidates = [`${baseUrl}${decoded}`];
     } else {
-      candidates = [
-        `${baseUrl}/live/${XTREAM.user}/${XTREAM.pass}/${decoded}`,
-        ...SERVERS.filter(s => s !== baseUrl).map(s => `${s}/live/${XTREAM.user}/${XTREAM.pass}/${decoded}`),
-      ];
+      candidates = (segUser && segPass)
+        ? [`${baseUrl}/live/${segUser}/${segPass}/${decoded}`]
+        : [`${baseUrl}/${decoded}`];
     }
 
     const cacheKey = candidates[0];
@@ -316,7 +361,7 @@ class XtreamProxy {
 
   // ═══════════ Upstream fetchers ═════════════════════════════
 
-  /** Manifest: parallel via Semaphore (up to 3 concurrent for different channels) */
+  /** Manifest: parallel via Semaphore — uses per-channel credentials */
   async _fetchManifest(streamId, preferredBase) {
     return manifestSemaphore.run(async () => {
       // Re-check cache after waiting for semaphore (another channel may have delayed us)
@@ -325,24 +370,30 @@ class XtreamProxy {
         return { content: cached.content, srv: cached.srv };
       }
 
-      const servers = [preferredBase, ...SERVERS.filter(s => s !== preferredBase)];
-      let lastErr = null;
-      for (const srv of servers) {
-        const url = `${srv}/live/${XTREAM.user}/${XTREAM.pass}/${streamId}.m3u8`;
-        try {
-          const res = await fetch(url, {
-            headers: { 'User-Agent': UA, 'Referer': `${srv}/` },
-            signal: AbortSignal.timeout(MANIFEST_TIMEOUT),
-          });
-          if (!res.ok) { lastErr = new Error(`HTTP ${res.status} from ${srv}`); continue; }
-          const content = await res.text();
-          // Capture actual server after 302 redirect (IPTV session token)
-          let actualBase = srv;
-          try { if (res.url) actualBase = new URL(res.url).origin; } catch {}
-          return { content, srv: actualBase };
-        } catch (e) { lastErr = e; }
+      // Resolve per-channel credentials
+      const creds = await this._resolveCredentials(streamId, preferredBase);
+      if (!creds || !creds.user || !creds.pass) {
+        throw new Error('No IPTV credentials for channel ' + streamId);
       }
-      throw lastErr || new Error('All IPTV servers unreachable');
+      const { user, pass, baseUrl: credBase } = creds;
+      const srv = credBase || preferredBase;
+
+      const url = `${srv}/live/${user}/${pass}/${streamId}.m3u8`;
+      let lastErr = null;
+      try {
+        const res = await fetch(url, {
+          headers: { 'User-Agent': UA, 'Referer': `${srv}/` },
+          signal: AbortSignal.timeout(MANIFEST_TIMEOUT),
+        });
+        if (!res.ok) { throw new Error(`HTTP ${res.status} from ${srv}`); }
+        const content = await res.text();
+        // Capture actual server after 302 redirect (IPTV session token)
+        let actualBase = srv;
+        try { if (res.url) actualBase = new URL(res.url).origin; } catch {}
+        return { content, srv: actualBase, user, pass };
+      } catch (e) { lastErr = e; }
+
+      throw lastErr || new Error('IPTV server unreachable');
     });
   }
 
@@ -383,14 +434,14 @@ class XtreamProxy {
   }
 
   // ─── URL rewriting ────────────────────────────────────────
-  _rewriteManifest(content, streamId, baseUrl) {
+  _rewriteManifest(content, streamId, baseUrl, user, pass) {
     return content.split('\n').map(line => {
       const t = line.trim();
       if (!t || t.startsWith('#')) return line;
       let abs;
       if (t.startsWith('http'))     abs = t;
       else if (t.startsWith('/'))   abs = `${baseUrl}${t}`;
-      else                          abs = `${baseUrl}/live/${XTREAM.user}/${XTREAM.pass}/${t}`;
+      else                          abs = (user && pass) ? `${baseUrl}/live/${user}/${pass}/${t}` : `${baseUrl}/${t}`;
       const enc = encodeURIComponent(abs);
       return (t.endsWith('.m3u8') || t.includes('.m3u8?'))
         ? `/proxy/live/${streamId}/sub/${enc}`
@@ -488,14 +539,14 @@ class XtreamProxy {
     // Only refresh up to MAX_PROACTIVE_PER_CYCLE per cycle
     // (remaining channels will be picked up next cycle or on-demand)
     for (const { streamId, m } of candidates.slice(0, MAX_PROACTIVE_PER_CYCLE)) {
-      const baseUrl = m.baseUrl || XTREAM.primary;
+      const baseUrl = m.baseUrl || '';
       const p = this._fetchManifest(streamId, baseUrl)
         .then(result => {
-          const rewritten = this._rewriteManifest(result.content, streamId, result.srv);
+          const rewritten = this._rewriteManifest(result.content, streamId, result.srv, result.user, result.pass);
           const ts = Date.now();
           this._manifests.set(streamId, {
             content: result.content, srv: result.srv,
-            baseUrl, ts, rewritten,
+            baseUrl, ts, rewritten, user: result.user, pass: result.pass,
             lastGoodTs: ts, lastGoodRewritten: rewritten, // CRITICAL: must survive future 403s
           });
         })

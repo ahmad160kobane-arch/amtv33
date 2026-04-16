@@ -472,62 +472,265 @@ async function deleteAllChannels() {
   } catch (err) { toast(err.message, 'error'); }
 }
 
-// ─── IPTV Config Page ───────────────────────────────────
-async function renderIPTV(c) {
-  let cfg = {};
-  try { cfg = await api('/api/admin/iptv-config'); } catch {}
-  c.innerHTML = `
-    <div class="panel">
-      <div class="panel-header"><h3>إعدادات IPTV (Xtream Codes)</h3></div>
-      <div class="panel-body">
-        <div class="form-group"><label>رابط السيرفر</label>
-          <input class="form-control" id="iptv-server" dir="ltr" placeholder="http://example.com:8080" value="${esc(cfg.server_url||'')}"></div>
-        <div class="form-row">
-          <div class="form-group"><label>اسم المستخدم</label>
-            <input class="form-control" id="iptv-user" dir="ltr" value="${esc(cfg.username||'')}"></div>
-          <div class="form-group"><label>كلمة المرور</label>
-            <input class="form-control" id="iptv-pass" dir="ltr" value="${esc(cfg.password||'')}"></div>
-        </div>
-        <div class="btn-group" style="margin-top:8px">
-          <button class="btn btn-primary" onclick="saveIPTV()">حفظ الإعدادات</button>
-          <button class="btn btn-success" onclick="syncIPTV()">🔄 تحميل القنوات الآن</button>
-        </div>
-      </div>
-    </div>
-    <div class="panel">
-      <div class="panel-header"><h3>معاينة سريعة</h3></div>
-      <div class="panel-body" id="iptv-preview">
-        <p class="empty-state">احفظ الإعدادات ثم اضغط "تحميل القنوات" لمعاينة النتائج</p>
-      </div>
-    </div>`;
+// ─── IPTV Accounts Management Page ──────────────────────
+let _iptvAccounts = [];
+let _cloudChannels = [];
+
+async function cloudApi(path, opts = {}) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const res = await fetch(`${CLOUD}${path}`, { ...opts, headers });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'خطأ في السيرفر السحابي');
+  return data;
 }
 
-async function saveIPTV() {
+async function renderIPTV(c) {
   try {
-    const server_url = document.getElementById('iptv-server').value.trim();
-    const username = document.getElementById('iptv-user').value.trim();
-    const password = document.getElementById('iptv-pass').value.trim();
-    await api('/api/admin/iptv-config', { method: 'PUT', body: JSON.stringify({ server_url, username, password }) });
-    toast('تم حفظ إعدادات IPTV');
+    const [accData, chData, errData] = await Promise.all([
+      cloudApi('/api/admin/iptv-accounts'),
+      cloudApi('/api/admin/cloud-channels'),
+      cloudApi('/api/admin/stream-errors?limit=50'),
+    ]);
+    _iptvAccounts = accData.accounts || [];
+    _cloudChannels = chData.channels || [];
+    const errors = errData.errors || [];
+    const streamingCount = _cloudChannels.filter(ch => ch.is_streaming).length;
+
+    c.innerHTML = `
+      <!-- Stats -->
+      <div class="stats-grid" style="margin-bottom:20px">
+        <div class="stat-card primary"><div class="stat-label">حسابات IPTV</div><div class="stat-value">${_iptvAccounts.length}</div></div>
+        <div class="stat-card success"><div class="stat-label">قنوات مضافة</div><div class="stat-value">${_cloudChannels.length}</div></div>
+        <div class="stat-card warning"><div class="stat-label">قنوات تبث الآن</div><div class="stat-value">${streamingCount}</div></div>
+        <div class="stat-card danger"><div class="stat-label">أخطاء</div><div class="stat-value">${errors.length}</div></div>
+      </div>
+
+      <!-- Add Account -->
+      <div class="panel">
+        <div class="panel-header">
+          <h3>إضافة حساب IPTV جديد</h3>
+        </div>
+        <div class="panel-body">
+          <div class="form-group"><label>اسم الحساب (اختياري)</label>
+            <input class="form-control" id="new-acc-name" placeholder="مثلاً: حساب beIN 1"></div>
+          <div class="form-group"><label>رابط السيرفر</label>
+            <input class="form-control" id="new-acc-server" dir="ltr" placeholder="http://example.com:80"></div>
+          <div class="form-row">
+            <div class="form-group"><label>اسم المستخدم</label>
+              <input class="form-control" id="new-acc-user" dir="ltr"></div>
+            <div class="form-group"><label>كلمة المرور</label>
+              <input class="form-control" id="new-acc-pass" dir="ltr"></div>
+          </div>
+          <div class="btn-group" style="margin-top:8px">
+            <button class="btn btn-primary" id="add-acc-btn" onclick="addIPTVAccount()">+ إضافة الحساب</button>
+            <button class="btn btn-outline" onclick="testIPTVAccount()">اختبار الاتصال</button>
+          </div>
+          <div id="acc-test-result" style="margin-top:8px"></div>
+        </div>
+      </div>
+
+      <!-- Accounts List -->
+      <div class="panel">
+        <div class="panel-header"><h3>الحسابات والقنوات (${_iptvAccounts.length})</h3></div>
+        <div class="panel-body no-pad" id="accounts-list">
+          ${_iptvAccounts.length === 0 ? '<div class="empty-state"><div class="empty-icon">📡</div><p>لا توجد حسابات. أضف حساب IPTV للبدء</p></div>' : _iptvAccounts.map(acc => {
+            const accChannels = _cloudChannels.filter(ch => ch.account_id === acc.id);
+            const ch = accChannels[0]; // Each account has ONE channel
+            return `<div class="iptv-account-card" id="acc-card-${acc.id}">
+              <div class="acc-header">
+                <div class="acc-info">
+                  <strong>${esc(acc.name || 'حساب #' + acc.id)}</strong>
+                  <span class="acc-meta" dir="ltr">${esc(acc.server_url)} — ${esc(acc.username)}</span>
+                </div>
+                <div class="btn-group">
+                  ${!ch ? `<button class="btn btn-sm btn-primary" onclick="searchChannelForAccount(${acc.id})">🔍 اختيار قناة</button>` : ''}
+                  <button class="btn btn-sm btn-danger" onclick="deleteIPTVAccount(${acc.id},'${esc(acc.name || 'حساب #' + acc.id)}')">حذف</button>
+                </div>
+              </div>
+              ${ch ? `<div class="acc-channel">
+                <div class="ch-info">
+                  ${ch.logo ? `<img src="${esc(ch.logo)}" class="ch-logo" onerror="this.style.display='none'">` : '<div class="ch-logo-placeholder">📺</div>'}
+                  <div>
+                    <div class="ch-name">${esc(ch.name)}</div>
+                    <div class="ch-cat">${esc(ch.category || 'عام')}</div>
+                  </div>
+                </div>
+                <div class="ch-actions">
+                  <span class="streaming-badge ${ch.is_streaming ? 'streaming-on' : 'streaming-off'}">${ch.is_streaming ? '🟢 يبث' : '🔴 متوقف'}</span>
+                  <button class="btn btn-sm ${ch.is_streaming ? 'btn-danger' : 'btn-success'}" onclick="toggleStreaming('${esc(ch.id)}', ${!ch.is_streaming})" id="stream-btn-${esc(ch.id)}">
+                    ${ch.is_streaming ? '⏹ إيقاف البث' : '▶ تشغيل البث'}
+                  </button>
+                  <button class="btn btn-sm btn-outline" onclick="removeChannelFromAccount('${esc(ch.id)}','${esc(ch.name)}')">إزالة القناة</button>
+                </div>
+              </div>` : `<div class="acc-no-channel">لم يتم اختيار قناة بعد — اضغط "اختيار قناة" لإضافة قناة لهذا الحساب</div>`}
+            </div>`;
+          }).join('')}
+        </div>
+      </div>
+
+      <!-- Error Log -->
+      <div class="panel">
+        <div class="panel-header">
+          <h3>سجل الأخطاء (${errors.length})</h3>
+          <div class="btn-group">
+            <button class="btn btn-outline btn-sm" onclick="renderPage('iptv')">🔄 تحديث</button>
+            ${errors.length > 0 ? `<button class="btn btn-danger btn-sm" onclick="clearStreamErrors()">مسح الكل</button>` : ''}
+          </div>
+        </div>
+        <div class="panel-body no-pad" id="error-log">
+          ${errors.length === 0 ? '<div class="empty-state"><div class="empty-icon">✅</div><p>لا توجد أخطاء</p></div>' :
+            errors.map(e => `<div class="log-entry">
+              <span class="log-time">${formatDate(e.created_at)}</span>
+              <span class="badge badge-danger">${esc(e.error_type)}</span>
+              <span class="log-msg">${esc(e.channel_name ? e.channel_name + ' — ' : '')}${esc(e.message)}</span>
+            </div>`).join('')}
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    c.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><p>فشل الاتصال بالسيرفر السحابي: ${err.message}</p><button class="btn btn-primary" onclick="renderPage('iptv')">إعادة المحاولة</button></div>`;
+  }
+}
+
+async function addIPTVAccount() {
+  const btn = document.getElementById('add-acc-btn');
+  btn.disabled = true; btn.textContent = 'جاري الإضافة...';
+  try {
+    const name = document.getElementById('new-acc-name').value.trim();
+    const server_url = document.getElementById('new-acc-server').value.trim();
+    const username = document.getElementById('new-acc-user').value.trim();
+    const password = document.getElementById('new-acc-pass').value.trim();
+    if (!server_url || !username || !password) throw new Error('رابط السيرفر واسم المستخدم وكلمة المرور مطلوبة');
+    await cloudApi('/api/admin/iptv-accounts', { method: 'POST', body: JSON.stringify({ name, server_url, username, password }) });
+    toast('تم إضافة الحساب بنجاح');
+    renderPage('iptv');
+  } catch (err) { toast(err.message, 'error'); }
+  btn.disabled = false; btn.textContent = '+ إضافة الحساب';
+}
+
+async function testIPTVAccount() {
+  const r = document.getElementById('acc-test-result');
+  r.innerHTML = '<span style="color:var(--text2)">جاري الاختبار...</span>';
+  try {
+    const data = await cloudApi('/api/admin/iptv-test', { method: 'POST', body: JSON.stringify({
+      server_url: document.getElementById('new-acc-server').value.trim(),
+      username: document.getElementById('new-acc-user').value.trim(),
+      password: document.getElementById('new-acc-pass').value.trim(),
+    })});
+    if (data.success) {
+      r.innerHTML = `<span style="color:var(--success)">✅ الاتصال ناجح — ${data.categories} تصنيف، ${data.channels} قناة</span>`;
+    } else {
+      r.innerHTML = `<span style="color:var(--danger)">❌ فشل: ${data.error}</span>`;
+    }
+  } catch (err) { r.innerHTML = `<span style="color:var(--danger)">❌ ${err.message}</span>`; }
+}
+
+async function deleteIPTVAccount(id, name) {
+  if (!confirm(`حذف "${name}" وجميع القنوات المرتبطة؟`)) return;
+  try {
+    await cloudApi(`/api/admin/iptv-accounts/${id}`, { method: 'DELETE' });
+    toast('تم حذف الحساب');
+    renderPage('iptv');
   } catch (err) { toast(err.message, 'error'); }
 }
 
-async function syncIPTV() {
-  const preview = document.getElementById('iptv-preview');
-  preview.innerHTML = '<div class="loading"><div class="spinner"></div><p>جاري تحميل جميع القنوات من سيرفر IPTV... قد يستغرق دقيقة</p></div>';
+// ─── Channel Search & Assign Modal ──────────────────────
+let _searchAccountId = null;
+let _channelSearchResults = [];
+
+function searchChannelForAccount(accountId) {
+  _searchAccountId = accountId;
+  _channelSearchResults = [];
+  showModal('اختيار قناة للحساب', `
+    <div class="form-group">
+      <label>ابحث عن قناة (مثال: bein sport, mbc, الجزيرة...)</label>
+      <div style="display:flex;gap:8px">
+        <input class="form-control" id="ch-search-q" placeholder="ابحث..." style="flex:1" onkeydown="if(event.key==='Enter')doChannelSearch()">
+        <button class="btn btn-primary" onclick="doChannelSearch()">بحث</button>
+      </div>
+    </div>
+    <div id="ch-search-results" style="max-height:400px;overflow-y:auto"></div>
+  `);
+  setTimeout(() => document.getElementById('ch-search-q')?.focus(), 200);
+}
+
+async function doChannelSearch() {
+  const q = document.getElementById('ch-search-q').value.trim();
+  if (q.length < 2) { toast('أدخل حرفين على الأقل', 'error'); return; }
+  const results = document.getElementById('ch-search-results');
+  results.innerHTML = '<div class="loading"><div class="spinner"></div><p>جاري البحث في قنوات IPTV...</p></div>';
   try {
-    const data = await api('/api/admin/iptv-sync', { method: 'POST' });
-    if (data.success) {
-      preview.innerHTML = `<div style="text-align:center;padding:20px"><p style="font-size:18px;color:var(--success)">✅ تم تحميل ${data.saved || 0} قناة</p><p style="color:var(--text2)">من أصل ${data.total || 0} قناة في السيرفر</p></div>`;
-      toast(`تم تحميل ${data.saved || 0} قناة`);
-    } else {
-      preview.innerHTML = `<div style="text-align:center;padding:20px"><p style="color:var(--danger)">❌ ${data.error || 'فشل التحميل'}</p></div>`;
-      toast(data.error || 'فشل تحميل القنوات', 'error');
+    const data = await cloudApi(`/api/admin/iptv-search?account_id=${_searchAccountId}&q=${encodeURIComponent(q)}`);
+    _channelSearchResults = data.channels || [];
+    if (_channelSearchResults.length === 0) {
+      results.innerHTML = '<div class="empty-state"><p>لا توجد نتائج لـ "' + esc(q) + '"</p></div>';
+      return;
     }
+    results.innerHTML = `<div class="ch-search-list">${_channelSearchResults.map((ch, i) => `
+      <div class="ch-search-item" onclick="selectChannelForAccount(${i})">
+        <div class="ch-search-info">
+          ${ch.logo ? `<img src="${esc(ch.logo)}" class="ch-search-logo" onerror="this.style.display='none'">` : '<div class="ch-search-logo-ph">📺</div>'}
+          <div>
+            <div class="ch-search-name">${esc(ch.name)}</div>
+            <div class="ch-search-cat">${esc(ch.category)} — Stream ID: ${ch.stream_id}</div>
+          </div>
+        </div>
+        <button class="btn btn-sm btn-success">اختيار</button>
+      </div>
+    `).join('')}</div>`;
   } catch (err) {
-    preview.innerHTML = `<div style="text-align:center;padding:20px"><p style="color:var(--danger)">❌ ${err.message}</p></div>`;
-    toast(err.message, 'error');
+    results.innerHTML = `<div class="empty-state"><p style="color:var(--danger)">${err.message}</p></div>`;
   }
+}
+
+async function selectChannelForAccount(idx) {
+  const ch = _channelSearchResults[idx];
+  if (!ch) return;
+  if (!confirm(`إضافة "${ch.name}" لهذا الحساب؟`)) return;
+  try {
+    await cloudApi('/api/admin/iptv-add-channels', {
+      method: 'POST',
+      body: JSON.stringify({ account_id: _searchAccountId, channels: [ch] }),
+    });
+    toast(`تم إضافة "${ch.name}" بنجاح`);
+    closeModal();
+    renderPage('iptv');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function toggleStreaming(channelId, streaming) {
+  const btn = document.getElementById('stream-btn-' + channelId);
+  if (btn) { btn.disabled = true; btn.textContent = 'جاري...'; }
+  try {
+    await cloudApi(`/api/admin/channel-toggle-stream/${encodeURIComponent(channelId)}`, {
+      method: 'POST',
+      body: JSON.stringify({ streaming }),
+    });
+    toast(streaming ? 'تم تشغيل البث' : 'تم إيقاف البث');
+    renderPage('iptv');
+  } catch (err) {
+    toast(err.message, 'error');
+    if (btn) { btn.disabled = false; btn.textContent = streaming ? '▶ تشغيل البث' : '⏹ إيقاف البث'; }
+  }
+}
+
+async function removeChannelFromAccount(channelId, channelName) {
+  if (!confirm(`إزالة "${channelName}" من الحساب؟`)) return;
+  try {
+    await cloudApi(`/api/admin/cloud-channels/${encodeURIComponent(channelId)}`, { method: 'DELETE' });
+    toast('تم إزالة القناة');
+    renderPage('iptv');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function clearStreamErrors() {
+  if (!confirm('مسح جميع سجلات الأخطاء؟')) return;
+  try {
+    await cloudApi('/api/admin/stream-errors', { method: 'DELETE' });
+    toast('تم مسح سجل الأخطاء');
+    renderPage('iptv');
+  } catch (err) { toast(err.message, 'error'); }
 }
 
 // ─── Cloud Server Page ──────────────────────────────────

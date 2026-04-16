@@ -54,7 +54,7 @@ const HlsProxy = require('./lib/hls-proxy');
 
 const LiveProxy = require('./lib/live-proxy');
 
-const { syncXtreamChannels, XTREAM } = require('./lib/xtream');
+const { XTREAM, searchAccountChannels, addChannelsToDB, getChannelAccount, refreshChannelStream, initXtreamFromDB } = require('./lib/xtream');
 
 const xtreamProxy = require('./lib/xtream-proxy');
 
@@ -134,6 +134,54 @@ app.use(express.json());
 app.use('/subs', express.static('/root/subs', {
   setHeaders: (res) => { res.set('Access-Control-Allow-Origin', '*'); }
 }));
+
+// ─── IPTV Pass-through Proxy (لـ LuluStream remote upload) ────────
+// LuluStream لا يستطيع تحميل من IPTV مباشرة (محجوب)
+// هذا البروكسي يمرر البيانات بدون تخزين: IPTV → VPS (pass) → LuluStream
+const IPTV_PROXY_SECRET = 'lulu_iptv_proxy_2026';
+app.get('/iptv-proxy/:secret/:type/:filename', (req, res) => {
+  const { secret, type, filename } = req.params;
+  if (secret !== IPTV_PROXY_SECRET) return res.status(403).end('Forbidden');
+  const dotIdx = filename.lastIndexOf('.');
+  const id  = dotIdx > 0 ? filename.substring(0, dotIdx) : filename;
+  const ext = dotIdx > 0 ? filename.substring(dotIdx + 1) : 'mp4';
+
+  // بيانات IPTV لرفع الأفلام والمسلسلات
+  const iptvBase = 'http://myhand.org:8080';
+  const iptvUser = '3302196097';
+  const iptvPass = '2474044847';
+
+  // movie or series
+  const urlPath = type === 'series'
+    ? `/series/${iptvUser}/${iptvPass}/${id}.${ext}`
+    : `/movie/${iptvUser}/${iptvPass}/${id}.${ext}`;
+  const iptvUrl = `${iptvBase}${urlPath}`;
+
+  console.log(`[IPTV-PROXY] Streaming ${type} ${id}.${ext}`);
+
+  const proxyReq = http.get(iptvUrl, { timeout: 600000 }, (iptvRes) => {
+    if (iptvRes.statusCode !== 200) {
+      console.log(`[IPTV-PROXY] IPTV returned ${iptvRes.statusCode}`);
+      return res.status(502).end('IPTV error');
+    }
+    // تمرير headers مهمة
+    if (iptvRes.headers['content-length']) res.set('Content-Length', iptvRes.headers['content-length']);
+    if (iptvRes.headers['content-type'])   res.set('Content-Type', iptvRes.headers['content-type']);
+    else res.set('Content-Type', 'video/mp4');
+
+    iptvRes.pipe(res);
+    iptvRes.on('error', () => res.end());
+  });
+  proxyReq.on('error', (e) => {
+    console.log(`[IPTV-PROXY] Error: ${e.message}`);
+    if (!res.headersSent) res.status(502).end('Proxy error');
+  });
+  proxyReq.on('timeout', () => {
+    proxyReq.destroy();
+    if (!res.headersSent) res.status(504).end('Timeout');
+  });
+  req.on('close', () => proxyReq.destroy());
+});
 
 
 
@@ -3206,7 +3254,7 @@ app.get('/api/xtream/channels', async (req, res) => {
 
 
 
-    let where = [];
+    let where = ['is_streaming = true'];
 
     let params = [];
 
@@ -3270,7 +3318,7 @@ app.get('/api/xtream/channels', async (req, res) => {
 
     const catRows = await db.prepare(
 
-      'SELECT DISTINCT category, MIN(sort_order) as p FROM xtream_channels GROUP BY category ORDER BY p'
+      'SELECT DISTINCT category, MIN(sort_order) as p FROM xtream_channels WHERE is_streaming = true GROUP BY category ORDER BY p'
 
     ).all();
 
@@ -3800,7 +3848,238 @@ app.get('/api/admin/sessions/stats', requireAuth, async (req, res) => {
 
 
 
-app.use((req, res) => { res.status(404).json({ error: 'ØºÙŠØ± Ù…ÙˆØ¬ÙˆØ¯' }); });
+// ═══════════════════════════════════════════════════════════════
+// Admin IPTV Multi-Account API (runs on cloud-server directly)
+// ═══════════════════════════════════════════════════════════════
+
+function _isAdmin(req) {
+  return req.user && (req.user.is_admin || req.user.role === 'admin');
+}
+
+// ─── IPTV Accounts CRUD ──────────────────────────────────────
+
+app.get('/api/admin/iptv-accounts', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  const accounts = await db.prepare('SELECT id, name, server_url, username, password, max_connections, status, created_at FROM iptv_accounts ORDER BY id').all();
+  // Count channels per account
+  for (const acc of accounts) {
+    const row = await db.prepare('SELECT COUNT(*) as c FROM xtream_channels WHERE account_id = ?').get(acc.id);
+    acc.channel_count = row ? row.c : 0;
+  }
+  res.json({ accounts });
+});
+
+app.post('/api/admin/iptv-accounts', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  const { name, server_url, username, password, max_connections } = req.body;
+  if (!server_url || !username || !password) return res.status(400).json({ error: 'server_url, username, password مطلوبة' });
+  // Verify account works
+  try {
+    const { apiCall } = require('./lib/xtream');
+    const info = await apiCall(server_url, username, password, 'get_live_categories');
+    if (!Array.isArray(info)) throw new Error('Invalid response');
+  } catch (e) {
+    return res.status(400).json({ error: 'فشل الاتصال بالسيرفر: ' + e.message });
+  }
+  const result = await db.prepare(
+    'INSERT INTO iptv_accounts (name, server_url, username, password, max_connections, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id'
+  ).get(name || '', server_url, username, password, max_connections || 1, 'active', Date.now());
+  res.json({ success: true, id: result.id });
+});
+
+app.put('/api/admin/iptv-accounts/:id', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  const { name, server_url, username, password, max_connections, status } = req.body;
+  await db.prepare(
+    'UPDATE iptv_accounts SET name=COALESCE(?,name), server_url=COALESCE(?,server_url), username=COALESCE(?,username), password=COALESCE(?,password), max_connections=COALESCE(?,max_connections), status=COALESCE(?,status) WHERE id=?'
+  ).run(name||null, server_url||null, username||null, password||null, max_connections||null, status||null, req.params.id);
+  res.json({ success: true });
+});
+
+app.delete('/api/admin/iptv-accounts/:id', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  const accId = req.params.id;
+  // Delete channels linked to this account
+  await db.prepare('DELETE FROM xtream_channels WHERE account_id = ?').run(accId);
+  await db.prepare('DELETE FROM iptv_accounts WHERE id = ?').run(accId);
+  res.json({ success: true });
+});
+
+// ─── Channel Search (within a specific IPTV account) ─────────
+
+app.get('/api/admin/iptv-search', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  const { account_id, q } = req.query;
+  if (!account_id) return res.status(400).json({ error: 'account_id مطلوب' });
+  if (!q || q.length < 2) return res.status(400).json({ error: 'أدخل حرفين على الأقل' });
+  const account = await db.prepare('SELECT * FROM iptv_accounts WHERE id = ?').get(account_id);
+  if (!account) return res.status(404).json({ error: 'الحساب غير موجود' });
+  try {
+    const result = await searchAccountChannels(account, q);
+    res.json({ channels: result.channels.slice(0, 200), total: result.total });
+  } catch (e) {
+    res.status(500).json({ error: 'فشل البحث: ' + e.message });
+  }
+});
+
+// ─── Add Channels (from search results, linked to account) ───
+
+app.post('/api/admin/iptv-add-channels', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  const { account_id, channels } = req.body;
+  if (!account_id || !channels || !channels.length) return res.status(400).json({ error: 'account_id و channels مطلوبة' });
+  const account = await db.prepare('SELECT * FROM iptv_accounts WHERE id = ?').get(account_id);
+  if (!account) return res.status(404).json({ error: 'الحساب غير موجود' });
+  try {
+    const result = await addChannelsToDB(db, account, channels);
+    res.json({ success: true, added: result.added });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Cloud Channel Management ────────────────────────────────
+
+app.get('/api/admin/cloud-channels', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  const rows = await db.prepare(`
+    SELECT c.*, a.name as account_name, a.server_url as account_server
+    FROM xtream_channels c
+    LEFT JOIN iptv_accounts a ON c.account_id = a.id
+    ORDER BY c.sort_order, c.name
+  `).all();
+  res.json({ channels: rows });
+});
+
+app.delete('/api/admin/cloud-channels/:id', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  await db.prepare('DELETE FROM xtream_channels WHERE id = ?').run(req.params.id);
+  // Clear cached credentials
+  xtreamProxy._channelCreds.delete(req.params.id);
+  res.json({ success: true });
+});
+
+app.delete('/api/admin/cloud-channels', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  await db.prepare('DELETE FROM xtream_channels').run();
+  xtreamProxy._channelCreds.clear();
+  res.json({ success: true });
+});
+
+// ─── Refresh Channel Stream (re-verify with IPTV) ────────────
+
+app.post('/api/admin/channel-refresh/:id', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  try {
+    const result = await refreshChannelStream(db, req.params.id);
+    // Clear proxy cache so next request fetches fresh
+    xtreamProxy._manifests.delete(result.streamId?.toString());
+    xtreamProxy._channelCreds.delete(req.params.id);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Test IPTV Account Connection ────────────────────────────
+
+app.post('/api/admin/iptv-test', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  const { server_url, username, password } = req.body;
+  if (!server_url || !username || !password) return res.status(400).json({ error: 'بيانات الاتصال مطلوبة' });
+  try {
+    const { apiCall } = require('./lib/xtream');
+    const cats = await apiCall(server_url, username, password, 'get_live_categories');
+    const streams = await apiCall(server_url, username, password, 'get_live_streams');
+    res.json({
+      success: true,
+      categories: Array.isArray(cats) ? cats.length : 0,
+      channels: Array.isArray(streams) ? streams.length : 0,
+    });
+  } catch (e) {
+    res.json({ success: false, error: e.message });
+  }
+});
+
+// ─── Toggle Channel Streaming (start/stop) ───────────────
+
+app.post('/api/admin/channel-toggle-stream/:id', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  const channelId = req.params.id;
+  const { streaming } = req.body;
+  const isStreaming = !!streaming;
+
+  // If starting stream, verify the channel's IPTV account works
+  if (isStreaming) {
+    try {
+      const info = await getChannelAccount(db, channelId);
+      if (!info || !info.account) {
+        return res.status(400).json({ error: 'القناة غير مرتبطة بحساب IPTV' });
+      }
+      const { channel, account } = info;
+      const testUrl = `${account.server_url}/live/${account.username}/${account.password}/${channel.stream_id}.m3u8`;
+      const testRes = await fetch(testUrl, {
+        headers: { 'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20' },
+        signal: AbortSignal.timeout(10000),
+        redirect: 'follow',
+      });
+      if (!testRes.ok && testRes.status !== 302) {
+        const errMsg = `فشل التحقق من البث — HTTP ${testRes.status}`;
+        await db.prepare('INSERT INTO stream_errors (account_id, channel_id, channel_name, error_type, message, created_at) VALUES (?,?,?,?,?,?)').run(
+          account.id, channelId, channel.name, 'start_failed', errMsg, Date.now()
+        );
+        return res.status(400).json({ error: errMsg });
+      }
+    } catch (e) {
+      await db.prepare('INSERT INTO stream_errors (account_id, channel_id, channel_name, error_type, message, created_at) VALUES (?,?,?,?,?,?)').run(
+        0, channelId, '', 'start_failed', e.message, Date.now()
+      );
+      return res.status(500).json({ error: 'فشل الاتصال: ' + e.message });
+    }
+  }
+
+  await db.prepare('UPDATE xtream_channels SET is_streaming = ? WHERE id = ?').run(isStreaming, channelId);
+  // Clear proxy cache
+  xtreamProxy._channelCreds.delete(channelId);
+  res.json({ success: true, is_streaming: isStreaming });
+});
+
+// ─── Batch Toggle Streaming for all channels of an account ─
+
+app.post('/api/admin/account-toggle-stream/:accountId', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  const { streaming } = req.body;
+  await db.prepare('UPDATE xtream_channels SET is_streaming = ? WHERE account_id = ?').run(!!streaming, req.params.accountId);
+  res.json({ success: true });
+});
+
+// ─── Stream Error Log APIs ────────────────────────────────
+
+app.get('/api/admin/stream-errors', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+  const rows = await db.prepare('SELECT * FROM stream_errors ORDER BY created_at DESC LIMIT ' + limit).all();
+  res.json({ errors: rows });
+});
+
+app.delete('/api/admin/stream-errors', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  await db.prepare('DELETE FROM stream_errors').run();
+  res.json({ success: true });
+});
+
+// ─── Log stream error helper (used internally) ────────────
+async function logStreamError(accountId, channelId, channelName, errorType, message) {
+  try {
+    await db.prepare('INSERT INTO stream_errors (account_id, channel_id, channel_name, error_type, message, created_at) VALUES (?,?,?,?,?,?)').run(
+      accountId || 0, channelId || '', channelName || '', errorType || 'unknown', message || '', Date.now()
+    );
+    // Keep only last 1000 errors
+    await db.prepare('DELETE FROM stream_errors WHERE id NOT IN (SELECT id FROM stream_errors ORDER BY created_at DESC LIMIT 1000)').run();
+  } catch (e) { console.error('[StreamErrors] Log error:', e.message); }
+}
+
+app.use((req, res) => { res.status(404).json({ error: 'غير موجود' }); });
 
 app.use((err, req, res, next) => {
 
@@ -3880,37 +4159,12 @@ const server = app.listen(config.PORT, config.HOST, async () => {
 
 
 
-  // Sync Xtream IPTV data on startup
-
-  const { syncXtreamChannels } = require('./lib/xtream');
-
-  console.log('[Init] Syncing Xtream IPTV data...');
-
-  syncXtreamChannels(db).then(result => {
-
-    console.log(`[Init] Xtream sync complete: ${result.saved} channels saved from ${result.total} total`);
-
-  }).catch(e => console.error('[Init] Xtream sync error:', e.message));
-
-
+  // Initialize Xtream from DB (load default account for legacy compat)
+  initXtreamFromDB(db).catch(e => console.error('[Init] Xtream init error:', e.message));
 
   // Sync channels from backend PostgreSQL on startup
-
   syncChannelsFromBackend(true).catch(e => console.error('[Sync] Startup error:', e.message));
-
   setInterval(() => syncChannelsFromBackend(true).catch(() => {}), CHANNEL_SYNC_INTERVAL);
-
-
-
-  // Periodic Xtream sync every 30 minutes
-
-  setInterval(() => {
-
-    console.log('[Init] Periodic Xtream sync...');
-
-    syncXtreamChannels(db).catch(e => console.error('[Init] Periodic Xtream sync error:', e.message));
-
-  }, 30 * 60 * 1000);
 
 
 
