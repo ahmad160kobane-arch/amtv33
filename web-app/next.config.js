@@ -1,6 +1,7 @@
 /** @type {import('next').NextConfig} */
-const BACKEND_URL  = process.env.BACKEND_URL  || 'http://62.171.153.204:3000';
-const CLOUD_URL    = process.env.CLOUD_URL    || 'http://62.171.153.204:8090';
+// Hardcoded VPS endpoints — Railway env vars intentionally ignored to prevent misconfiguration
+const BACKEND_URL  = 'http://62.171.153.204:3000';
+const CLOUD_URL    = 'http://62.171.153.204:8090';
 
 const SECURITY_HEADERS = [
   // Prevent this app from being embedded in other sites
