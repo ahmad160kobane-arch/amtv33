@@ -123,30 +123,34 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
           if (Hls && Hls.isSupported()) {
             hlsInstance = new Hls({
               enableWorker: true,
-              lowLatencyMode: false,               // stream is standard HLS, NOT LL-HLS
-              startLevel: -1,                      // auto quality
-              // ═══ Live edge sync — minimize latency ═══
-              liveSyncDurationCount: 1,            // stay 1 segment behind live edge
-              liveMaxLatencyDurationCount: 2,      // if >2 segments behind → seek to live edge
+              lowLatencyMode: false,
+              startLevel: -1,
+              // ═══ Fast startup — start playing with minimal buffered data ═══
+              startFragPrefetch: true,             // prefetch first frag while parsing manifest
+              maxStarvationDelay: 2,               // start playback after 2s of buffer (faster)
+              maxLoadingDelay: 2,
+              highBufferWatchdogPeriod: 1,
+              // ═══ Live edge sync ═══
+              liveSyncDurationCount: 2,            // more tolerant for first load
+              liveMaxLatencyDurationCount: 4,
               liveDurationInfinity: true,
-              // ═══ Buffer — keep small to avoid accumulated delay ═══
-              maxBufferLength: 6,                  // only 6s ahead (was 15)
-              maxMaxBufferLength: 12,              // hard max 12s (was 30)
-              maxBufferSize: 20 * 1024 * 1024,    // 20MB
-              maxBufferHole: 1.0,                  // tolerate 1s gaps (live streams skip)
-              backBufferLength: 8,                 // 8s back buffer
-              // ═══ Timeouts ═══
-              manifestLoadingTimeOut: 8000,
-              fragLoadingTimeOut: 12000,
-              levelLoadingTimeOut: 8000,
-              // ═══ Retries — fewer on segments (dead segs should trigger manifest refresh) ═══
-              fragLoadingMaxRetry: 2,              // only 2 retries (was 6 — was hanging 20s)
-              fragLoadingRetryDelay: 300,
-              fragLoadingMaxRetryTimeout: 2000,
-              manifestLoadingMaxRetry: 6,          // more manifest retries
-              manifestLoadingRetryDelay: 300,
+              // ═══ Buffer ═══
+              maxBufferLength: 10,
+              maxMaxBufferLength: 20,
+              maxBufferSize: 30 * 1024 * 1024,
+              maxBufferHole: 1.0,
+              backBufferLength: 10,
+              // ═══ Aggressive timeouts for faster first-play ═══
+              manifestLoadingTimeOut: 6000,
+              manifestLoadingMaxRetry: 4,
+              manifestLoadingRetryDelay: 200,
+              levelLoadingTimeOut: 6000,
               levelLoadingMaxRetry: 4,
-              levelLoadingRetryDelay: 300,
+              levelLoadingRetryDelay: 200,
+              fragLoadingTimeOut: 10000,
+              fragLoadingMaxRetry: 3,
+              fragLoadingRetryDelay: 200,
+              fragLoadingMaxRetryTimeout: 3000,
             });
             hlsInstance.loadSource(streamUrl);
             hlsInstance.attachMedia(video);
@@ -276,7 +280,7 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
       style={isFullscreen ? { height: '100vh' } : undefined}
       onMouseMove={scheduleHide}
       onTouchStart={scheduleHide}
-      onClick={(e) => { if ((e.target as HTMLElement).closest('button, input')) return; togglePlay(); scheduleHide(); }}
+      onClick={(e) => { if ((e.target as HTMLElement).closest('button, input')) return; scheduleHide(); }}
     >
       <video
         ref={videoRef}

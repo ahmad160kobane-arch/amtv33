@@ -3374,6 +3374,11 @@ app.get('/api/xtream/stream/:channelId', async (req, res) => {
 
     const base = encodeURIComponent(ch.base_url || XTREAM.primary);
 
+    // Pre-warm manifest cache (non-blocking) so first browser request is instant
+    try {
+      xtreamProxy.getManifest(String(ch.stream_id), ch.base_url || XTREAM.primary, sid).catch(() => {});
+    } catch {}
+
     res.json({
 
       success  : true,
@@ -4010,32 +4015,12 @@ app.post('/api/admin/channel-toggle-stream/:id', requireAuth, async (req, res) =
   const { streaming } = req.body;
   const isStreaming = !!streaming;
 
-  // If starting stream, verify the channel's IPTV account works
+  // If starting stream, just confirm channel is linked to an IPTV account.
+  // Actual playback errors are logged by the HLS proxy (xtream-proxy.js) at runtime.
   if (isStreaming) {
-    try {
-      const info = await getChannelAccount(db, channelId);
-      if (!info || !info.account) {
-        return res.status(400).json({ error: 'القناة غير مرتبطة بحساب IPTV' });
-      }
-      const { channel, account } = info;
-      const testUrl = `${account.server_url}/live/${account.username}/${account.password}/${channel.stream_id}.m3u8`;
-      const testRes = await fetch(testUrl, {
-        headers: { 'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20' },
-        signal: AbortSignal.timeout(10000),
-        redirect: 'follow',
-      });
-      if (!testRes.ok && testRes.status !== 302) {
-        const errMsg = `فشل التحقق من البث — HTTP ${testRes.status}`;
-        await db.prepare('INSERT INTO stream_errors (account_id, channel_id, channel_name, error_type, message, created_at) VALUES (?,?,?,?,?,?)').run(
-          account.id, channelId, channel.name, 'start_failed', errMsg, Date.now()
-        );
-        return res.status(400).json({ error: errMsg });
-      }
-    } catch (e) {
-      await db.prepare('INSERT INTO stream_errors (account_id, channel_id, channel_name, error_type, message, created_at) VALUES (?,?,?,?,?,?)').run(
-        0, channelId, '', 'start_failed', e.message, Date.now()
-      );
-      return res.status(500).json({ error: 'فشل الاتصال: ' + e.message });
+    const info = await getChannelAccount(db, channelId);
+    if (!info || !info.account) {
+      return res.status(400).json({ error: 'القناة غير مرتبطة بحساب IPTV' });
     }
   }
 
