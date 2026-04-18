@@ -28,9 +28,9 @@ const SESSION_TTL      = 20000;  // 20s  — viewer idle timeout
 const GC_INTERVAL      = 15000;  // 15s  — cleanup cycle
 const MAX_SEG_CACHE    = 300;    // max cached segments
 const MAX_SEG_BYTES    = 400 * 1024 * 1024; // 400MB hard limit for segment cache
-const MAX_MANIFEST_PARALLEL = 5; // Each channel has its own account, so we can fetch multiple channels in parallel
-const MAX_SEG_PARALLEL = 10;     // parallel segment downloads
-const MAX_PROACTIVE_PER_CYCLE = 3; // Multiple accounts = can refresh more channels per cycle
+const MAX_MANIFEST_PARALLEL = 50; // Each channel has its own account, so we can fetch multiple channels in parallel
+const MAX_SEG_PARALLEL = 100;     // parallel segment downloads
+const MAX_PROACTIVE_PER_CYCLE = 20; // Multiple accounts = can refresh more channels per cycle
 
 // ─── Semaphore: bounded parallel execution ──────────────────
 class Semaphore {

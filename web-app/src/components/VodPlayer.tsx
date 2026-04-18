@@ -160,6 +160,12 @@ export default function VodPlayer({ streamUrl, title, poster, subtitle, subtitle
       video.removeEventListener('error', onError);
       video.removeEventListener('ended', onEnded);
       if (hlsInstance) { try { hlsInstance.destroy(); } catch {} }
+      
+      try {
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+      } catch {}
     };
   }, [streamUrl]);
 

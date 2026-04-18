@@ -219,6 +219,13 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
       const mp = (video as any)._mpegtsPlayer;
       if (mp) { try { mp.destroy(); } catch {} (video as any)._mpegtsPlayer = null; }
       if (hlsInstance) { try { hlsInstance.destroy(); } catch {} }
+      
+      // Prevent player conflict/overlapping streams when switching
+      try {
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+      } catch {}
     };
   }, [streamUrl]);
 
