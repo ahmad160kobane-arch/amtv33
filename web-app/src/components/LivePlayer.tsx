@@ -44,7 +44,7 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
     const isTs = streamUrl.includes('/xtream-pipe/') || streamUrl.includes('.ts') || streamUrl.includes('/live-pipe/');
     const isHls = streamUrl.includes('.m3u8') || streamUrl.includes('/proxy/live/');
 
-    const onPlay = () => { setPlaying(true); setBuffering(false); retryCount = 0; };
+    const onPlay = () => { setPlaying(true); retryCount = 0; };
     const onPause = () => setPlaying(false);
     const onWaiting = () => setBuffering(true);
     const onPlaying = () => { setBuffering(false); setPlaying(true); retryCount = 0; };

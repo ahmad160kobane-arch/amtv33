@@ -17,20 +17,21 @@ const { XTREAM } = require('./xtream');
 
 // ─── Constants ──────────────────────────────────────────────
 const UA               = 'VLC/3.0.20 LibVLC/3.0.20';
-const MANIFEST_TIMEOUT = 6000;   // 6s   — manifest fetch timeout (fail fast)
-const SEGMENT_TIMEOUT  = 10000;  // 10s  — segment fetch timeout
-const MANIFEST_TTL     = 8000;   // 8s   — manifest cache (less frequent = fewer 403s)
-const MANIFEST_STALE   = 90000;  // 90s  — serve stale manifest on error
-const COOLDOWN_403     = 30000;  // 30s  — longer cooldown for 403/rate-limit errors
-const PROACTIVE_MS     = 2000;   // 2s   — refresh manifest 2s before TTL expires
-const SEG_TTL          = 60000;  // 60s  — segment cache
-const SESSION_TTL      = 20000;  // 20s  — viewer idle timeout
-const GC_INTERVAL      = 15000;  // 15s  — cleanup cycle
-const MAX_SEG_CACHE    = 300;    // max cached segments
-const MAX_SEG_BYTES    = 400 * 1024 * 1024; // 400MB hard limit for segment cache
-const MAX_MANIFEST_PARALLEL = 50; // Each channel has its own account, so we can fetch multiple channels in parallel
-const MAX_SEG_PARALLEL = 100;     // parallel segment downloads
-const MAX_PROACTIVE_PER_CYCLE = 20; // Multiple accounts = can refresh more channels per cycle
+const MANIFEST_TIMEOUT = 8000;   // 8s
+const SEGMENT_TIMEOUT  = 15000;  // 15s
+const MANIFEST_TTL     = 6000;   // 6s
+const MANIFEST_STALE   = 120000; // 120s
+const COOLDOWN_403     = 10000;  // reduced to 10s so we retry sooner
+const COOLDOWN_ERR     = 4000;   // 4s cooldown for general errors
+const PROACTIVE_MS     = 2000;
+const SEG_TTL          = 120000; // 120s
+const SESSION_TTL      = 30000;  // 30s
+const GC_INTERVAL      = 15000;
+const MAX_SEG_CACHE    = 1000;   // Increased for better caching
+const MAX_SEG_BYTES    = 1024 * 1024 * 1024; // 1GB cache
+const MAX_MANIFEST_PARALLEL = 200; 
+const MAX_SEG_PARALLEL = 500;
+const MAX_PROACTIVE_PER_CYCLE = 50;
 
 // ─── Semaphore: bounded parallel execution ──────────────────
 class Semaphore {
@@ -178,10 +179,13 @@ class XtreamProxy {
 
     // Cooldown after failure — longer for 403 (rate-limit) vs generic errors
     if (cached && cached.failed) {
-      const cooldown = cached.is403 ? COOLDOWN_403 : MANIFEST_TTL;
+      const cooldown = cached.is403 ? COOLDOWN_403 : COOLDOWN_ERR;
       if (now - cached.ts < cooldown) {
         const stale = serveStale(cached);
-        if (stale) return stale;  // serve last known-good during cooldown
+        if (stale) {
+          console.warn(`[XtreamProxy] Serving stale manifest for ${streamId} during cooldown.`);
+          return stale;  // serve last known-good during cooldown
+        }
         throw new Error('IPTV temporarily unavailable (cooldown)');
       }
     }
@@ -193,10 +197,13 @@ class XtreamProxy {
       if (c && !c.failed) return c.rewritten;
       // Thundering herd fix: after coalesced failure, check cooldown before retrying
       if (c && c.failed) {
-        const cooldown = c.is403 ? COOLDOWN_403 : MANIFEST_TTL;
+        const cooldown = c.is403 ? COOLDOWN_403 : COOLDOWN_ERR;
         if (Date.now() - c.ts < cooldown) {
           const stale = serveStale(c);
-          if (stale) return stale;
+          if (stale) {
+            console.warn(`[XtreamProxy] Manifest coalesced error for ${streamId}, serving stale fallback.`);
+            return stale;
+          }
           throw new Error('IPTV temporarily unavailable (cooldown)');
         }
       }
@@ -213,6 +220,8 @@ class XtreamProxy {
       const result = await p;
       const rewritten = this._rewriteManifest(result.content, streamId, result.srv, result.user, result.pass);
       const ts = Date.now();
+      
+      // Update cache
       this._manifests.set(streamId, {
         content: result.content, srv: result.srv, baseUrl,
         ts, rewritten, user: result.user, pass: result.pass,
@@ -222,20 +231,24 @@ class XtreamProxy {
       return rewritten;
     } catch (err) {
       // Determine if this is a 403 (rate-limit / subscription limit)
-      const is403 = err.message?.includes('403');
+      const is403 = err.message?.includes('403') || err.message?.includes('429');
       // Re-read current cache — a concurrent proactive refresh may have succeeded while we awaited
-      // Using stale `cached` var here would lose that lastGoodRewritten update (race condition bug)
       const current = this._manifests.get(streamId);
       const prevLastGoodTs = current?.lastGoodTs || cached?.lastGoodTs || 0;
       const prevLastGoodRewritten = current?.lastGoodRewritten || cached?.lastGoodRewritten || null;
+      
       this._manifests.set(streamId, {
         ts: Date.now(), failed: true, is403,
         lastGoodTs: prevLastGoodTs,
         lastGoodRewritten: prevLastGoodRewritten,
       });
+      
       // Serve stale if available (handles 403 gracefully for active viewers)
       const stale = serveStale(this._manifests.get(streamId));
-      if (stale) return stale;
+      if (stale) {
+        console.warn(`[XtreamProxy] Manifest error for ${streamId}, serving stale fallback. Error: ${err.message}`);
+        return stale;
+      }
       throw err;
     }
   }
@@ -284,11 +297,11 @@ class XtreamProxy {
     const p = this._fetchSegment(candidates, cacheKey)
       .catch(err => {
         // Segment failed → force manifest re-fetch on next request BUT preserve lastGoodRewritten
-        // (previously used delete() which wiped lastGoodRewritten, causing stale serving to fail)
         const entry = this._manifests.get(streamId);
         if (entry) {
           this._manifests.set(streamId, { ...entry, ts: 0 }); // expire ts → forces re-fetch, keeps lastGood
         }
+        console.warn(`[XtreamProxy] Segment error for ${cacheKey}. Error: ${err.message}`);
         throw err;
       })
       .finally(() => this._pendingSegments.delete(cacheKey));
@@ -406,17 +419,22 @@ class XtreamProxy {
         return { buf: cached.buf, contentType: cached.contentType };
       }
 
-      // Try each candidate, with 1 retry on timeout
+      // Try each candidate, with up to 3 retries on timeout/transient errors
       let lastErr = null;
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < 3; attempt++) {
         for (const segUrl of candidates) {
           try {
-            const timeout = attempt === 0 ? SEGMENT_TIMEOUT : SEGMENT_TIMEOUT + 5000;
+            const timeout = attempt === 0 ? SEGMENT_TIMEOUT : SEGMENT_TIMEOUT + (attempt * 5000);
             const res = await fetch(segUrl, {
-              headers: { 'User-Agent': UA },
+              headers: { 'User-Agent': UA, 'Connection': 'keep-alive' },
               signal: AbortSignal.timeout(timeout),
             });
-            if (!res.ok) { lastErr = new Error(`Segment HTTP ${res.status}`); continue; }
+            if (!res.ok) { 
+              lastErr = new Error(`Segment HTTP ${res.status}`); 
+              // Do not retry on hard errors like 403 or 401 or 404 (if 404, maybe retry later, but for now break inner)
+              if (res.status === 403 || res.status === 401) break; 
+              continue; 
+            }
             const buf = Buffer.from(await res.arrayBuffer());
             const contentType = res.headers.get('content-type') || 'video/mp2t';
             // Cache for all users
@@ -426,36 +444,92 @@ class XtreamProxy {
             return { buf, contentType };
           } catch (e) { lastErr = e; }
         }
-        // Only retry on timeout errors
-        if (lastErr && !lastErr.message?.includes('timeout')) break;
+        // Only retry on timeout or network errors
+        if (lastErr && !lastErr.message?.includes('timeout') && !lastErr.message?.includes('fetch failed')) break;
+        // Small delay before retry
+        if (attempt < 2) await new Promise(r => setTimeout(r, 1000));
       }
       throw lastErr || new Error('Segment unavailable');
     });
   }
 
-  // ─── URL rewriting ────────────────────────────────────────
+  // ─── URL rewriting and Prefetching ───────────────────────────
+  _prefetchSegments(streamId, newSegments) {
+    // Only prefetch if there are active viewers to save bandwidth and connection limits
+    if (this.getViewerCount(streamId) === 0) return;
+
+    for (const segUrl of newSegments) {
+      const cacheKey = segUrl;
+      // Skip if already in cache or currently downloading
+      if (this._segments.has(cacheKey) || this._pendingSegments.has(cacheKey)) {
+        continue;
+      }
+
+      // Initiate background download
+      const p = this._fetchSegment([segUrl], cacheKey)
+        .catch(err => {
+          // Silent catch for prefetch: errors will be handled if user explicitly requests it
+        })
+        .finally(() => this._pendingSegments.delete(cacheKey));
+      
+      this._pendingSegments.set(cacheKey, p);
+    }
+  }
+
   _rewriteManifest(content, streamId, baseUrl, user, pass) {
-    return content.split('\n').map(line => {
+    const lines = content.split('\n');
+    const rewritten = [];
+    const newSegments = [];
+
+    for (const line of lines) {
       const t = line.trim();
-      if (!t || t.startsWith('#')) return line;
+      if (!t || t.startsWith('#')) {
+        rewritten.push(line);
+        continue;
+      }
       let abs;
       if (t.startsWith('http'))     abs = t;
       else if (t.startsWith('/'))   abs = `${baseUrl}${t}`;
       else                          abs = (user && pass) ? `${baseUrl}/live/${user}/${pass}/${t}` : `${baseUrl}/${t}`;
       const enc = encodeURIComponent(abs);
-      return (t.endsWith('.m3u8') || t.includes('.m3u8?'))
-        ? `/proxy/live/${streamId}/sub/${enc}`
-        : `/proxy/live/${streamId}/seg/${enc}`;
-    }).join('\n');
+      
+      if (t.endsWith('.m3u8') || t.includes('.m3u8?')) {
+        rewritten.push(`/proxy/live/${streamId}/sub/${enc}`);
+      } else {
+        rewritten.push(`/proxy/live/${streamId}/seg/${enc}`);
+        newSegments.push(abs);
+      }
+    }
+
+    // Trigger prefetch asynchronously to avoid blocking manifest processing
+    if (newSegments.length > 0) {
+      setTimeout(() => this._prefetchSegments(streamId, newSegments), 0);
+    }
+
+    return rewritten.join('\n');
   }
 
   _rewriteSubManifest(content, streamId, baseUrl) {
-    return content.split('\n').map(line => {
+    const lines = content.split('\n');
+    const rewritten = [];
+    const newSegments = [];
+
+    for (const line of lines) {
       const t = line.trim();
-      if (!t || t.startsWith('#')) return line;
+      if (!t || t.startsWith('#')) {
+        rewritten.push(line);
+        continue;
+      }
       const abs = t.startsWith('http') ? t : `${baseUrl}${t}`;
-      return `/proxy/live/${streamId}/seg/${encodeURIComponent(abs)}`;
-    }).join('\n');
+      rewritten.push(`/proxy/live/${streamId}/seg/${encodeURIComponent(abs)}`);
+      newSegments.push(abs);
+    }
+
+    if (newSegments.length > 0) {
+      setTimeout(() => this._prefetchSegments(streamId, newSegments), 0);
+    }
+
+    return rewritten.join('\n');
   }
 
   // ─── Session tracking + cleanup ───────────────────────────

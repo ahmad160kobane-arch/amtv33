@@ -100,7 +100,7 @@ export default function VodPlayer({ streamUrl, title, poster, subtitle, subtitle
 
     const isHls = streamUrl.includes('.m3u8');
 
-    const onPlay = () => { setPlaying(true); setBuffering(false); setShowPoster(false); };
+    const onPlay = () => { setPlaying(true); setShowPoster(false); };
     const onPause = () => setPlaying(false);
     const onWaiting = () => setBuffering(true);
     const onPlaying = () => { setBuffering(false); setPlaying(true); setShowPoster(false); };
