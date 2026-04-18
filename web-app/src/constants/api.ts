@@ -522,18 +522,27 @@ export interface FreeStreamResult {
 
 export async function requestFreeStream(channelId: string): Promise<FreeStreamResult> {
   try {
+    console.log('[API] 🔄 Requesting stream for channel:', channelId);
     const res = await apiFetch(`/api/xtream/stream/${encodeURIComponent(channelId)}`);
-    if (!res.ok) return { success: false, error: 'فشل جلب الرابط' };
+    if (!res.ok) {
+      console.error('[API] ❌ Request failed:', res.status, res.statusText);
+      return { success: false, error: 'فشل جلب الرابط' };
+    }
     const data = await res.json();
+    console.log('[API] ✅ Response data:', data);
+    
     let streamUrl = data.hlsUrl || data.proxyUrl || data.directUrl || '';
+    console.log('[API] 📺 Initial streamUrl:', streamUrl);
     
     // If streamUrl is a relative path (starts with /), convert to full VPS URL
     // This allows HTTPS web-app to connect directly to HTTP VPS server
     if (streamUrl.startsWith('/') && typeof window !== 'undefined') {
       // Use VPS direct URL for better performance (no Next.js proxy)
       streamUrl = 'http://62.171.153.204:8090' + streamUrl;
+      console.log('[API] 🔗 Converted to full URL:', streamUrl);
     }
     
+    console.log('[API] ✅ Final streamUrl:', streamUrl);
     return {
       success: true,
       name: data.name,
@@ -541,7 +550,10 @@ export async function requestFreeStream(channelId: string): Promise<FreeStreamRe
       group: data.category,
       streamUrl,
     };
-  } catch { return { success: false, error: 'خطأ في الاتصال' }; }
+  } catch (error: any) {
+    console.error('[API] ❌ Exception:', error);
+    return { success: false, error: 'خطأ في الاتصال' };
+  }
 }
 
 export async function fetchFreeChannels(params?: { limit?: number; group?: string; search?: string }): Promise<{ channels: FreeChannel[] }> {

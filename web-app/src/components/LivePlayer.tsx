@@ -41,8 +41,12 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
     const MAX_AUTO_RETRY = 3;
     let retryTimer: any = null;
 
+    console.log('[LivePlayer] 🎬 Starting stream:', streamUrl);
+
     const isTs = streamUrl.includes('/xtream-pipe/') || streamUrl.includes('.ts') || streamUrl.includes('/live-pipe/');
     const isHls = streamUrl.includes('.m3u8') || streamUrl.includes('/proxy/live/');
+
+    console.log('[LivePlayer] Stream type:', { isTs, isHls, streamUrl });
 
     const onPlay = () => { setPlaying(true); retryCount = 0; };
     const onPause = () => setPlaying(false);
@@ -113,18 +117,26 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
         document.head.appendChild(script);
       }
     } else if (isHls) {
+      console.log('[LivePlayer] 📺 HLS stream detected');
       if (video.canPlayType('application/vnd.apple.mpegurl')) {
         // Safari native HLS
+        console.log('[LivePlayer] ✅ Using Safari native HLS');
         video.src = streamUrl;
-        video.play().catch(() => {});
+        video.play().catch((err) => {
+          console.error('[LivePlayer] ❌ Safari play error:', err);
+        });
       } else {
+        console.log('[LivePlayer] 🔧 Loading HLS.js...');
         const loadHls = () => {
           const Hls = (window as any).Hls;
+          console.log('[LivePlayer] HLS.js loaded:', !!Hls, 'Supported:', Hls?.isSupported());
           if (Hls && Hls.isSupported()) {
+            console.log('[LivePlayer] ✅ Creating HLS instance...');
             hlsInstance = new Hls({
               enableWorker: true,
               lowLatencyMode: false,
               startLevel: -1,
+              debug: true, // Enable debug for troubleshooting
               // ═══ Fast startup — start playing with minimal buffered data ═══
               startFragPrefetch: true,             // prefetch first frag while parsing manifest
               maxStarvationDelay: 2,               // start playback after 2s of buffer (faster)
@@ -152,11 +164,24 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
               fragLoadingRetryDelay: 200,
               fragLoadingMaxRetryTimeout: 3000,
             });
+            
+            console.log('[LivePlayer] 🔗 Loading source:', streamUrl);
             hlsInstance.loadSource(streamUrl);
             hlsInstance.attachMedia(video);
 
+            hlsInstance.on(Hls.Events.MANIFEST_LOADING, () => {
+              console.log('[LivePlayer] 📥 Loading manifest...');
+            });
+
+            hlsInstance.on(Hls.Events.MANIFEST_LOADED, () => {
+              console.log('[LivePlayer] ✅ Manifest loaded!');
+            });
+
             hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
-              video.play().catch(() => {});
+              console.log('[LivePlayer] ✅ Manifest parsed - starting playback');
+              video.play().catch((err) => {
+                console.error('[LivePlayer] ❌ Play error:', err);
+              });
             });
 
                     // Auto seek-to-live: if player falls >15s behind, jump to live edge
@@ -176,9 +201,12 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
             });
 
             hlsInstance.on(Hls.Events.ERROR, (_: any, data: any) => {
+              console.error('[LivePlayer] ❌ HLS Error:', data.type, data.details, data);
               if (data.fatal) {
+                console.error('[LivePlayer] 💀 Fatal error:', data.type);
                 switch (data.type) {
                   case Hls.ErrorTypes.NETWORK_ERROR:
+                    console.log('[LivePlayer] 🔄 Network error - retrying...', retryCount);
                     if (retryCount < MAX_AUTO_RETRY) {
                       retryCount++;
                       hlsInstance.startLoad();
@@ -187,26 +215,45 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
                     }
                     break;
                   case Hls.ErrorTypes.MEDIA_ERROR:
+                    console.log('[LivePlayer] 🔄 Media error - recovering...');
                     hlsInstance.recoverMediaError();
                     break;
                   default:
+                    console.error('[LivePlayer] 💥 Unrecoverable error');
                     setError('فشل تحميل البث المباشر');
                 }
               }
             });
+          } else {
+            console.error('[LivePlayer] ❌ HLS.js not supported');
+            setError('المتصفح لا يدعم HLS');
           }
         };
-        if ((window as any).Hls) { loadHls(); }
+        if ((window as any).Hls) {
+          console.log('[LivePlayer] ✅ HLS.js already loaded');
+          loadHls();
+        }
         else {
+          console.log('[LivePlayer] 📥 Loading HLS.js from CDN...');
           const s = document.createElement('script');
           s.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js';
-          s.onload = loadHls;
+          s.onload = () => {
+            console.log('[LivePlayer] ✅ HLS.js script loaded');
+            loadHls();
+          };
+          s.onerror = () => {
+            console.error('[LivePlayer] ❌ Failed to load HLS.js');
+            setError('فشل تحميل مكتبة HLS');
+          };
           document.head.appendChild(s);
         }
       }
     } else {
+      console.log('[LivePlayer] 📺 Direct video source');
       video.src = streamUrl;
-      video.play().catch(() => {});
+      video.play().catch((err) => {
+        console.error('[LivePlayer] ❌ Direct play error:', err);
+      });
     }
 
     return () => {
