@@ -527,9 +527,8 @@ export async function requestFreeStream(channelId: string): Promise<FreeStreamRe
     const data = await res.json();
 
     let streamUrl = data.hlsUrl || data.proxyUrl || data.directUrl || '';
-    if (streamUrl.startsWith('/') && typeof window !== 'undefined') {
-      streamUrl = 'http://62.171.153.204:8090' + streamUrl;
-    }
+    // Keep relative path — Next.js rewrites /hls/* to VPS over HTTPS proxy.
+    // Do NOT prepend http://VPS — that causes mixed-content block on HTTPS pages.
 
     // Wait for first HLS segment to be ready (FFmpeg startup ~3-8s).
     // Player would 404 on .m3u8 otherwise, then stall in "loading" state.

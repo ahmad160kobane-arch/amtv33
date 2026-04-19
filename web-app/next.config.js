@@ -66,6 +66,14 @@ const nextConfig = {
           { key: 'Access-Control-Expose-Headers', value: 'Content-Range, Content-Length, Accept-Ranges' },
         ],
       },
+      {
+        source: '/hls/:path*',
+        headers: [
+          { key: 'X-Accel-Buffering', value: 'no' },
+          { key: 'Access-Control-Allow-Origin', value: '*' },
+          { key: 'Cache-Control', value: 'no-cache, no-store' },
+        ],
+      },
     ];
   },
   async rewrites() {
@@ -80,6 +88,7 @@ const nextConfig = {
       { source: '/xtream-play/:path*',  destination: `${CLOUD_URL}/xtream-play/:path*`  },
       { source: '/xtream-pipe/:path*',  destination: `${CLOUD_URL}/xtream-pipe/:path*`  },
       { source: '/vod-play/:path*',     destination: `${CLOUD_URL}/vod-play/:path*`     },
+      { source: '/hls/:path*',          destination: `${CLOUD_URL}/hls/:path*`           },
       // Backend API (port 3000) — everything else
       { source: '/api/:path*',          destination: `${BACKEND_URL}/api/:path*`         },
     ];
