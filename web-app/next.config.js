@@ -1,6 +1,6 @@
 /** @type {import('next').NextConfig} */
-// Hardcoded VPS endpoints — Railway env vars intentionally ignored to prevent misconfiguration
-const BACKEND_URL  = 'http://62.171.153.204:3000';
+// Backend API on Railway, Cloud Server on VPS
+const BACKEND_URL  = 'https://amtv33-production.up.railway.app';
 const CLOUD_URL    = 'http://62.171.153.204:8090';
 
 const SECURITY_HEADERS = [
