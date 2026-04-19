@@ -405,6 +405,17 @@ function addManualChannelModal() {
     </div>
     <div class="form-group"><label>رابط البث</label><input class="form-control" id="ch-url" dir="ltr" placeholder="http://..."></div>
     <div class="form-group"><label>رابط الشعار</label><input class="form-control" id="ch-logo" dir="ltr" placeholder="اختياري"></div>
+    <div class="form-group">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="ch-direct" style="width:auto">
+        <span>قناة مباشرة (Direct Passthrough) - تمرير الرابط مباشرة بدون إعادة بث</span>
+      </label>
+      <small style="color:var(--text2);display:block;margin-top:4px">
+        ✓ استخدم هذا الخيار للقنوات المجانية من الإنترنت (مثل IPTV-ORG)<br>
+        ✓ الرابط يُمرر مباشرة للمستخدمين بدون معالجة<br>
+        ✗ لا تستخدمه لقنوات IPTV المدفوعة (استخدم "بحث IPTV" بدلاً من ذلك)
+      </small>
+    </div>
   `, `<button class="btn btn-primary" onclick="saveNewChannel()">إضافة</button><button class="btn btn-outline" onclick="closeModal()">إلغاء</button>`);
 }
 
@@ -413,11 +424,13 @@ async function saveNewChannel() {
     const name = document.getElementById('ch-name').value.trim();
     const stream_url = document.getElementById('ch-url').value.trim();
     if (!name || !stream_url) throw new Error('الاسم ورابط البث مطلوبان');
+    const is_direct = document.getElementById('ch-direct')?.checked ? 1 : 0;
     await api('/api/admin/channels', { method: 'POST', body: JSON.stringify({
       name, stream_url,
       group_name: document.getElementById('ch-group').value || 'عام',
       logo_url: document.getElementById('ch-logo').value || '',
       sort_order: parseInt(document.getElementById('ch-sort').value) || 0,
+      is_direct_passthrough: is_direct,
     })});
     toast('تم إضافة القناة');
     closeModal();
@@ -428,6 +441,7 @@ async function saveNewChannel() {
 function editChannelModal(id) {
   const ch = _allChannels.find(x => x.id === id);
   if (!ch) return;
+  const isDirect = ch.is_direct_passthrough === 1 || ch.is_direct_passthrough === true;
   showModal('تعديل القناة: ' + ch.name, `
     <div class="form-group"><label>اسم القناة</label><input class="form-control" id="ch-name" value="${esc(ch.name)}"></div>
     <div class="form-row">
@@ -436,17 +450,25 @@ function editChannelModal(id) {
     </div>
     <div class="form-group"><label>رابط البث</label><input class="form-control" id="ch-url" dir="ltr" value="${esc(ch.stream_url||'')}"></div>
     <div class="form-group"><label>رابط الشعار</label><input class="form-control" id="ch-logo" dir="ltr" value="${esc(ch.logo_url||ch.logo||'')}"></div>
+    <div class="form-group">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="ch-direct" style="width:auto" ${isDirect?'checked':''}>
+        <span>قناة مباشرة (Direct Passthrough)</span>
+      </label>
+    </div>
   `, `<button class="btn btn-primary" onclick="updateChannel('${id}')">حفظ</button><button class="btn btn-outline" onclick="closeModal()">إلغاء</button>`);
 }
 
 async function updateChannel(id) {
   try {
+    const is_direct = document.getElementById('ch-direct')?.checked ? 1 : 0;
     await api(`/api/admin/channels/${id}`, { method: 'PUT', body: JSON.stringify({
       name: document.getElementById('ch-name').value,
       group_name: document.getElementById('ch-group').value,
       stream_url: document.getElementById('ch-url').value,
       logo_url: document.getElementById('ch-logo').value,
       is_enabled: parseInt(document.getElementById('ch-enabled').value),
+      is_direct_passthrough: is_direct,
     })});
     toast('تم تحديث القناة');
     closeModal();

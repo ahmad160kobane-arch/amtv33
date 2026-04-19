@@ -97,6 +97,7 @@ db.init = async function () {
       sort_order  INTEGER DEFAULT 0,
       xtream_id   TEXT DEFAULT '',
       category    TEXT DEFAULT '',
+      is_direct_passthrough INTEGER DEFAULT 0,
       created_at  TEXT DEFAULT ${TS_DEFAULT}
     );
 
