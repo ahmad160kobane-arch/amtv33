@@ -13,6 +13,8 @@
   "dependencies": {
     "@consumet/extensions": "^1.8.8",
     "@movie-web/providers": "^2.4.13",
+    "axios": "^1.7.9",
+    "jsdom": "^25.0.1",
     "pg": "^8.13.0",
     "cors": "^2.8.5",
     "express": "^4.21.0",

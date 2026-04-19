@@ -139,30 +139,30 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
               debug: false,
               // ═══ Startup ═══
               startFragPrefetch: true,
-              maxStarvationDelay: 4,
-              maxLoadingDelay: 4,
-              highBufferWatchdogPeriod: 2,
-              // ═══ Live edge sync ═══
-              liveSyncDurationCount: 3,            // start 3 segments behind live edge (~12s)
-              liveMaxLatencyDurationCount: 6,      // max 6 segments behind before seeking
+              maxStarvationDelay: 6,
+              maxLoadingDelay: 6,
+              highBufferWatchdogPeriod: 3,
+              // ═══ Live edge sync — generous for 4G ═══
+              liveSyncDurationCount: 4,            // start 4 segments behind live edge (~8s with 2s segs)
+              liveMaxLatencyDurationCount: 10,     // allow up to 20s behind before auto-seek
               liveDurationInfinity: true,
-              liveBackBufferLength: 30,            // keep 30s of back-buffer for rewind
-              // ═══ Buffer — deep enough to survive playlist refresh gaps ═══
-              maxBufferLength: 30,
-              maxMaxBufferLength: 60,
-              maxBufferSize: 60 * 1024 * 1024,
-              maxBufferHole: 0.5,
-              // ═══ Playlist & segment loading — resilient retries ═══
-              manifestLoadingTimeOut: 10000,
-              manifestLoadingMaxRetry: 6,
-              manifestLoadingRetryDelay: 500,
-              levelLoadingTimeOut: 10000,
-              levelLoadingMaxRetry: 6,
-              levelLoadingRetryDelay: 500,
-              fragLoadingTimeOut: 15000,
-              fragLoadingMaxRetry: 6,
+              liveBackBufferLength: 30,
+              // ═══ Deep buffer — absorbs 4G jitter and proxy latency ═══
+              maxBufferLength: 45,                 // buffer up to 45s ahead
+              maxMaxBufferLength: 90,
+              maxBufferSize: 80 * 1024 * 1024,     // 80MB
+              maxBufferHole: 0.8,                  // tolerate 0.8s gaps without stalling
+              // ═══ Resilient loading — extra retries for mobile networks ═══
+              manifestLoadingTimeOut: 12000,
+              manifestLoadingMaxRetry: 8,
+              manifestLoadingRetryDelay: 400,
+              levelLoadingTimeOut: 12000,
+              levelLoadingMaxRetry: 8,
+              levelLoadingRetryDelay: 400,
+              fragLoadingTimeOut: 20000,
+              fragLoadingMaxRetry: 8,
               fragLoadingRetryDelay: 500,
-              fragLoadingMaxRetryTimeout: 8000,
+              fragLoadingMaxRetryTimeout: 10000,
             });
             
             console.log('[LivePlayer] 🔗 Loading source:', streamUrl);
