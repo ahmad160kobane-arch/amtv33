@@ -1,235 +1,204 @@
 /**
- * مدير البث — بث عند الطلب مع دعم الترجمة
- * 
- * بدون قاعدة بيانات — يحصل على روابط المصادر من Backend API
- * 
- * النظام:
- * 1. المشاهد يطلب بث عبر التطبيق
- * 2. التطبيق يرسل الطلب للباك اند → الباك اند يرسل رابط المصدر للسيرفر السحابي
- * 3. السيرفر السحابي يشغل FFmpeg → يحول المصدر إلى HLS مع ترجمة WebVTT
- * 4. المشاهد يتصل مباشرة بالسيرفر السحابي لتشغيل HLS
- * 5. عند خروج آخر مشاهد → FFmpeg يتوقف تلقائياً (توفير موارد)
+ * StreamManager — Clean IPTV → HLS bridge (v2)
+ *
+ * Design:
+ *   • One FFmpeg process per channel (not per viewer).
+ *   • Uses Xtream `.ts` endpoint → single long-lived TCP connection = most natural
+ *     request pattern (same as VLC). IPTV provider sees 1 connection → no ban risk.
+ *   • FFmpeg remuxes MPEG-TS → HLS on disk with `copy` codec (zero CPU overhead).
+ *   • All viewers (up to 150/channel) fetch the same HLS files from disk via
+ *     Express static — trivial load, no upstream amplification.
+ *   • Auto-start on first viewer, auto-stop N seconds after last viewer.
+ *   • Auto-reconnect on unexpected FFmpeg exit (bounded retry with backoff).
+ *
+ * Public API (stable — do not break without updating server.js):
+ *   requestStream(streamId, type, sourceUrl, name)  → { success, hlsUrl, ready, waiting }
+ *   releaseStream(streamId)
+ *   isReady(streamId, type)                         → boolean
+ *   getStreamInfo(streamId)                         → object|null
+ *   getActiveStreams()                              → array
+ *   stopStream(streamId) / stopAll()
+ *   probeSubtitles(sourceUrl)                       → array
+ *   seekVodStream(streamId, sec)                    → { success, ... }
  */
+
 const { spawn, execFile } = require('child_process');
-const http = require('http');
-const https = require('https');
 const path = require('path');
-const fs = require('fs');
+const fs   = require('fs');
 const config = require('../config');
+
+// ── Tunables ─────────────────────────────────────────────────
+const MAX_CONCURRENT      = 30;    // max simultaneous channels (FFmpeg procs)
+const LIVE_HLS_TIME       = 4;     // segment duration (s) — 4 is a stable sweet spot
+const LIVE_HLS_LIST_SIZE  = 8;     // keep 8 segments in playlist (~32s window)
+const LIVE_HLS_DELETE_TH  = 4;     // delete segments 4+ beyond list
+const RESTART_MAX         = 5;     // max auto-restarts on unexpected exit
+const RESTART_BACKOFF_MS  = 2000;  // base delay between restarts
+const UA                  = 'VLC/3.0.20 LibVLC/3.0.20';
+const MIN_READY_SEGMENTS  = Math.max(1, config.MIN_SEGMENTS_READY || 1);
+
+// Convert Xtream `/live/user/pass/ID.m3u8` → `.ts` (long-lived TCP endpoint).
+// This is the single most important design choice: one natural connection per
+// channel, no manifest polling, no token rotation, cannot trigger rate limits.
+function toTsEndpoint(url) {
+  if (!url || typeof url !== 'string') return url;
+  // Only transform Xtream live URLs; leave query strings / other providers alone.
+  if (url.includes('/live/') && /\.m3u8(?:$|\?)/i.test(url)) {
+    return url.replace(/\.m3u8(\?|$)/i, '.ts$1');
+  }
+  return url;
+}
 
 class StreamManager {
   constructor() {
-    // streamId → { process, sourceUrl, startTime, viewers, lastAccess, type, name, idleTimer, restartCount }
+    // streamId → {
+    //   process, sourceUrl, name, type, startTime, viewers, lastAccess,
+    //   idleTimer, restartCount, pending, completed, stderrTail, seekOffset
+    // }
     this.streams = new Map();
-    this._monitorInterval = null;
+    this._monitor = null;
   }
 
   start() {
-    this._monitorInterval = setInterval(() => this._monitor(), 10000);
-    console.log('[StreamManager] جاهز — وضع البث عند الطلب (بدون DB)');
+    this._monitor = setInterval(() => this._healthCheck(), 10_000);
+    console.log('[StreamManager] ready — 1 FFmpeg/channel, .ts upstream, disk HLS');
   }
 
   stop() {
-    if (this._monitorInterval) clearInterval(this._monitorInterval);
-    for (const [id] of this.streams) {
-      this._killStream(id);
-    }
-    console.log('[StreamManager] توقف');
+    if (this._monitor) clearInterval(this._monitor);
+    for (const [id] of this.streams) this._kill(id, 'server stop');
+    console.log('[StreamManager] stopped');
   }
 
-  // ═══════════════════════════════════════════════════════
-  // البث عند الطلب
-  // يُستدعى من الباك اند الرئيسي أو مباشرة مع رابط المصدر
-  // ═══════════════════════════════════════════════════════
-
-  /**
-   * requestStream — بدء بث جديد أو إضافة مشاهد لبث قائم
-   * @param {string} streamId - معرف القناة أو المحتوى
-   * @param {string} type - 'live' أو 'vod'
-   * @param {string} sourceUrl - رابط مصدر IPTV (يأتي من الباك اند)
-   * @param {string} name - اسم القناة/المحتوى (للسجلات)
-   */
+  // ─────────────────────────────────────────────────────────
+  // PUBLIC: requestStream
+  // Adds a viewer to an existing stream or starts a new one.
+  // ─────────────────────────────────────────────────────────
   async requestStream(streamId, type, sourceUrl, name = 'Unknown') {
-    // إذا البث يعمل بالفعل — أضف مشاهد
-    if (this.streams.has(streamId)) {
-      const info = this.streams.get(streamId);
+    type = type === 'vod' ? 'vod' : 'live';
+    const info = this.streams.get(streamId);
+
+    // Hot path: stream already running or starting
+    if (info) {
       info.viewers++;
       info.lastAccess = Date.now();
       if (info.idleTimer) { clearTimeout(info.idleTimer); info.idleTimer = null; }
-      console.log(`[Stream] +مشاهد ${info.name} (${info.viewers} متصل)`);
-      return { success: true, hlsUrl: this._getHlsUrl(streamId, type), ready: this.isReady(streamId, type) };
+      return {
+        success: true,
+        hlsUrl : this._hlsUrl(streamId, type),
+        ready  : this.isReady(streamId, type),
+        waiting: !this.isReady(streamId, type),
+      };
     }
 
-    // ابدأ البث الجديد
-    if (!sourceUrl) return { success: false, error: 'رابط المصدر مطلوب' };
+    if (!sourceUrl) return { success: false, error: 'sourceUrl required' };
 
-    // ═══ Multi-channel mode: allow multiple concurrent FFmpeg streams ═══
-    // HLS proxy (xtream-proxy) is the preferred path for Xtream live channels
-    // StreamManager is only used for local channels or explicit HLS mode requests
-    // Safety limit: max 5 concurrent FFmpeg streams to prevent resource exhaustion
-    const MAX_CONCURRENT_FFMPEG = 5;
-    const activeStreams = [...this.streams.entries()].filter(([, info]) => !info.completed);
-    if (activeStreams.length >= MAX_CONCURRENT_FFMPEG) {
-      // Kill the oldest stream (least recently accessed)
-      const oldest = activeStreams.sort((a, b) => a[1].lastAccess - b[1].lastAccess)[0];
-      console.log(`[Stream] ⚠ إيقاف ${oldest[1].name} (حد ${MAX_CONCURRENT_FFMPEG} FFmpeg)`);
-      this._killStream(oldest[0]);
-      await new Promise(r => setTimeout(r, 500));
-    }
-
-    // تتبع redirects لتجاوز Cloudflare — FFmpeg يأخذ الرابط المباشر
-    console.log(`[Stream] Resolving: ${sourceUrl.substring(0, 80)}...`);
-    const resolvedUrl = await this._resolveRedirect(sourceUrl);
-    console.log(`[Stream] Resolved: ${resolvedUrl.substring(0, 80)}...`);
-
-    let result;
-    if (type === 'live') {
-      result = this._startLiveStream(streamId, resolvedUrl, name);
-    } else {
-      result = this._startVodStream(streamId, resolvedUrl, name);
-    }
-
-    if (result.success) {
-      this.streams.get(streamId).viewers = 1;
-      return { success: true, hlsUrl: this._getHlsUrl(streamId, type), ready: false, waiting: true };
-    }
-    return result;
-  }
-
-  /**
-   * _resolveRedirect — تتبع HTTP redirects للحصول على الرابط المباشر
-   * IPTV servers behind Cloudflare redirect to direct IP — FFmpeg can't follow CF redirects
-   */
-  async _resolveRedirect(url, maxRedirects = 5) {
-    try {
-      let currentUrl = url;
-      for (let i = 0; i < maxRedirects; i++) {
-        const resp = await fetch(currentUrl, {
-          redirect: 'manual',
-          headers: { 'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20' },
-        });
-        if (resp.status >= 300 && resp.status < 400) {
-          const location = resp.headers.get('location');
-          if (location) {
-            currentUrl = location;
-            console.log(`[Stream] Redirect ${resp.status} → ${currentUrl.substring(0, 80)}...`);
-            continue;
-          }
-        }
-        // 200 أو غير redirect — هذا الرابط النهائي
-        return currentUrl;
+    // Enforce concurrency cap — evict least-recently-accessed channel.
+    if (this.streams.size >= MAX_CONCURRENT) {
+      const oldest = [...this.streams.entries()]
+        .filter(([, s]) => !s.completed)
+        .sort((a, b) => a[1].lastAccess - b[1].lastAccess)[0];
+      if (oldest) {
+        console.log(`[Stream] LRU evict: ${oldest[1].name}`);
+        this._kill(oldest[0], 'LRU');
+        await sleep(300);
       }
-      return currentUrl;
-    } catch (e) {
-      console.error(`[Stream] فشل resolve redirect:`, e.message);
-      return url;
     }
+
+    const upstream = type === 'live' ? toTsEndpoint(sourceUrl) : sourceUrl;
+    const spawned  = type === 'live'
+      ? this._startLive(streamId, upstream, sourceUrl, name)
+      : this._startVod(streamId, upstream, name, 0);
+
+    if (!spawned.success) return spawned;
+
+    const s = this.streams.get(streamId);
+    if (s) s.viewers = 1;
+    return {
+      success: true,
+      hlsUrl : this._hlsUrl(streamId, type),
+      ready  : false,
+      waiting: true,
+    };
   }
 
-  /**
-   * releaseStream — مشاهد أنهى المشاهدة
-   */
+  // ─────────────────────────────────────────────────────────
+  // PUBLIC: releaseStream — viewer disconnected
+  // ─────────────────────────────────────────────────────────
   releaseStream(streamId) {
     const info = this.streams.get(streamId);
     if (!info) return;
     info.viewers = Math.max(0, info.viewers - 1);
     info.lastAccess = Date.now();
-    console.log(`[Stream] -مشاهد ${info.name} (${info.viewers} متصل)`);
 
-    if (info.viewers <= 0) {
-      // VOD مكتمل (FFmpeg انتهى) — نظّف فوراً
+    if (info.viewers === 0) {
+      // VOD that finished processing: clean up immediately.
       if (info.completed) {
-        console.log(`[Stream] تنظيف VOD مكتمل: ${info.name}`);
         this.streams.delete(streamId);
-        const hlsDir = path.join(config.HLS_DIR, 'vod', streamId);
-        try { fs.rmSync(hlsDir, { recursive: true, force: true }); } catch {}
+        this._wipeHlsDir(streamId, info.type);
         return;
       }
+      // Schedule idle shutdown.
       info.idleTimer = setTimeout(() => {
-        const current = this.streams.get(streamId);
-        if (current && current.viewers <= 0) {
-          console.log(`[Stream] إيقاف ${current.name} (خمول)`);
-          this._killStream(streamId);
-        }
-      }, config.IDLE_TIMEOUT);
+        const cur = this.streams.get(streamId);
+        if (cur && cur.viewers === 0) this._kill(streamId, 'idle');
+      }, config.IDLE_TIMEOUT || 60_000);
     }
   }
 
-  // ═══════════════════════════════════════════════════════
-  // تشغيل بث مباشر (قناة)
-  // ═══════════════════════════════════════════════════════
-  _startLiveStream(streamId, sourceUrl, name) {
-    // تحويل m3u8 → ts للمصادر الحية (تجنب حظر Cloudflare)
-    if (sourceUrl.includes('/live/') && sourceUrl.endsWith('.m3u8')) {
-      sourceUrl = sourceUrl.slice(0, -5) + '.ts';
-    }
-
-    const outputDir = path.join(config.HLS_DIR, streamId);
-    fs.mkdirSync(outputDir, { recursive: true });
-    const outputPath = path.join(outputDir, 'stream.m3u8');
-    const segmentPath = path.join(outputDir, 'seg_%d.ts');
+  // ─────────────────────────────────────────────────────────
+  // LIVE: spawn FFmpeg reading Xtream .ts endpoint
+  // ─────────────────────────────────────────────────────────
+  _startLive(streamId, upstream, originalSource, name) {
+    const dir = path.join(config.HLS_DIR, streamId);
+    this._prepareDir(dir);
 
     const cmd = [
       '-y', '-hide_banner', '-loglevel', 'warning',
-      // ═══ تحسينات البث المباشر: بداية فورية + تأخير أقل ═══
-      '-fflags', 'nobuffer+discardcorrupt+genpts',
+      // Natural client headers
+      '-user_agent', UA,
+      // TCP-stream input tuning
+      '-fflags', 'nobuffer+genpts+discardcorrupt',
       '-flags', 'low_delay',
-      '-analyzeduration', '1000000',
-      '-probesize', '1000000',
-      '-user_agent', 'VLC/3.0.20 LibVLC/3.0.20',
+      '-analyzeduration', '2000000',
+      '-probesize', '2000000',
+      // Resilient upstream (FFmpeg follows 3xx on http input by default)
       '-reconnect', '1',
       '-reconnect_streamed', '1',
       '-reconnect_at_eof', '1',
       '-reconnect_on_network_error', '1',
-      '-reconnect_delay_max', '3',
-      '-rw_timeout', '8000000',
-      '-i', sourceUrl,
-      // ═══ copy كل شيء — بدون إعادة encoding = صفر CPU ═══
+      '-reconnect_delay_max', '5',
+      '-rw_timeout', '15000000',   // 15s I/O timeout per read
+      '-i', upstream,
+      // Zero-CPU remux to HLS
+      '-map', '0:v:0?', '-map', '0:a:0?',
       '-c:v', 'copy',
       '-c:a', 'copy',
-      '-map', '0:v:0', '-map', '0:a:0?',
       '-f', 'hls',
-      '-hls_time', String(config.HLS_TIME),
-      '-hls_list_size', '6',
-      '-hls_flags', 'delete_segments+append_list+omit_endlist+split_by_time',
-      '-hls_delete_threshold', '4',
+      '-hls_time', String(LIVE_HLS_TIME),
+      '-hls_list_size', String(LIVE_HLS_LIST_SIZE),
+      '-hls_flags', 'delete_segments+independent_segments+append_list+omit_endlist+split_by_time',
+      '-hls_delete_threshold', String(LIVE_HLS_DELETE_TH),
       '-hls_segment_type', 'mpegts',
-      '-hls_segment_filename', segmentPath,
+      '-hls_segment_filename', path.join(dir, 'seg_%d.ts'),
       '-hls_allow_cache', '0',
       '-hls_start_number_source', 'epoch',
-      outputPath,
+      path.join(dir, 'stream.m3u8'),
     ];
 
-    return this._spawnFFmpeg(streamId, name, 'live', sourceUrl, cmd);
+    return this._spawn(streamId, name, 'live', originalSource, cmd);
   }
 
-  // ═══════════════════════════════════════════════════════
-  // تشغيل بث VOD (فيلم/حلقة) — HLS Remuxing (مثل Netflix/Plex)
-  //
-  // FFmpeg يقرأ مباشرة من رابط IPTV ويقسّم الفيديو لـ segments
-  // كل segment = 10 ثواني، المشغل يحمّل 3-5 segments مقدماً
-  // النتيجة: 30-50 ثانية buffer = بث بدون تقطيع
-  //
-  // لا إعادة encoding (copy codec) = سرعة عالية جداً
-  // FFmpeg يعالج أسرع من وقت التشغيل → الملف يكتمل بسرعة
-  // ═══════════════════════════════════════════════════════
-  _startVodStream(streamId, resolvedUrl, name) {
-    return this._startVodStreamAt(streamId, resolvedUrl, name, 0);
-  }
-
-  /**
-   * _startVodStreamAt — بدء HLS remux من موضع معين (للـ seeking)
-   * @param {number} seekSec — الموضع بالثواني (0 = من البداية)
-   */
-  _startVodStreamAt(streamId, resolvedUrl, name, seekSec = 0) {
-    const outputDir = path.join(config.HLS_DIR, 'vod', streamId);
-    fs.mkdirSync(outputDir, { recursive: true });
-    const outputPath = path.join(outputDir, 'stream.m3u8');
-    const segmentPath = path.join(outputDir, 'seg_%d.ts');
+  // ─────────────────────────────────────────────────────────
+  // VOD: HLS remux from movie/episode source (seekable)
+  // ─────────────────────────────────────────────────────────
+  _startVod(streamId, upstream, name, seekSec = 0) {
+    const dir = path.join(config.HLS_DIR, 'vod', streamId);
+    this._prepareDir(dir);
 
     const cmd = [
       '-y', '-hide_banner', '-loglevel', 'warning',
-      '-user_agent', 'VLC/3.0.20 LibVLC/3.0.20',
+      '-user_agent', UA,
       '-reconnect', '1',
       '-reconnect_streamed', '1',
       '-reconnect_on_network_error', '1',
@@ -238,16 +207,11 @@ class StreamManager {
       '-analyzeduration', '10000000',
       '-probesize', '10000000',
     ];
-
-    // ─── Seeking: بدء من موضع معين ───
-    if (seekSec > 0) {
-      cmd.push('-ss', String(seekSec));
-    }
+    if (seekSec > 0) cmd.push('-ss', String(seekSec));
 
     cmd.push(
-      '-i', resolvedUrl,
-      '-map', '0:v:0',
-      '-map', '0:a:0?',
+      '-i', upstream,
+      '-map', '0:v:0', '-map', '0:a:0?',
       '-c:v', 'copy',
       '-c:a', 'aac', '-b:a', '128k', '-ac', '2',
       '-f', 'hls',
@@ -256,181 +220,164 @@ class StreamManager {
       '-hls_playlist_type', 'event',
       '-hls_flags', 'independent_segments+append_list',
       '-hls_segment_type', 'mpegts',
-      '-hls_segment_filename', segmentPath,
-      outputPath,
+      '-hls_segment_filename', path.join(dir, 'seg_%d.ts'),
+      path.join(dir, 'stream.m3u8'),
     );
 
-    return this._spawnFFmpeg(streamId, name, 'vod', resolvedUrl, cmd);
+    const out = this._spawn(streamId, name, 'vod', upstream, cmd);
+    if (out.success) {
+      const s = this.streams.get(streamId);
+      if (s) s.seekOffset = seekSec;
+    }
+    return out;
   }
 
-  /**
-   * seekVodStream — Seeking في VOD (إعادة بدء FFmpeg من موضع جديد)
-   *
-   * عندما المستخدم يقفز لموضع لم يتم تحميله بعد:
-   * 1. إيقاف FFmpeg الحالي
-   * 2. مسح الـ segments القديمة
-   * 3. بدء FFmpeg من الموضع الجديد
-   */
   async seekVodStream(streamId, positionSec) {
     const info = this.streams.get(streamId);
-    if (!info || info.type !== 'vod') return { success: false, error: 'لا يوجد بث VOD' };
-
+    if (!info || info.type !== 'vod') return { success: false, error: 'no active VOD' };
     const { sourceUrl, name, viewers } = info;
-    console.log(`[Stream] ⏩ Seek ${name} → ${Math.floor(positionSec)}s`);
-
-    // إيقاف FFmpeg الحالي
-    try { info.process.kill('SIGTERM'); } catch {}
+    try { info.process && info.process.kill('SIGTERM'); } catch {}
     if (info.idleTimer) clearTimeout(info.idleTimer);
     this.streams.delete(streamId);
-
-    // مسح الـ segments القديمة
-    const hlsDir = path.join(config.HLS_DIR, 'vod', streamId);
-    try { fs.rmSync(hlsDir, { recursive: true, force: true }); } catch {}
-
-    // انتظار إغلاق الاتصال القديم
-    await new Promise(r => setTimeout(r, 500));
-
-    // إعادة حل الرابط (قد تكون صلاحيته انتهت)
-    const resolvedUrl = await this._resolveRedirect(sourceUrl);
-
-    // بدء FFmpeg من الموضع الجديد
-    const result = this._startVodStreamAt(streamId, resolvedUrl, name, positionSec);
-    if (result.success) {
-      const newInfo = this.streams.get(streamId);
-      if (newInfo) {
-        newInfo.viewers = viewers;
-        newInfo.seekOffset = positionSec;
-      }
+    this._wipeHlsDir(streamId, 'vod');
+    await sleep(400);
+    const res = this._startVod(streamId, sourceUrl, name, positionSec);
+    if (res.success) {
+      const s = this.streams.get(streamId);
+      if (s) s.viewers = viewers;
     }
-    return result;
+    return res;
   }
 
-  // ═══════════════════════════════════════════════════════
-  // تشغيل FFmpeg
-  // ═══════════════════════════════════════════════════════
-  _spawnFFmpeg(streamId, name, type, sourceUrl, cmd) {
+  // ─────────────────────────────────────────────────────────
+  // Core spawn — shared by live + VOD
+  // ─────────────────────────────────────────────────────────
+  _spawn(streamId, name, type, sourceUrl, cmd) {
+    let proc;
     try {
-      const proc = spawn(config.FFMPEG_PATH, cmd, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: false,
-      });
-
-      let stderrBuf = '';
-      proc.stderr.on('data', (d) => { stderrBuf = (stderrBuf + d.toString()).slice(-2000); });
-      proc.stdout.on('data', () => {});
-
-      proc.on('exit', (code) => {
-        console.log(`[Stream] ${name} انتهى (code=${code})`);
-        if (code !== 0 && stderrBuf) console.error(`[FFmpeg] ${name} stderr:\n${stderrBuf.slice(-500)}`);
-        const info = this.streams.get(streamId);
-        if (info && info.idleTimer) clearTimeout(info.idleTimer);
-
-        // ═══ VOD: عند اكتمال المعالجة بنجاح — لا تمسح الـ segments ═══
-        // المستخدم لا يزال يشاهد! الملفات تُمسح فقط عند releaseStream
-        if (type === 'vod' && code === 0) {
-          if (info) {
-            info.completed = true;
-            info.process = null;
-            console.log(`[Stream] ✓ ${name} — HLS مكتمل (segments محفوظة للمشاهدة)`);
-          }
-          return;
-        }
-
-        this.streams.delete(streamId);
-        const hlsDir = type === 'vod' ? path.join(config.HLS_DIR, 'vod', streamId) : path.join(config.HLS_DIR, streamId);
-        try { fs.rmSync(hlsDir, { recursive: true, force: true }); } catch {}
-
-        // إعادة تشغيل تلقائية للقنوات المباشرة إذا كان هناك مشاهدين
-        if (type === 'live' && info && info.viewers > 0) {
-          const restarts = (info.restartCount || 0) + 1;
-          if (restarts <= 5) {
-            console.log(`[Stream] إعادة تشغيل ${name} (محاولة ${restarts}/5)`);
-            setTimeout(() => {
-              const result = this._startLiveStream(streamId, info.sourceUrl, name); // restart uses already-resolved URL
-              if (result.success) {
-                const newInfo = this.streams.get(streamId);
-                if (newInfo) {
-                  newInfo.viewers = info.viewers;
-                  newInfo.restartCount = restarts;
-                }
-              }
-            }, 3000 + restarts * 2000);
-          }
-        }
-      });
-
-      proc.on('error', (err) => {
-        console.error(`[Stream] خطأ FFmpeg ${name}:`, err.message);
-      });
-
-      this.streams.set(streamId, {
-        process: proc,
-        sourceUrl,
-        startTime: Date.now(),
-        viewers: 0,
-        lastAccess: Date.now(),
-        type,
-        name,
-        idleTimer: null,
-        restartCount: 0,
-        getStderr: () => stderrBuf,
-      });
-
-      console.log(`[Stream] ▶ بدأ ${type === 'vod' ? 'VOD' : 'بث'}: ${name}`);
-      return { success: true };
+      proc = spawn(config.FFMPEG_PATH, cmd, { stdio: ['ignore', 'ignore', 'pipe'] });
     } catch (e) {
-      console.error(`[Stream] خطأ تشغيل ${name}:`, e.message);
+      console.error(`[Stream] spawn failed ${name}: ${e.message}`);
       return { success: false, error: e.message };
     }
+
+    let stderrTail = '';
+    proc.stderr.on('data', (d) => {
+      const s = d.toString();
+      stderrTail = (stderrTail + s).slice(-4000);
+      // Surface first-chance errors promptly (helps diagnosing upstream issues).
+      const low = s.toLowerCase();
+      if (low.includes('error') || low.includes('failed') || low.includes('403') ||
+          low.includes('401') || low.includes('502') || low.includes('511')) {
+        console.error(`[FFmpeg:${name}] ${s.trim().slice(0, 240)}`);
+      }
+    });
+
+    proc.on('exit', (code) => {
+      const info = this.streams.get(streamId);
+      console.log(`[Stream] ${name} exit code=${code}`);
+      if (info && info.idleTimer) clearTimeout(info.idleTimer);
+
+      // VOD successful completion: preserve HLS for viewers.
+      if (type === 'vod' && code === 0 && info) {
+        info.completed = true;
+        info.process = null;
+        return;
+      }
+
+      // Unexpected exit with active viewers → bounded auto-restart.
+      const shouldRestart =
+        type === 'live' &&
+        info &&
+        info.viewers > 0 &&
+        !info._shutdown &&
+        (info.restartCount || 0) < RESTART_MAX;
+
+      // Clear state either way (restart will re-add).
+      this.streams.delete(streamId);
+      this._wipeHlsDir(streamId, type);
+
+      if (shouldRestart) {
+        const attempt = (info.restartCount || 0) + 1;
+        const delay = RESTART_BACKOFF_MS * attempt;
+        console.log(`[Stream] restart ${name} in ${delay}ms (${attempt}/${RESTART_MAX})`);
+        setTimeout(() => {
+          // Always rebuild upstream from ORIGINAL sourceUrl so any new IPTV
+          // session token is reissued by the provider on the fresh request.
+          const upstream = toTsEndpoint(info.sourceUrl);
+          const res = this._startLive(streamId, upstream, info.sourceUrl, name);
+          if (res.success) {
+            const ns = this.streams.get(streamId);
+            if (ns) { ns.viewers = info.viewers; ns.restartCount = attempt; }
+          }
+        }, delay);
+      } else if (code !== 0) {
+        console.error(`[Stream] ${name} failed — last stderr:\n${stderrTail.slice(-500)}`);
+      }
+    });
+
+    proc.on('error', (e) => console.error(`[Stream] ${name} proc err: ${e.message}`));
+
+    this.streams.set(streamId, {
+      process: proc,
+      sourceUrl,          // ORIGINAL (pre-`.ts`) — used for restart rebuild
+      name,
+      type,
+      startTime: Date.now(),
+      viewers: 0,
+      lastAccess: Date.now(),
+      idleTimer: null,
+      restartCount: 0,
+      completed: false,
+      _shutdown: false,
+      stderrTail: () => stderrTail,
+    });
+
+    console.log(`[Stream] ▶ ${type} ${name}`);
+    return { success: true };
   }
 
-  // ═══════════════════════════════════════════════════════
-  // إيقاف بث
-  // ═══════════════════════════════════════════════════════
-  _killStream(streamId) {
+  // ─────────────────────────────────────────────────────────
+  // Teardown
+  // ─────────────────────────────────────────────────────────
+  _kill(streamId, reason = '') {
     const info = this.streams.get(streamId);
     if (!info) return;
+    info._shutdown = true;
     if (info.idleTimer) clearTimeout(info.idleTimer);
     if (info.process) { try { info.process.kill('SIGTERM'); } catch {} }
     this.streams.delete(streamId);
-
-    const hlsDir = info.type === 'vod' ? path.join(config.HLS_DIR, 'vod', streamId) : path.join(config.HLS_DIR, streamId);
-    try { fs.rmSync(hlsDir, { recursive: true, force: true }); } catch {}
-    console.log(`[Stream] ⏹ ${info.name}`);
+    this._wipeHlsDir(streamId, info.type);
+    console.log(`[Stream] ⏹ ${info.name}${reason ? ` (${reason})` : ''}`);
   }
 
   stopStream(streamId) {
-    if (!this.streams.has(streamId)) return { success: false, error: 'لا يوجد بث نشط' };
-    this._killStream(streamId);
+    if (!this.streams.has(streamId)) return { success: false, error: 'not running' };
+    this._kill(streamId, 'manual');
     return { success: true };
   }
 
   stopAll() {
-    let stopped = 0;
-    for (const [id] of this.streams) {
-      this._killStream(id);
-      stopped++;
-    }
-    return { stopped };
+    let n = 0;
+    for (const [id] of this.streams) { this._kill(id, 'stopAll'); n++; }
+    return { stopped: n };
   }
 
-  // ═══════════════════════════════════════════════════════
-  // معلومات وحالة
-  // ═══════════════════════════════════════════════════════
-
-  getActiveStreams() {
-    const result = [];
-    for (const [id, info] of this.streams) {
-      result.push({
-        id,
-        name: info.name,
-        type: info.type,
-        viewers: info.viewers,
-        uptime: Math.floor((Date.now() - info.startTime) / 1000),
-        ready: this.isReady(id, info.type),
-      });
-    }
-    return result;
+  // ─────────────────────────────────────────────────────────
+  // Status helpers
+  // ─────────────────────────────────────────────────────────
+  isReady(streamId, type) {
+    const info = this.streams.get(streamId);
+    const t = type || (info ? info.type : 'live');
+    const dir = t === 'vod'
+      ? path.join(config.HLS_DIR, 'vod', streamId)
+      : path.join(config.HLS_DIR, streamId);
+    const m3u8 = path.join(dir, 'stream.m3u8');
+    if (!fs.existsSync(m3u8)) return false;
+    try {
+      const files = fs.readdirSync(dir).filter(f => f.endsWith('.ts'));
+      return files.length >= MIN_READY_SEGMENTS;
+    } catch { return false; }
   }
 
   getStreamInfo(streamId) {
@@ -443,66 +390,83 @@ class StreamManager {
       uptime: Math.floor((Date.now() - info.startTime) / 1000),
       ready: this.isReady(streamId, info.type),
       completed: !!info.completed,
+      restartCount: info.restartCount || 0,
     };
   }
 
-  isReady(streamId, type) {
-    const info = this.streams.get(streamId);
-    const t = type || (info ? info.type : 'live');
-    const dir = t === 'vod'
+  getActiveStreams() {
+    const out = [];
+    for (const [id, info] of this.streams) {
+      out.push({
+        id,
+        name: info.name,
+        type: info.type,
+        viewers: info.viewers,
+        uptime: Math.floor((Date.now() - info.startTime) / 1000),
+        ready: this.isReady(id, info.type),
+      });
+    }
+    return out;
+  }
+
+  _hlsUrl(streamId, type) {
+    return type === 'vod'
+      ? `/hls/vod/${streamId}/stream.m3u8`
+      : `/hls/${streamId}/stream.m3u8`;
+  }
+
+  _prepareDir(dir) {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  _wipeHlsDir(streamId, type) {
+    const dir = type === 'vod'
       ? path.join(config.HLS_DIR, 'vod', streamId)
       : path.join(config.HLS_DIR, streamId);
-    if (!fs.existsSync(dir)) return false;
-    const m3u8 = path.join(dir, 'stream.m3u8');
-    if (!fs.existsSync(m3u8)) return false;
-    const files = fs.readdirSync(dir).filter(f => f.endsWith('.ts'));
-    return files.length >= config.MIN_SEGMENTS_READY;
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
   }
 
-  _getHlsUrl(streamId, type) {
-    if (type === 'vod') return `/hls/vod/${streamId}/stream.m3u8`;
-    return `/hls/${streamId}/stream.m3u8`;
-  }
-
-  // ═══════════════════════════════════════════════════════
-  // فحص ترجمة (ffprobe)
-  // ═══════════════════════════════════════════════════════
-  probeSubtitles(sourceUrl) {
-    return new Promise((resolve) => {
-      const ffprobe = config.FFMPEG_PATH.replace('ffmpeg', 'ffprobe');
-      execFile(ffprobe, [
-        '-v', 'quiet', '-print_format', 'json',
-        '-show_streams', '-select_streams', 's',
-        '-user_agent', 'VLC/3.0.20 LibVLC/3.0.20',
-        sourceUrl,
-      ], { timeout: 15000 }, (err, stdout) => {
-        if (err) return resolve([]);
-        try {
-          const data = JSON.parse(stdout);
-          resolve((data.streams || []).map(s => ({
-            index: s.index,
-            language: s.tags?.language || 'und',
-            title: s.tags?.title || '',
-            codec: s.codec_name,
-          })));
-        } catch { resolve([]); }
-      });
-    });
-  }
-
-  _monitor() {
+  _healthCheck() {
     for (const [id, info] of this.streams) {
-      // VOD مكتمل — لا عملية FFmpeg للمراقبة
       if (info.completed || !info.process) continue;
-      try {
-        process.kill(info.process.pid, 0);
-      } catch {
-        console.log(`[Stream] ${info.name} توقف بشكل غير متوقع`);
+      try { process.kill(info.process.pid, 0); }
+      catch {
+        console.log(`[Stream] ${info.name} process gone — cleaning`);
         if (info.idleTimer) clearTimeout(info.idleTimer);
         this.streams.delete(id);
       }
     }
   }
+
+  // ─────────────────────────────────────────────────────────
+  // ffprobe helper — list embedded subtitle tracks
+  // ─────────────────────────────────────────────────────────
+  probeSubtitles(sourceUrl) {
+    return new Promise((resolve) => {
+      const ffprobe = (config.FFPROBE_PATH) ||
+                      (config.FFMPEG_PATH || 'ffmpeg').replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1');
+      execFile(ffprobe, [
+        '-v', 'quiet', '-print_format', 'json',
+        '-show_streams', '-select_streams', 's',
+        '-user_agent', UA,
+        sourceUrl,
+      ], { timeout: 15_000 }, (err, stdout) => {
+        if (err) return resolve([]);
+        try {
+          const data = JSON.parse(stdout);
+          resolve((data.streams || []).map(s => ({
+            index   : s.index,
+            language: (s.tags && s.tags.language) || 'und',
+            title   : (s.tags && s.tags.title) || '',
+            codec   : s.codec_name,
+          })));
+        } catch { resolve([]); }
+      });
+    });
+  }
 }
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 module.exports = StreamManager;

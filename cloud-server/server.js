@@ -56,8 +56,6 @@ const LiveProxy = require('./lib/live-proxy');
 
 const { XTREAM, searchAccountChannels, addChannelsToDB, getChannelAccount, refreshChannelStream, initXtreamFromDB } = require('./lib/xtream');
 
-const xtreamProxy = require('./lib/xtream-proxy');
-
 const vidsrcApi = require('./lib/vidsrc-api'); // DISABLED — replaced by xtream-vod
 
 const xtreamVod = require('./lib/xtream-vod');
@@ -781,7 +779,7 @@ app.post('/api/stream/live/:channelId', requireAuth, requirePremium, async (req,
 
   // -- Xtream live channel (xtream_live_<streamId> or bare numeric ID) --
 
-  // Use HLS proxy (shared upstream, segment caching, multi-user safe)
+  // ═══ استخدام FFmpeg بدلاً من XtreamProxy ═══
 
   const xtreamMatch = rawId.match(/^xtream_live_(\d+)$/) || rawId.match(/^(\d+)$/);
 
@@ -789,31 +787,65 @@ app.post('/api/stream/live/:channelId', requireAuth, requirePremium, async (req,
 
     const streamNumId = xtreamMatch[1];
 
-    const xch = await db.prepare('SELECT id, name, logo, category, stream_id, base_url FROM xtream_channels WHERE stream_id = ? OR id = ?').get(Number(streamNumId), streamNumId);
+    const xch = await db.prepare('SELECT id, name, logo, category, stream_id, base_url, account_id FROM xtream_channels WHERE stream_id = ? OR id = ?').get(Number(streamNumId), streamNumId);
 
     if (xch) {
 
-      const sid = `live_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      // الحصول على بيانات الحساب
 
-      const base = encodeURIComponent(xch.base_url || XTREAM.primary);
+      const account = await db.prepare('SELECT server_url, username, password FROM iptv_accounts WHERE id = ?').get(xch.account_id);
 
-      // HLS proxy: segment caching, request coalescing, multi-user safe
+      if (!account) {
 
-      const hlsUrl = `/proxy/live/${xch.stream_id}/index.m3u8?sid=${sid}&base=${base}`;
+        return res.status(500).json({ error: 'حساب IPTV غير موجود' });
 
-      // Direct URL as fallback for mobile ExoPlayer
+      }
 
-      const token = jwt.sign({ sid: String(xch.stream_id), t: 'xt' }, config.JWT_SECRET, { expiresIn: '6h' });
+
+
+      // بناء رابط IPTV المباشر
+
+      const iptvUrl = `${account.server_url}/live/${account.username}/${account.password}/${xch.stream_id}.m3u8`;
+
+      
+
+      console.log(`[Live] Starting FFmpeg for channel ${xch.name} (${xch.stream_id})`);
+
+      
+
+      // بدء FFmpeg
+
+      const result = await streamManager.requestStream(
+
+        `xtream_live_${xch.stream_id}`,
+
+        'live',
+
+        iptvUrl,
+
+        xch.name
+
+      );
+
+
+
+      if (!result.success) {
+
+        return res.status(500).json({ error: 'فشل بدء البث', details: result.error });
+
+      }
+
+
 
       return res.json({
 
         success: true,
 
-        hlsUrl,
+        hlsUrl: `/hls/xtream_live_${xch.stream_id}/stream.m3u8`,
 
-        directUrl: `/xtream-play/${token}/index.m3u8`,
+        ready: result.ready || false,
 
-        ready: true,
+        waiting: result.waiting || false,
 
         streamId: String(xch.stream_id),
 
@@ -822,6 +854,8 @@ app.post('/api/stream/live/:channelId', requireAuth, requirePremium, async (req,
         name: xch.name,
 
         logo: xch.logo,
+
+        mode: 'ffmpeg',
 
       });
 
@@ -3361,69 +3395,51 @@ app.get('/api/xtream/channels', async (req, res) => {
  */
 
 app.get('/api/xtream/stream/:channelId', async (req, res) => {
-
   try {
+    // Look up channel + its IPTV account (each channel has its own account)
+    const ch = await db.prepare(`
+      SELECT c.id, c.name, c.logo, c.category, c.stream_id, c.account_id,
+             a.server_url, a.username, a.password
+      FROM xtream_channels c
+      LEFT JOIN iptv_accounts a ON c.account_id = a.id
+      WHERE c.id = ? OR c.stream_id = ?
+    `).get(req.params.channelId, Number(req.params.channelId) || -1);
 
-    const ch = await db.prepare(
+    if (!ch)            return res.status(404).json({ error: 'channel not found' });
+    if (!ch.server_url) return res.status(400).json({ error: 'القناة غير مرتبطة بحساب IPTV' });
 
-      'SELECT id, name, logo, category, stream_id, base_url FROM xtream_channels WHERE id = ?'
+    // Build Xtream live URL — stream-manager will rewrite .m3u8 → .ts automatically
+    const iptvUrl = `${ch.server_url}/live/${ch.username}/${ch.password}/${ch.stream_id}.m3u8`;
+    const streamKey = `xtream_live_${ch.stream_id}`;
 
-    ).get(req.params.channelId);
-
-
-
-    if (!ch) return res.status(404).json({ error: 'channel not found' });
-
-
-
-    const token = jwt.sign({ sid: String(ch.stream_id), t: 'xt' }, config.JWT_SECRET, { expiresIn: '6h' });
-
-
-
-    const sid = `web_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-
-    const base = encodeURIComponent(ch.base_url || XTREAM.primary);
-
-    // Pre-warm manifest cache (non-blocking) so first browser request is instant
-    try {
-      xtreamProxy.getManifest(String(ch.stream_id), ch.base_url || XTREAM.primary, sid).catch(() => {});
-    } catch {}
+    const result = await streamManager.requestStream(streamKey, 'live', iptvUrl, ch.name);
+    if (!result.success) {
+      console.error('[Xtream] start failed:', ch.name, result.error);
+      return res.status(500).json({ error: 'فشل بدء البث', details: result.error });
+    }
 
     res.json({
-
-      success  : true,
-
-      name     : ch.name,
-
-      logo     : ch.logo,
-
-      category : ch.category,
-
-      // hlsUrl: HLS proxy — absolute URL so browser connects directly to VPS (no Next.js middleman)
-
-      // Relative URL — web-app proxies via Next.js rewrites so HTTPS site can reach HTTP cloud
-      hlsUrl   : `/proxy/live/${ch.stream_id}/index.m3u8?sid=${sid}&base=${base}`,
-
-      // directUrl: mobile/ExoPlayer follows 302 redirect directly to IPTV
-
-      directUrl: `/xtream-play/${token}/index.m3u8`,
-
-      // proxyUrl: raw TS pipe (legacy, persistent connection — avoid for multi-channel)
-
-      proxyUrl : `/xtream-pipe/${token}`,
-
-      streamId : ch.stream_id,
-
+      success : true,
+      name    : ch.name,
+      logo    : ch.logo,
+      category: ch.category,
+      hlsUrl  : result.hlsUrl,              // /hls/xtream_live_<id>/stream.m3u8
+      ready   : result.ready,
+      waiting : result.waiting,
+      streamId: ch.stream_id,
     });
-
   } catch (e) {
-
     console.error('[Xtream] stream error:', e.message);
-
     res.status(500).json({ error: 'فشل جلب رابط البث' });
-
   }
+});
 
+// GET /api/xtream/stream-ready/:streamId — poll readiness (first segment available)
+app.get('/api/xtream/stream-ready/:streamId', (req, res) => {
+  const key = `xtream_live_${req.params.streamId}`;
+  const ready = streamManager.isReady(key, 'live');
+  const info  = streamManager.getStreamInfo(key);
+  res.json({ ready, info });
 });
 
 
@@ -3472,11 +3488,7 @@ app.get('/api/xtream/viewers', requireAuth, (req, res) => {
 
   }
 
-  const viewers = xtreamProxy.getAllViewers();
-
-  const total   = xtreamProxy.getTotalViewers();
-
-  res.json({ success: true, viewers, total });
+  res.json({ success: true, viewers: {}, total: 0 });
 
 });
 
@@ -3490,149 +3502,8 @@ app.get('/api/xtream/viewers', requireAuth, (req, res) => {
 
 
 
-/**
-
- * GET /proxy/live/:streamId/index.m3u8
-
- * Proxy HLS manifest â€” rewrites segment URLs through our server
-
- * Viewer session tracked by ?sid param
-
- */
-
-app.get('/proxy/live/:streamId/index.m3u8', async (req, res) => {
-
-  const { streamId } = req.params;
-
-  const sessionId = req.query.sid || req.ip || 'anon';
-
-  let baseUrl = XTREAM.primary;
-
-  try { if (req.query.base) baseUrl = decodeURIComponent(req.query.base); } catch {}
-
-
-
-  try {
-
-    const manifest = await xtreamProxy.getManifest(streamId, baseUrl, sessionId);
-
-    res.set({
-
-      'Content-Type'                : 'application/vnd.apple.mpegurl',
-
-      'Cache-Control'               : 'no-cache, no-store',
-
-      'Access-Control-Allow-Origin' : '*',
-
-    });
-
-    res.send(manifest);
-
-  } catch (e) {
-
-    console.error(`[Proxy] Manifest ${streamId}: ${e.message}`);
-
-    res.status(502).json({ error: 'Ø§Ù„Ø¨Ø« ØºÙŠØ± Ù…ØªØ§Ø­ Ø­Ø§Ù„ÙŠØ§Ù‹' });
-
-  }
-
-});
-
-
-
-/**
-
- * GET /proxy/live/:streamId/seg/:encodedPath
-
- * Proxy TS segment â€” cached, shared across viewers
-
- */
-
-app.get('/proxy/live/:streamId/seg/:encodedPath(*)', async (req, res) => {
-
-  const { streamId, encodedPath } = req.params;
-
-  const sessionId = req.query.sid || req.ip || 'anon';
-
-  let baseUrl = XTREAM.primary;
-
-  try { if (req.query.base) baseUrl = decodeURIComponent(req.query.base); } catch {}
-
-
-
-  try {
-
-    const { buf, contentType } = await xtreamProxy.getSegment(streamId, encodedPath, baseUrl, sessionId);
-
-    res.set({
-
-      'Content-Type'                : contentType,
-
-      'Content-Length'              : buf.length,
-
-      'Cache-Control'               : 'public, max-age=10',
-
-      'Access-Control-Allow-Origin' : '*',
-
-    });
-
-    res.send(buf);
-
-  } catch (e) {
-
-    console.error(`[Proxy] Segment ${streamId}: ${e.message}`);
-
-    res.status(502).end();
-
-  }
-
-});
-
-
-
-/**
-
- * GET /proxy/live/:streamId/sub/:encodedUrl
-
- * Proxy sub-manifest (quality variants)
-
- */
-
-app.get('/proxy/live/:streamId/sub/:encodedUrl(*)', async (req, res) => {
-
-  const { streamId, encodedUrl } = req.params;
-
-  const sessionId = req.query.sid || req.ip || 'anon';
-
-
-
-  try {
-
-    const manifest = await xtreamProxy.getSubManifest(streamId, encodedUrl, sessionId);
-
-    res.set({
-
-      'Content-Type'                : 'application/vnd.apple.mpegurl',
-
-      'Cache-Control'               : 'no-cache, no-store',
-
-      'Access-Control-Allow-Origin' : '*',
-
-    });
-
-    res.send(manifest);
-
-  } catch (e) {
-
-    console.error(`[Proxy] Sub-manifest ${streamId}: ${e.message}`);
-
-    res.status(502).end();
-
-  }
-
-});
-
-
+// Legacy /proxy/live/* routes removed.
+// Xtream live channels now flow through POST /api/stream/live/:channelId → StreamManager (FFmpeg).
 
 
 
@@ -3658,10 +3529,6 @@ app.get('/health', (req, res) => {
 
     activeStreams: streamManager.getActiveStreams().length,
 
-    liveViewers: xtreamProxy.getTotalViewers(),
-
-    liveChannels: Object.keys(xtreamProxy.getAllViewers()).length,
-
     vodSessions: vodProxy.getActiveSessions().length,
 
     hlsSessions: hlsProxy.sessions.size,
@@ -3677,6 +3544,112 @@ app.get('/health', (req, res) => {
     },
 
   });
+
+});
+
+
+
+// ═══ TEST ENDPOINT - بدء بث بدون JWT (للاختبار فقط) ═══
+
+app.get('/test/start-stream/:channelId', async (req, res) => {
+
+  const channelId = req.params.channelId;
+
+  
+
+  try {
+
+    // الحصول على معلومات القناة
+
+    const xch = await db.prepare('SELECT id, name, logo, category, stream_id, base_url, account_id FROM xtream_channels WHERE stream_id = ? OR id = ?').get(Number(channelId), channelId);
+
+    
+
+    if (!xch) {
+
+      return res.status(404).json({ error: 'القناة غير موجودة', channelId });
+
+    }
+
+
+
+    // الحصول على بيانات الحساب
+
+    const account = await db.prepare('SELECT server_url, username, password FROM iptv_accounts WHERE id = ?').get(xch.account_id);
+
+    
+
+    if (!account) {
+
+      return res.status(500).json({ error: 'حساب IPTV غير موجود', channelId: xch.stream_id });
+
+    }
+
+
+
+    // بناء رابط IPTV المباشر
+
+    const iptvUrl = `${account.server_url}/live/${account.username}/${account.password}/${xch.stream_id}.m3u8`;
+
+    
+
+    console.log(`[TEST] Starting FFmpeg for channel ${xch.name} (${xch.stream_id})`);
+
+    
+
+    // بدء FFmpeg
+
+    const result = await streamManager.requestStream(
+
+      `xtream_live_${xch.stream_id}`,
+
+      'live',
+
+      iptvUrl,
+
+      xch.name
+
+    );
+
+
+
+    if (!result.success) {
+
+      return res.status(500).json({ error: 'فشل بدء البث', details: result.error });
+
+    }
+
+
+
+    res.json({
+
+      success: true,
+
+      message: 'تم بدء البث بنجاح',
+
+      channelId: xch.stream_id,
+
+      channelName: xch.name,
+
+      hlsUrl: `/hls/xtream_live_${xch.stream_id}/stream.m3u8`,
+
+      fullUrl: `http://62.171.153.204:8090/hls/xtream_live_${xch.stream_id}/stream.m3u8`,
+
+      ready: result.ready || false,
+
+      waiting: result.waiting || false,
+
+      instructions: 'انتظر 5-10 ثواني ثم افتح fullUrl في VLC',
+
+    });
+
+  } catch (error) {
+
+    console.error('[TEST] Error:', error);
+
+    res.status(500).json({ error: error.message });
+
+  }
 
 });
 
@@ -3970,15 +3943,12 @@ app.get('/api/admin/cloud-channels', requireAuth, async (req, res) => {
 app.delete('/api/admin/cloud-channels/:id', requireAuth, async (req, res) => {
   if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
   await db.prepare('DELETE FROM xtream_channels WHERE id = ?').run(req.params.id);
-  // Clear cached credentials
-  xtreamProxy._channelCreds.delete(req.params.id);
   res.json({ success: true });
 });
 
 app.delete('/api/admin/cloud-channels', requireAuth, async (req, res) => {
   if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
   await db.prepare('DELETE FROM xtream_channels').run();
-  xtreamProxy._channelCreds.clear();
   res.json({ success: true });
 });
 
@@ -3988,9 +3958,6 @@ app.post('/api/admin/channel-refresh/:id', requireAuth, async (req, res) => {
   if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
   try {
     const result = await refreshChannelStream(db, req.params.id);
-    // Clear proxy cache so next request fetches fresh
-    xtreamProxy._manifests.delete(result.streamId?.toString());
-    xtreamProxy._channelCreds.delete(req.params.id);
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -4026,7 +3993,7 @@ app.post('/api/admin/channel-toggle-stream/:id', requireAuth, async (req, res) =
   const isStreaming = !!streaming;
 
   // If starting stream, just confirm channel is linked to an IPTV account.
-  // Actual playback errors are logged by the HLS proxy (xtream-proxy.js) at runtime.
+  // Actual playback errors are logged by FFmpeg stderr via StreamManager.
   if (isStreaming) {
     const info = await getChannelAccount(db, channelId);
     if (!info || !info.account) {
@@ -4035,8 +4002,6 @@ app.post('/api/admin/channel-toggle-stream/:id', requireAuth, async (req, res) =
   }
 
   await db.prepare('UPDATE xtream_channels SET is_streaming = ? WHERE id = ?').run(isStreaming, channelId);
-  // Clear proxy cache
-  xtreamProxy._channelCreds.delete(channelId);
   res.json({ success: true, is_streaming: isStreaming });
 });
 
@@ -4151,12 +4116,6 @@ const server = app.listen(config.PORT, config.HOST, async () => {
 
   liveProxy.start();
 
-  xtreamProxy.setDB(db);
-
-  xtreamProxy.start();
-
-
-
   // Initialize Xtream from DB (load default account for legacy compat)
   initXtreamFromDB(db).catch(e => console.error('[Init] Xtream init error:', e.message));
 
@@ -4209,8 +4168,6 @@ const shutdown = async () => {
   vodProxy.stop();
 
   hlsProxy.stop();
-
-  xtreamProxy.stop();
 
   if (db) db.close();
 
