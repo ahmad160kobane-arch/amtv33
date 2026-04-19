@@ -692,19 +692,78 @@ export async function fetchAgentCodes(params?: { status?: string; limit?: number
   } catch { return { codes: [], total: 0 }; }
 }
 
-// ─── VidSrc Streaming ────────────────────────────────────
+// ─── VidSrc Streaming (محدّث - يستخدم Advanced Resolver) ────────────────────────────────────
+export interface VidSrcStreamResult {
+  success: boolean;
+  streamUrl?: string;
+  embedUrl?: string;
+  hlsUrl?: string;
+  vodUrl?: string;
+  provider?: string;
+  quality?: string;
+  type?: string;
+  sources?: Array<{ provider: string; url: string; type: string }>;
+  subtitles?: any[];
+  error?: string;
+  requiresSubscription?: boolean;
+}
+
 export async function requestVidsrcStream(opts: {
-  tmdbId?: string; type?: 'movie' | 'tv'; season?: number; episode?: number; title?: string;
-}): Promise<{ success: boolean; hlsUrl?: string; vodUrl?: string; embedUrl?: string; subtitles?: any[]; error?: string; requiresSubscription?: boolean }> {
+  tmdbId?: string; 
+  imdbId?: string;
+  type?: 'movie' | 'tv'; 
+  season?: number; 
+  episode?: number; 
+  title?: string;
+}): Promise<VidSrcStreamResult> {
   try {
+    console.log('[VidSrc API] Requesting stream:', opts);
+    
     const res = await apiFetch('/api/stream/vidsrc', {
       method: 'POST',
       body: JSON.stringify(opts),
     });
+    
     const data = await res.json();
-    if (!res.ok) return { success: false, error: data.error || data.message, requiresSubscription: !!data.requiresSubscription };
-    return { success: true, ...data };
-  } catch (err: any) { return { success: false, error: err.message }; }
+    
+    if (!res.ok) {
+      console.error('[VidSrc API] Error:', data.error || data.message);
+      return { 
+        success: false, 
+        error: data.error || data.message, 
+        requiresSubscription: !!data.requiresSubscription 
+      };
+    }
+
+    console.log('[VidSrc API] Success:', {
+      provider: data.provider,
+      hasStreamUrl: !!data.streamUrl,
+      hasEmbedUrl: !!data.embedUrl,
+      type: data.type,
+      sourcesCount: data.sources?.length || 0
+    });
+
+    // النظام الجديد يعيد:
+    // - streamUrl: رابط HLS مباشر (إذا تم استخراجه)
+    // - embedUrl: رابط embed (fallback)
+    // - sources: قائمة بجميع المصادر المتاحة
+    
+    return { 
+      success: true,
+      streamUrl: data.streamUrl || data.hlsUrl,
+      embedUrl: data.embedUrl,
+      hlsUrl: data.streamUrl || data.hlsUrl || data.embedUrl,
+      vodUrl: data.vodUrl,
+      provider: data.provider,
+      quality: data.quality || 'auto',
+      type: data.type || 'embed',
+      sources: data.sources || [],
+      subtitles: data.subtitles || []
+    };
+  } catch (err: any) { 
+    console.error('[VidSrc API] Exception:', err.message);
+    return { success: false, error: err.message }; 
+  }
 }
 
 // ─── LuluStream: جلب HLS للمحتوى المرفوع ────────────────
