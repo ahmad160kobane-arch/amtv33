@@ -931,58 +931,30 @@ app.post('/api/stream/live/:channelId', requireAuth, requirePremium, async (req,
 
 
 
-// Xtream Token Redirect — mobile app follows redirect natively via ExoPlayer
-
+// Xtream Token Redirect — DISABLED: was redirecting client directly to IPTV (exposes credentials + triggers bans)
+// Now redirects to FFmpeg HLS system so only VPS connects to IPTV.
 app.get(['/xtream-play/:token', '/xtream-play/:token/index.m3u8'], (req, res) => {
-
   try {
-
     const payload = jwt.verify(req.params.token, config.JWT_SECRET);
-
     if (payload.t !== 'xt' || !payload.sid) return res.status(403).end();
-
-    const realUrl = `${XTREAM.primary}/live/${XTREAM.user}/${XTREAM.pass}/${payload.sid}.m3u8`;
-
-    res.redirect(302, realUrl);
-
+    // Redirect to the FFmpeg HLS URL instead of IPTV directly
+    res.redirect(302, `/hls/xtream_live_${payload.sid}/stream.m3u8`);
   } catch (e) {
-
     res.status(403).json({ error: 'Invalid or expired token' });
-
   }
-
 });
 
 
 
-// Xtream Pipe — redirect to HLS proxy (no persistent connections, multi-channel safe)
-
+// Xtream Pipe — DISABLED: was using deprecated proxy. Now uses FFmpeg HLS.
 app.get('/xtream-pipe/:token', async (req, res) => {
-
   try {
-
     const payload = jwt.verify(req.params.token, config.JWT_SECRET);
-
     if (payload.t !== 'xt' || !payload.sid) return res.status(403).end();
-
-    const sid = `pipe_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-
-    const base = encodeURIComponent(XTREAM.primary);
-
-    const hlsUrl = `/proxy/live/${payload.sid}/index.m3u8?sid=${sid}&base=${base}`;
-
-    console.log(`[Xtream-pipe] #${payload.sid} → HLS proxy`);
-
-    res.redirect(302, hlsUrl);
-
+    res.redirect(302, `/hls/xtream_live_${payload.sid}/stream.m3u8`);
   } catch (e) {
-
-    console.error('[Xtream-pipe] error:', e.message);
-
     res.status(403).json({ error: 'Invalid or expired token' });
-
   }
-
 });
 
 
@@ -995,24 +967,22 @@ app.get('/live-pipe/:channelId', requireAuth, async (req, res) => {
 
 
 
-  // Xtream channel proxy — server connects to IPTV source instead of client
-
-  // Auth only (no premium check) — free channels also use this
-
+  // Xtream channels → redirect to FFmpeg HLS (no direct IPTV connection per viewer)
   const xtreamPipeMatch = rawId.match(/^xtream_(\d+)$/);
-
   if (xtreamPipeMatch) {
-
     const streamId = xtreamPipeMatch[1];
-
-    const sourceUrl = `${XTREAM.primary}/live/${XTREAM.user}/${XTREAM.pass}/${streamId}.m3u8`;
-
-    console.log(`[LivePipe] Xtream #${streamId} (proxied)`);
-
-    await liveProxy.streamToClient(`xtream_${streamId}`, sourceUrl, req, res);
-
-    return;
-
+    // Start FFmpeg if not already running, then redirect to HLS
+    const streamKey = `xtream_live_${streamId}`;
+    const ch = await db.prepare(`
+      SELECT c.stream_id, c.name, a.server_url, a.username, a.password
+      FROM xtream_channels c LEFT JOIN iptv_accounts a ON c.account_id = a.id
+      WHERE c.stream_id = ?
+    `).get(Number(streamId));
+    if (ch && ch.server_url) {
+      const iptvUrl = `${ch.server_url}/live/${ch.username}/${ch.password}/${ch.stream_id}.m3u8`;
+      await streamManager.requestStream(streamKey, 'live', iptvUrl, ch.name || `Xtream ${streamId}`);
+    }
+    return res.redirect(302, `/hls/${streamKey}/stream.m3u8`);
   }
 
 

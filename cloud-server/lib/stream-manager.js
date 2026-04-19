@@ -177,7 +177,7 @@ class StreamManager {
       '-f', 'hls',
       '-hls_time', String(LIVE_HLS_TIME),
       '-hls_list_size', String(LIVE_HLS_LIST_SIZE),
-      '-hls_flags', 'delete_segments+independent_segments+append_list+omit_endlist+split_by_time',
+      '-hls_flags', 'delete_segments+independent_segments+omit_endlist',
       '-hls_delete_threshold', String(LIVE_HLS_DELETE_TH),
       '-hls_segment_type', 'mpegts',
       '-hls_segment_filename', path.join(dir, 'seg_%d.ts'),

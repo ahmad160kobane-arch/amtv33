@@ -136,33 +136,33 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
               enableWorker: true,
               lowLatencyMode: false,
               startLevel: -1,
-              debug: true, // Enable debug for troubleshooting
-              // ═══ Fast startup — start playing with minimal buffered data ═══
-              startFragPrefetch: true,             // prefetch first frag while parsing manifest
-              maxStarvationDelay: 2,               // start playback after 2s of buffer (faster)
-              maxLoadingDelay: 2,
-              highBufferWatchdogPeriod: 1,
+              debug: false,
+              // ═══ Startup ═══
+              startFragPrefetch: true,
+              maxStarvationDelay: 4,
+              maxLoadingDelay: 4,
+              highBufferWatchdogPeriod: 2,
               // ═══ Live edge sync ═══
-              liveSyncDurationCount: 2,            // more tolerant for first load
-              liveMaxLatencyDurationCount: 4,
+              liveSyncDurationCount: 3,            // start 3 segments behind live edge (~12s)
+              liveMaxLatencyDurationCount: 6,      // max 6 segments behind before seeking
               liveDurationInfinity: true,
-              // ═══ Buffer ═══
-              maxBufferLength: 10,
-              maxMaxBufferLength: 20,
-              maxBufferSize: 30 * 1024 * 1024,
-              maxBufferHole: 1.0,
-              backBufferLength: 10,
-              // ═══ Aggressive timeouts for faster first-play ═══
-              manifestLoadingTimeOut: 6000,
-              manifestLoadingMaxRetry: 4,
-              manifestLoadingRetryDelay: 200,
-              levelLoadingTimeOut: 6000,
-              levelLoadingMaxRetry: 4,
-              levelLoadingRetryDelay: 200,
-              fragLoadingTimeOut: 10000,
-              fragLoadingMaxRetry: 3,
-              fragLoadingRetryDelay: 200,
-              fragLoadingMaxRetryTimeout: 3000,
+              liveBackBufferLength: 30,            // keep 30s of back-buffer for rewind
+              // ═══ Buffer — deep enough to survive playlist refresh gaps ═══
+              maxBufferLength: 30,
+              maxMaxBufferLength: 60,
+              maxBufferSize: 60 * 1024 * 1024,
+              maxBufferHole: 0.5,
+              // ═══ Playlist & segment loading — resilient retries ═══
+              manifestLoadingTimeOut: 10000,
+              manifestLoadingMaxRetry: 6,
+              manifestLoadingRetryDelay: 500,
+              levelLoadingTimeOut: 10000,
+              levelLoadingMaxRetry: 6,
+              levelLoadingRetryDelay: 500,
+              fragLoadingTimeOut: 15000,
+              fragLoadingMaxRetry: 6,
+              fragLoadingRetryDelay: 500,
+              fragLoadingMaxRetryTimeout: 8000,
             });
             
             console.log('[LivePlayer] 🔗 Loading source:', streamUrl);
