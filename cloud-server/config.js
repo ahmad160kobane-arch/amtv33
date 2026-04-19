@@ -62,7 +62,11 @@ module.exports = {
   MIN_SEGMENTS_READY: 1,
 
   // ─── FFmpeg ───────────────────────────────
-  FFMPEG_PATH: process.env.FFMPEG_PATH || require('ffmpeg-static'),
+  FFMPEG_PATH: process.env.FFMPEG_PATH || (() => {
+    // Prefer system ffmpeg (ffmpeg-static may core-dump on some VPS kernels)
+    try { require('child_process').execSync('which ffmpeg', { stdio: 'ignore' }); return 'ffmpeg'; } catch {}
+    return require('ffmpeg-static');
+  })(),
   FFPROBE_PATH: process.env.FFPROBE_PATH || require('ffprobe-static').path,
 
   // ─── البث عند الطلب ───────────────────────
