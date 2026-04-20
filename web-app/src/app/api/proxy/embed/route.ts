@@ -28,11 +28,17 @@ function _bad(u){
     return _AD.some(function(d){return h.indexOf(d)!==-1;});
   }catch(e){return false;}
 }
-// 1. Block window.open
+// 1. Block window.open at instance + prototype level (cannot be overridden by page scripts)
 var _fakeWin={focus:function(){},blur:function(){},close:function(){},closed:true,
   document:{write:function(){},body:{}},location:{href:''}};
-try{Object.defineProperty(window,'open',{value:function(){return _fakeWin;},writable:false,configurable:false});}
-catch(e){window.open=function(){return _fakeWin;};}
+var _blockOpen=function(){return _fakeWin;};
+try{Object.defineProperty(window,'open',{value:_blockOpen,writable:false,configurable:false});}
+catch(e){window.open=_blockOpen;}
+try{Object.defineProperty(Window.prototype,'open',{value:_blockOpen,writable:false,configurable:false});}catch(e){}
+// Re-enforce every second in case ad scripts try to restore it
+setInterval(function(){
+  try{Object.defineProperty(window,'open',{value:_blockOpen,writable:false,configurable:false});}catch(e){}
+},1000);
 
 // 2. Block location navigation to ad domains only (allow VidSrc CDN navigation)
 var _oA=window.location.assign.bind(window.location);
@@ -155,10 +161,23 @@ async function fetchEmbed(url: string, parsed: URL): Promise<string> {
   const baseTag = `<base href="${parsed.origin}/">`;
   const inject = baseTag + AD_BLOCKER_SCRIPT;
 
-  if (html.includes('<head>')) return html.replace('<head>', `<head>${inject}`);
-  const headMatch = html.match(/<head[^>]*>/i);
-  if (headMatch) return html.replace(headMatch[0], `${headMatch[0]}${inject}`);
-  return `<head>${inject}</head>` + html;
+  // Server-side HTML sanitization — happens at parse time, before any JS runs
+  // Strip target="_blank" from all anchors
+  let sanitized = html.replace(/(<a\b[^>]*?)\s+target\s*=\s*(["'])(_blank|_top|_parent)\2/gi, '$1 target="_self"');
+  // Remove script/iframe tags from known ad domains
+  const _AD_REMOVE = ['doubleclick','googlesyndication','adnxs','popads','popcash','exoclick',
+    'trafficjunky','adsterra','propellerads','hilltopads','trafficfactory','trafficstars','juicyads','yllix'];
+  _AD_REMOVE.forEach(d => {
+    const esc = d.replace(/\./g, '\\.');
+    sanitized = sanitized.replace(new RegExp(`<script[^>]+src=(["'])[^"']*/(?:${esc})[^"']*\\1[^>]*>.*?</script>`, 'gis'), '');
+    sanitized = sanitized.replace(new RegExp(`<script[^>]+src=(["'])[^"']*/(?:${esc})[^"']*\\1[^>]*\/?>`, 'gi'), '');
+    sanitized = sanitized.replace(new RegExp(`<iframe[^>]+src=(["'])[^"']*/(?:${esc})[^"']*\\1[^>]*>.*?</iframe>`, 'gis'), '');
+  });
+
+  if (sanitized.includes('<head>')) return sanitized.replace('<head>', `<head>${inject}`);
+  const headMatch = sanitized.match(/<head[^>]*>/i);
+  if (headMatch) return sanitized.replace(headMatch[0], `${headMatch[0]}${inject}`);
+  return `<head>${inject}</head>` + sanitized;
 }
 
 export async function GET(req: NextRequest) {
