@@ -292,27 +292,15 @@ function DetailContent() {
             {/* Close button */}
             <button onClick={() => { setEmbedUrl(''); setStreamError(''); }}
               className="absolute top-2 right-2 z-10 w-8 h-8 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center hover:bg-black/80 transition text-white/50 hover:text-white text-lg leading-none">✕</button>
-            {embedUrl.includes('vidlink.pro') ? (
-              <iframe
-                key={embedUrl}
-                src={embedUrl}
-                className="flex-1 w-full border-0"
-                allowFullScreen
-                allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
-                referrerPolicy="no-referrer"
-                sandbox="allow-scripts allow-same-origin allow-forms allow-presentation allow-pointer-lock"
-              />
-            ) : (
-              <iframe
-                key={embedUrl}
-                src={embedUrl}
-                className="flex-1 w-full border-0"
-                allowFullScreen
-                allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
-                referrerPolicy="no-referrer-when-downgrade"
-                sandbox="allow-scripts allow-same-origin allow-forms allow-presentation allow-pointer-lock allow-downloads"
-              />
-            )}
+            <iframe
+              key={embedUrl}
+              src={embedUrl}
+              className="flex-1 w-full border-0"
+              allowFullScreen
+              allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
+              referrerPolicy="no-referrer-when-downgrade"
+              sandbox="allow-scripts allow-same-origin allow-forms allow-presentation allow-pointer-lock allow-downloads"
+            />}
             {/* Source switcher + subtitle links */}
             <div className="flex-shrink-0 px-3 py-1.5 bg-black/95 border-t border-white/10 flex items-center gap-2 overflow-x-auto no-scrollbar">
               {embedSources.length > 1 && (

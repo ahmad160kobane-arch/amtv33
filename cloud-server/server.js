@@ -2449,6 +2449,7 @@ app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => 
     }
     const qs = subParams.toString();
     const vidlinkEmbedUrl = `https://vidlink.pro${vidlinkPath}${qs ? '?' + qs : ''}`;
+    const proxiedVidlink = `/api/embed-proxy?url=${encodeURIComponent(vidlinkEmbedUrl)}`;
 
     // VidSrc embed sources as fallback (proxied for ad blocking)
     const vidsrcSources = stream
@@ -2459,7 +2460,7 @@ app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => 
       : [];
 
     const allSources = [
-      { url: vidlinkEmbedUrl, name: 'Vidlink (الأفضل)' },
+      { url: proxiedVidlink, name: 'Vidlink (الأفضل)' },
       ...vidsrcSources,
     ];
 
@@ -2467,7 +2468,7 @@ app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => 
 
     return res.json({
       success: true, streamId, ready: true,
-      embedUrl: vidlinkEmbedUrl,
+      embedUrl: proxiedVidlink,
       provider: 'vidlink-embed',
       sources: allSources,
       subtitles: arabicSubs,
