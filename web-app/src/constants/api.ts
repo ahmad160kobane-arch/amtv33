@@ -534,16 +534,33 @@ export async function requestFreeStream(channelId: string): Promise<FreeStreamRe
     // Player would 404 on .m3u8 otherwise, then stall in "loading" state.
     if (!data.ready && data.streamId) {
       const deadline = Date.now() + 20_000;
+      let becameReady = false;
+      let wasRunning = false;
       while (Date.now() < deadline) {
         await new Promise(r => setTimeout(r, 600));
         try {
           const r = await apiFetch(`/api/xtream/stream-ready/${data.streamId}`);
           if (r.ok) {
             const j = await r.json();
-            if (j.ready) break;
+            if (j.ready) { becameReady = true; break; }
+            // j.info !== null means FFmpeg process is still in the streams map
+            if (j.info) {
+              wasRunning = true;
+            } else if (wasRunning) {
+              // Stream was running but is now gone — FFmpeg failed/crashed
+              break;
+            }
           }
         } catch {}
       }
+      // If stream never became ready (timeout or FFmpeg failure), report error
+      if (!becameReady) {
+        return { success: false, error: 'فشل تشغيل البث — تحقق من الاتصال أو حاول مرة أخرى' };
+      }
+    }
+
+    if (!streamUrl) {
+      return { success: false, error: 'لم يتم الحصول على رابط البث' };
     }
 
     return {
