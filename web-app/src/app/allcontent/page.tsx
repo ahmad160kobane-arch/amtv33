@@ -94,7 +94,7 @@ function AllContentContent() {
 
           <div className="flex gap-2 overflow-x-auto no-scrollbar pb-2 mb-2">
             {TYPES.map(t => (
-              <button key={t.id} onClick={() => { setActiveType(t.id as 'movie' | 'series'); setSearchQuery(''); setSearch(''); }}
+              <button key={t.id} onClick={() => { setActiveType(t.id as 'movie' | 'tv' | 'trending'); setSearchQuery(''); setSearch(''); }}
                 className={`flex-shrink-0 px-3 py-1.5 rounded-lg text-sm font-medium transition ${activeType === t.id ? 'bg-brand-primary text-black' : 'bg-light-input dark:bg-dark-input text-light-muted dark:text-dark-muted hover:text-light-text dark:hover:text-dark-text'}`}
               >{t.label}</button>
             ))}
