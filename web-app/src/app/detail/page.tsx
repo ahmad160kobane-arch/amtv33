@@ -289,33 +289,64 @@ function DetailContent() {
         {/* Embed iframe player */}
         {embedUrl && !streamUrl && !streamLoading && !streamError && (
           <div className="absolute inset-0 flex flex-col bg-black">
-            {/* Close button only */}
+            {/* Close button */}
             <button onClick={() => { setEmbedUrl(''); setStreamError(''); }}
               className="absolute top-2 right-2 z-10 w-8 h-8 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center hover:bg-black/80 transition text-white/50 hover:text-white text-lg leading-none">✕</button>
-            <iframe
-              key={embedUrl}
-              src={embedUrl}
-              className="flex-1 w-full border-0"
-              allowFullScreen
-              allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
-              referrerPolicy="no-referrer-when-downgrade"
-              sandbox="allow-scripts allow-same-origin allow-forms allow-presentation allow-pointer-lock allow-downloads"
-            />
-            {/* Arabic subtitle download links */}
-            {subtitles.length > 0 && (
-              <div className="flex-shrink-0 px-3 py-1.5 bg-black/95 border-t border-white/10 flex items-center gap-2 overflow-x-auto no-scrollbar">
-                <svg className="w-3.5 h-3.5 text-brand-primary flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h6m-3 4h2M5 3h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z" />
-                </svg>
-                <span className="text-white/40 text-[10px] font-semibold flex-shrink-0">ترجمة:</span>
-                {subtitles.map((sub: any, i: number) => (
-                  <a key={i} href={sub.url} target="_blank" rel="noopener noreferrer" download
-                    className="text-[10px] px-2.5 py-1 rounded-full bg-brand-primary/20 text-brand-primary hover:bg-brand-primary/40 transition whitespace-nowrap flex-shrink-0 font-semibold">
-                    ⬇ {sub.label || sub.language || 'العربية'}
-                  </a>
-                ))}
-              </div>
+            {embedUrl.includes('vidlink.pro') ? (
+              <iframe
+                key={embedUrl}
+                src={embedUrl}
+                className="flex-1 w-full border-0"
+                allowFullScreen
+                allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
+                referrerPolicy="no-referrer"
+              />
+            ) : (
+              <iframe
+                key={embedUrl}
+                src={embedUrl}
+                className="flex-1 w-full border-0"
+                allowFullScreen
+                allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
+                referrerPolicy="no-referrer-when-downgrade"
+                sandbox="allow-scripts allow-same-origin allow-forms allow-presentation allow-pointer-lock allow-downloads"
+              />
             )}
+            {/* Source switcher + subtitle links */}
+            <div className="flex-shrink-0 px-3 py-1.5 bg-black/95 border-t border-white/10 flex items-center gap-2 overflow-x-auto no-scrollbar">
+              {embedSources.length > 1 && (
+                <>
+                  <svg className="w-3.5 h-3.5 text-white/40 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                  </svg>
+                  {embedSources.map((src, i) => (
+                    <button key={i} onClick={() => { setEmbedSourceIdx(i); setEmbedUrl(src.url); }}
+                      className={`text-[10px] px-2.5 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 font-semibold ${
+                        i === embedSourceIdx
+                          ? 'bg-brand-primary text-black'
+                          : 'bg-white/10 text-white/60 hover:bg-white/20'
+                      }`}>
+                      {src.name}
+                    </button>
+                  ))}
+                  {subtitles.length > 0 && <div className="w-px h-4 bg-white/10 flex-shrink-0" />}
+                </>
+              )}
+              {subtitles.length > 0 && (
+                <>
+                  <svg className="w-3.5 h-3.5 text-brand-primary flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h6m-3 4h2M5 3h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z" />
+                  </svg>
+                  <span className="text-white/40 text-[10px] font-semibold flex-shrink-0">ترجمة:</span>
+                  {subtitles.map((sub: any, i: number) => (
+                    <a key={i} href={sub.url} target="_blank" rel="noopener noreferrer" download
+                      className="text-[10px] px-2.5 py-1 rounded-full bg-brand-primary/20 text-brand-primary hover:bg-brand-primary/40 transition whitespace-nowrap flex-shrink-0 font-semibold">
+                      ⬇ {sub.label || sub.language || 'العربية'}
+                    </a>
+                  ))}
+                </>
+              )}
+            </div>
           </div>
         )}
 

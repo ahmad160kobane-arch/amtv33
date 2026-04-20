@@ -134,35 +134,35 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
             console.log('[LivePlayer] ✅ Creating HLS instance...');
             hlsInstance = new Hls({
               enableWorker: true,
-              lowLatencyMode: false,
+              lowLatencyMode: true,
               startLevel: -1,
               debug: false,
-              // ═══ Startup ═══
+              // ═══ Startup — fast since streams are pre-warmed ═══
               startFragPrefetch: true,
-              maxStarvationDelay: 6,
-              maxLoadingDelay: 6,
-              highBufferWatchdogPeriod: 3,
-              // ═══ Live edge sync — generous for 4G ═══
-              liveSyncDurationCount: 4,            // start 4 segments behind live edge (~8s with 2s segs)
-              liveMaxLatencyDurationCount: 10,     // allow up to 20s behind before auto-seek
+              maxStarvationDelay: 4,
+              maxLoadingDelay: 4,
+              highBufferWatchdogPeriod: 2,
+              // ═══ Live edge sync — tight for low latency ═══
+              liveSyncDurationCount: 3,            // start 3 segments behind live edge (~6s with 2s segs)
+              liveMaxLatencyDurationCount: 8,      // auto-seek if >16s behind
               liveDurationInfinity: true,
-              liveBackBufferLength: 30,
-              // ═══ Deep buffer — absorbs 4G jitter and proxy latency ═══
-              maxBufferLength: 45,                 // buffer up to 45s ahead
-              maxMaxBufferLength: 90,
-              maxBufferSize: 80 * 1024 * 1024,     // 80MB
-              maxBufferHole: 0.8,                  // tolerate 0.8s gaps without stalling
+              liveBackBufferLength: 0,             // don't keep old segments in memory
+              // ═══ Buffer — balanced for smooth playback ═══
+              maxBufferLength: 30,                 // 30s ahead is plenty (stream is always-on)
+              maxMaxBufferLength: 60,
+              maxBufferSize: 60 * 1024 * 1024,     // 60MB
+              maxBufferHole: 0.5,                  // tighter gap tolerance
               // ═══ Resilient loading — extra retries for mobile networks ═══
-              manifestLoadingTimeOut: 12000,
-              manifestLoadingMaxRetry: 8,
-              manifestLoadingRetryDelay: 400,
-              levelLoadingTimeOut: 12000,
-              levelLoadingMaxRetry: 8,
-              levelLoadingRetryDelay: 400,
-              fragLoadingTimeOut: 20000,
+              manifestLoadingTimeOut: 10000,
+              manifestLoadingMaxRetry: 6,
+              manifestLoadingRetryDelay: 300,
+              levelLoadingTimeOut: 10000,
+              levelLoadingMaxRetry: 6,
+              levelLoadingRetryDelay: 300,
+              fragLoadingTimeOut: 15000,
               fragLoadingMaxRetry: 8,
-              fragLoadingRetryDelay: 500,
-              fragLoadingMaxRetryTimeout: 10000,
+              fragLoadingRetryDelay: 400,
+              fragLoadingMaxRetryTimeout: 8000,
             });
             
             console.log('[LivePlayer] 🔗 Loading source:', streamUrl);
@@ -184,16 +184,15 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
               });
             });
 
-                    // Auto seek-to-live: if player falls >15s behind, jump to live edge
-            // This prevents the 120s+ accumulated delay from stale manifest cache
+                    // Auto seek-to-live: if player falls >10s behind, jump to live edge
             hlsInstance.on(Hls.Events.FRAG_CHANGED, () => {
               try {
                 if (video.seekable.length > 0) {
                   const edge = video.seekable.end(0);
                   const latency = edge - video.currentTime;
-                  setIsAtLive(latency <= 12);
-                  if (!video.paused && latency > 15) {
-                    video.currentTime = Math.max(0, edge - 2);
+                  setIsAtLive(latency <= 8);
+                  if (!video.paused && latency > 10) {
+                    video.currentTime = Math.max(0, edge - 1.5);
                     setIsAtLive(true);
                   }
                 }

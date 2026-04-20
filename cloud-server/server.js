@@ -46,6 +46,8 @@ const { resolveConsumetStream } = require('./lib/consumet-resolver');
 
 const { extractStream } = require('./lib/stream-extractor');
 
+const { extractVidSrcM3U8 } = require('./lib/vidsrc-m3u8-extractor');
+
 const { scrapeEmbedSources } = require('./lib/embed-scraper');
 
 const { puppeteerExtract } = require('./lib/puppeteer-extractor');
@@ -2398,46 +2400,78 @@ app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => 
 
 
 
-    // ═══ 3. Fallback: Embed URLs ═══
-
-    console.log(`[Stream] → Embed fallback: ${label}`);
-
-    const [stream, arabicSubs] = await Promise.all([
-
-      resolveStream(tmdbId, type, season, episode, imdbId),
-
-      arabicSubsPromise,
-
-    ]);
-
-    if (stream && stream.embedUrl) {
-
-      const proxiedUrl = `/api/embed-proxy?url=${encodeURIComponent(stream.embedUrl)}`;
-      console.log(`[Stream] ✓ Embed proxy: ${stream.provider} — ${stream.embedUrl}`);
-
-      await recordHistory();
-
-      return res.json({
-
-        success: true, streamId, ready: true,
-
-        embedUrl: proxiedUrl,
-
-        provider: stream.provider,
-
-        sources: (stream.sources || []).map(s => ({ ...s, url: `/api/embed-proxy?url=${encodeURIComponent(s.url)}` })),
-
-        allEmbedUrls: (stream.allEmbedUrls || []).map(u => `/api/embed-proxy?url=${encodeURIComponent(u)}`),
-
-        subtitles: arabicSubs,
-
+    // ═══ 2.5. VidSrc M3U8 Extractor — استخراج m3u8 مباشر من VidSrc ═══
+    try {
+      console.log(`[Stream] → VidSrc M3U8 Extractor: ${label}`);
+      const vidsrcM3u8 = await extractVidSrcM3U8({
+        tmdbId,
+        imdbId,
+        type,
+        season,
+        episode,
       });
-
+      
+      if (vidsrcM3u8 && vidsrcM3u8.url) {
+        console.log(`[Stream] ✓ VidSrc M3U8: ${vidsrcM3u8.provider}`);
+        await recordHistory();
+        const arabicSubs = await arabicSubsPromise;
+        return res.json({
+          success: true, streamId, ready: true,
+          hlsUrl: vidsrcM3u8.url,
+          provider: vidsrcM3u8.provider,
+          quality: vidsrcM3u8.quality,
+          subtitles: arabicSubs,
+        });
+      }
+    } catch (vme) {
+      console.log(`[Stream] VidSrc M3U8 failed: ${vme.message}`);
     }
 
 
 
-    return res.status(404).json({ success: false, error: 'لا توجد مصادر بث متاحة' });
+    // ═══ 3. Vidlink.pro Embed — مع ترجمة عربية مدمجة + مصادر VidSrc احتياطية ═══
+    console.log(`[Stream] → Vidlink.pro embed + VidSrc fallback: ${label}`);
+
+    const [stream, arabicSubs] = await Promise.all([
+      resolveStream(tmdbId, type, season, episode, imdbId).catch(() => null),
+      arabicSubsPromise,
+    ]);
+
+    await recordHistory();
+
+    // Build vidlink.pro embed URL with Arabic subtitle injection via sub_file
+    const vidlinkPath = type === 'tv'
+      ? `/tv/${tmdbId}/${season}/${episode}`
+      : `/movie/${tmdbId}`;
+    const subParams = new URLSearchParams();
+    if (arabicSubs.length > 0 && arabicSubs[0].url) {
+      subParams.set('sub_file', arabicSubs[0].url);
+    }
+    const qs = subParams.toString();
+    const vidlinkEmbedUrl = `https://vidlink.pro${vidlinkPath}${qs ? '?' + qs : ''}`;
+
+    // VidSrc embed sources as fallback (proxied for ad blocking)
+    const vidsrcSources = stream
+      ? (stream.sources || []).map(s => ({
+          ...s,
+          url: `/api/embed-proxy?url=${encodeURIComponent(s.url)}`,
+        }))
+      : [];
+
+    const allSources = [
+      { url: vidlinkEmbedUrl, name: 'Vidlink (الأفضل)' },
+      ...vidsrcSources,
+    ];
+
+    console.log(`[Stream] ✓ Vidlink embed: ${vidlinkEmbedUrl} + ${vidsrcSources.length} VidSrc fallbacks`);
+
+    return res.json({
+      success: true, streamId, ready: true,
+      embedUrl: vidlinkEmbedUrl,
+      provider: 'vidlink-embed',
+      sources: allSources,
+      subtitles: arabicSubs,
+    });
 
   } catch (e) {
 
@@ -2457,6 +2491,11 @@ const ALLOWED_EMBED_HOSTS = [
   'vidsrc-embed.ru', 'www.vidsrc-embed.ru',
   '2embed.cc', 'www.2embed.cc',
   'vidlink.pro', 'www.vidlink.pro',
+  // VidSrc Advanced Resolver sources
+  'vidsrc.xyz', 'www.vidsrc.xyz',
+  'vidsrc.pro', 'www.vidsrc.pro',
+  'vidsrc.to', 'www.vidsrc.to',
+  'vidsrc.net', 'www.vidsrc.net',
 ];
 
 app.get('/api/embed-proxy', async (req, res) => {
@@ -2498,154 +2537,212 @@ app.get('/api/embed-proxy', async (req, res) => {
 
     let html = await response.text();
 
-
+    // ─── طبقة 2: تنظيف HTML من جهة السيرفر قبل إرساله للمتصفح ──────────────
+    // يزيل target="_blank" من كل الروابط — قبل أي تحليل من المتصفح
+    html = html.replace(/(<a\b[^>]*?)\s+target\s*=\s*(["'])(_blank|_top|_parent)\2/gi, '$1 target="_self"');
+    // يزيل سكريبتات وiframes شبكات الإعلانات من HTML مباشرةً
+    const _HTML_AD=['doubleclick','googlesyndication','adnxs','popads','popcash','exoclick',
+      'trafficjunky','adsterra','propellerads','hilltopads','trafficfactory','trafficstars',
+      'adspyglass','pluginjacker','juicyads','yllix','popunder'];
+    _HTML_AD.forEach(function(d){
+      const esc=d.replace(/\./g,'\\.');
+      // سكريبتات (src)
+      html=html.replace(new RegExp('<script[^>]+src=(["\'])[^"\']*/'+esc+'[^"\']*(\\1)[^>]*>.*?<\/script>','gis'),'');
+      html=html.replace(new RegExp('<script[^>]+src=(["\'])[^"\']*/'+esc+'[^"\']*\\1[^>]*/?>','gi'),'');
+      // iframes
+      html=html.replace(new RegExp('<iframe[^>]+src=(["\'])[^"\']*/'+esc+'[^"\']*(\\1)[^>]*>.*?<\/iframe>','gis'),'');
+      html=html.replace(new RegExp('<iframe[^>]+src=(["\'])[^"\']*/'+esc+'[^"\']*\\1[^>]*/?>','gi'),'');
+    });
 
     const baseHref = `${parsedTarget.protocol}//${parsedTarget.host}/`;
     const inject = `<base href="${baseHref}">
 <script>
 (function(){
-  // ═══ 1. حجب window.open بالكامل ═══
-  var _noop = function(){ return {focus:function(){},blur:function(){},close:function(){},closed:true,document:{write:function(){},body:{}},location:{href:''}}; };
-  try{ Object.defineProperty(window,'open',{value:_noop,writable:false,configurable:false}); }catch(e){ window.open=_noop; }
+  // ─── قائمة شبكات الإعلانات المعروفة ───
+  var _AD=[
+    'doubleclick','googlesyndication','adservice','adnxs','advertising',
+    'popads','popcash','exoclick','trafficjunky','juicyads','adsterra',
+    'propellerads','revcontent','outbrain','taboola','mgid',
+    'yllix','popunder','hilltopads','adskeeper','clickadu','bidvertiser',
+    'adblade','infolinks','vibrantmedia','zedo','valueclick','adform',
+    'smartadserver','rubiconproject','openx','pubmatic','criteo',
+    'scorecardresearch','conversantmedia','yieldmanager','clicksor',
+    'media.net','justpremium','admixer','adtelligent','undertone',
+    'trafficfactory','pluginjacker','adspyglass','adspeed','undertone',
+    'adpusher','hilltopads','trafficstars','popads.net','popcash.net',
+    'go.php','click.php','redirect-','tracker.','track.','clk.','ad.','ads.'
+  ];
+  function _badHost(u){
+    if(!u||typeof u!=='string')return false;
+    try{
+      var h=new URL(u).hostname.toLowerCase();
+      return _AD.some(function(d){return h.indexOf(d)!==-1;});
+    }catch(e){return false;}
+  }
 
-  // ═══ 2. حجب كل النقرات على روابط إعلانية ═══
-  document.addEventListener('click',function(e){
-    var el=e.target;
-    while(el&&el!==document.body){
-      if(el.tagName==='A'){
-        var href=el.getAttribute('href')||'';
-        var tgt=el.getAttribute('target')||'';
-        var rel=el.getAttribute('rel')||'';
-        // حجب أي رابط يفتح نافذة جديدة أو رابط خارجي مشبوه
-        if(tgt==='_blank'||rel.indexOf('noopener')!==-1||href.indexOf('javascript:')===0||
-           href.indexOf('//ad')!==-1||href.indexOf('click')!==-1||href.indexOf('track')!==-1){
-          e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();return false;
-        }
-      }
-      el=el.parentElement;
+  // ═══ 1. حجب window.open — Instance + Prototype (لا يمكن تجاوزه) ═══
+  var _fakeWin={focus:function(){},blur:function(){},close:function(){},closed:true,
+    document:{write:function(){},body:{}},location:{href:''}};
+  var _blockOpen=function(){return _fakeWin;};
+  try{Object.defineProperty(window,'open',{value:_blockOpen,writable:false,configurable:false});}
+  catch(e){window.open=_blockOpen;}
+  try{Object.defineProperty(Window.prototype,'open',{value:_blockOpen,writable:false,configurable:false});}
+  catch(e){}
+  // إعادة الفرض كل ثانية في حال حاولت سكريبتات الإعلانات استعادته
+  setInterval(function(){
+    try{Object.defineProperty(window,'open',{value:_blockOpen,writable:false,configurable:false});}catch(e){}
+  },1000);
+
+  // ═══ 2. حجب location.assign/replace/href للأدومين الإعلانية فقط ═══
+  // ملاحظة: لا نحجب كامل navigation لأن VidSrc يستخدمه داخلياً للتحميل
+  var _origAssign=window.location.assign.bind(window.location);
+  var _origReplace=window.location.replace.bind(window.location);
+  window.location.assign=function(u){if(!_badHost(String(u)))_origAssign(u);};
+  window.location.replace=function(u){if(!_badHost(String(u)))_origReplace(u);};
+  try{
+    var _locDesc=Object.getOwnPropertyDescriptor(Location.prototype,'href');
+    if(_locDesc&&_locDesc.set){
+      Object.defineProperty(Location.prototype,'href',{
+        get:_locDesc.get,
+        set:function(u){if(!_badHost(String(u))){_locDesc.set.call(this,u);}},
+        configurable:true
+      });
     }
-  },true);
+  }catch(e){}
 
-  // ═══ 3. حجب mousedown/pointerdown (بعض الإعلانات تستخدمه بدل click) ═══
-  ['mousedown','pointerdown','auxclick'].forEach(function(evt){
+  // ═══ 3. حجب النقر على روابط _blank وإعلانية فقط ═══
+  ['click','mousedown','auxclick'].forEach(function(evt){
     document.addEventListener(evt,function(e){
       var el=e.target;
       while(el&&el!==document.body){
-        if(el.tagName==='A'&&(el.getAttribute('target')==='_blank')){
-          e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();return false;
+        if(el.tagName==='A'){
+          var href=el.getAttribute('href')||'';
+          var tgt=el.getAttribute('target')||'';
+          if(tgt==='_blank'||tgt==='_top'||tgt==='_parent'||_badHost(href)){
+            e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();return;
+          }
         }
         el=el.parentElement;
       }
     },true);
   });
 
-  // ═══ 4. إعادة التركيز عند سرقته ═══
+  // ═══ 4. إعادة التركيز عند سرقته (popunder) ═══
   window.addEventListener('blur',function(){setTimeout(function(){try{window.focus();}catch(e){}},100);});
 
-  // ═══ 5. حجب إنشاء iframe إعلانية ═══
-  var _origCreate = document.createElement.bind(document);
-  document.createElement = function(tag){
-    var el = _origCreate(tag);
-    if(tag.toLowerCase()==='a'){
-      setTimeout(function(){
-        if(el.target==='_blank') el.target='_self';
-        if(el.rel&&el.rel.indexOf('noopener')!==-1) el.removeAttribute('rel');
-      },0);
+  // ═══ 5. حجب إنشاء روابط _blank ديناميكياً ═══
+  var _origCreate=document.createElement.bind(document);
+  document.createElement=function(tag){
+    var el=_origCreate(tag);
+    if(typeof tag==='string'&&tag.toLowerCase()==='a'){
+      setTimeout(function(){if(el.target==='_blank'||el.target==='_top'){el.target='_self';}},0);
     }
     return el;
   };
 
-  // ═══ 6. حجب شعار المصدر في المشغل — منع النقر بالكامل ═══
-  var logoSelectors=[
-    '.jw-icon-logo','.jw-logo','.jw-logo-button','[class*="logo"]','[class*="Logo"]',
-    '[class*="brand"]','[class*="Brand"]','[class*="watermark"]','[class*="Watermark"]',
-    '.plyr__logo','.vjs-logo','.vjs-watermark','[class*="provider"]',
-    '[aria-label*="logo"]','[title*="logo"]','[title*="Logo"]',
-    'a[class*="logo"]','a[class*="brand"]','a > img[class*="logo"]',
-    '[class*="source-tag"]','[class*="branding"]'
-  ].join(',');
-
-  // حجب النقر على أي شعار أو عنصر يحتوي شعار
-  ['click','mousedown','pointerdown','touchstart'].forEach(function(evt){
-    document.addEventListener(evt,function(e){
-      var el=e.target;
-      // فحص العنصر وكل أبائه
-      while(el&&el!==document.body){
+  // ═══ 6. كشف وإزالة overlay divs الإعلانية (click-jacking) ═══
+  // VidSrc يضع div أو a شفاف فوق المشغّل ينقلك لإعلان عند الضغط
+  function removeAdOverlays(){
+    try{
+      var vw=window.innerWidth||document.documentElement.clientWidth||800;
+      var vh=window.innerHeight||document.documentElement.clientHeight||600;
+      var all=document.querySelectorAll('a[href],div[onclick],span[onclick],div[style]');
+      all.forEach(function(el){
         try{
-          if(el.matches&&el.matches(logoSelectors)){
-            e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();return false;
-          }
-          // إذا كان الشعار داخل رابط — احجب الرابط أيضاً
-          if(el.tagName==='A'&&el.querySelector&&el.querySelector(logoSelectors)){
-            e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();return false;
+          var s=window.getComputedStyle(el);
+          var pos=s.position;
+          if(pos!=='fixed'&&pos!=='absolute')return;
+          var r=el.getBoundingClientRect();
+          // يغطي أكثر من 60% من الشاشة
+          if(r.width<vw*0.6||r.height<vh*0.6)return;
+          // ليس عنصر video أو player أصلي
+          if(el.tagName==='VIDEO')return;
+          if(el.id&&(el.id.indexOf('player')!==-1||el.id.indexOf('video')!==-1))return;
+          var href=(el.getAttribute('href')||'').trim();
+          var oc=el.getAttribute('onclick')||'';
+          var hasAdLink=href&&href!==''&&href!=='#'&&href!=='javascript:void(0)'&&href!=='javascript:;';
+          var hasSuspiciousClick=oc&&(oc.indexOf('open')!==-1||oc.indexOf('location')!==-1||oc.indexOf('href')!==-1);
+          if(hasAdLink||hasSuspiciousClick){
+            el.style.pointerEvents='none';
+            if(el.tagName==='A'){el.removeAttribute('href');}
+            el.removeAttribute('onclick');
           }
         }catch(x){}
-        el=el.parentElement;
-      }
-    },true);
-  });
-
-  // ═══ 7. MutationObserver — إزالة إعلانات + تعطيل شعارات ═══
-  var adSelectors='[id*="ad-"],[id*="ads-"],[id*="banner"],[class*="ad-overlay"],[class*="popup-ad"],[class*="overlay-ad"],[class*="ad-banner"],[class*="advertisement"]';
-  function cleanPage(){
-    try{
-      // إزالة عناصر إعلانية
-      document.querySelectorAll(adSelectors).forEach(function(el){
-        if(el.closest('video')||el.closest('[class*="player"]')) return;
-        el.remove();
-      });
-      document.querySelectorAll('iframe').forEach(function(f){
-        var s=f.src||'';
-        if(s.indexOf('ads')!==-1||s.indexOf('doubleclick')!==-1||s.indexOf('googlesyndication')!==-1||s.indexOf('popunder')!==-1){
-          f.remove();
-        }
-      });
-      // تعطيل الشعارات — إزالة href + pointer-events
-      document.querySelectorAll(logoSelectors).forEach(function(el){
-        el.style.pointerEvents='none';
-        el.style.cursor='default';
-        if(el.tagName==='A'){el.removeAttribute('href');el.removeAttribute('target');}
-        var parentA=el.closest('a');
-        if(parentA){parentA.removeAttribute('href');parentA.removeAttribute('target');parentA.style.pointerEvents='none';}
-        el.onclick=function(e){e.preventDefault();e.stopPropagation();return false;};
       });
     }catch(e){}
   }
-  if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',cleanPage);}else{cleanPage();}
+  // تشغيل مبكر وبشكل دوري
+  setTimeout(removeAdOverlays,100);
+  setTimeout(removeAdOverlays,500);
+  setTimeout(removeAdOverlays,1500);
+  setInterval(removeAdOverlays,2000);
+
+  // ═══ 7. MutationObserver — إزالة عناصر إعلانية من شبكات معروفة ═══
+  function cleanAds(){
+    try{
+      document.querySelectorAll('iframe[src],script[src]').forEach(function(el){
+        if(_badHost(el.src||el.getAttribute('src')||''))el.remove();
+      });
+      document.querySelectorAll('a[target="_blank"],a[target="_top"]').forEach(function(a){
+        a.setAttribute('target','_self');
+      });
+    }catch(e){}
+  }
+  if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',cleanAds);}else{cleanAds();}
   try{
-    new MutationObserver(function(){cleanPage();}).observe(document.documentElement,{childList:true,subtree:true});
+    new MutationObserver(function(){cleanAds();removeAdOverlays();}).observe(document.documentElement,{childList:true,subtree:true});
   }catch(e){}
 
-  // ═══ 8. حجب beforeunload (منع إعادة التوجيه) ═══
-  window.addEventListener('beforeunload',function(e){e.preventDefault();e.returnValue='';},true);
+  // ═══ 8. حجب XHR لشبكات الإعلانات فقط ═══
+  var _XO=XMLHttpRequest.prototype.open;
+  var _XS=XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open=function(m,u){
+    if(_badHost(u)){this.__blk=1;return;}
+    return _XO.apply(this,arguments);
+  };
+  XMLHttpRequest.prototype.send=function(){
+    if(this.__blk)return;
+    return _XS.apply(this,arguments);
+  };
+
+  // ═══ 9. حجب fetch لشبكات الإعلانات فقط ═══
+  var _oF=window.fetch;
+  window.fetch=function(u,o){
+    var url=typeof u==='string'?u:(u&&u.url)||'';
+    if(_badHost(url))return new Promise(function(){});
+    return _oF.apply(this,arguments);
+  };
+
+  console.log('[AdBlock] Active — popup/overlay/ad-network blocking enabled');
 })();
 </script>
 <style>
-/* إخفاء عناصر الإعلانات */
-[id*="ad-"],[id*="ads-"],[id*="banner"],[class*="ad-banner"],
-[class*="advertisement"],[class*="overlay-ad"],[class*="popup-ad"],
-[class*="ad-overlay"],[class*="popunder"],[class*="pop-up"],
-iframe[src*="ads"],iframe[src*="doubleclick"],
-iframe[src*="googlesyndication"],iframe[src*="popunder"] {
+/* شبكات الإعلانات الشائعة */
+iframe[src*="doubleclick"],iframe[src*="googlesyndication"],
+iframe[src*="adnxs"],iframe[src*="advertising"],iframe[src*="popads"],
+iframe[src*="exoclick"],iframe[src*="adsterra"],iframe[src*="propellerads"],
+iframe[src*="popunder"],iframe[src*="hilltopads"],
+[id*="google_ads"],[class*="adsbygoogle"],[id*="adsbygoogle"],
+[data-ad],[data-ad-slot] {
   display:none!important;visibility:hidden!important;
-  pointer-events:none!important;width:0!important;height:0!important;overflow:hidden!important;
+  pointer-events:none!important;position:absolute!important;
+  left:-9999px!important;top:-9999px!important;
+  width:0!important;height:0!important;
 }
-/* تعطيل شعار المصدر في المشغل */
+/* تعطيل شعار/علامة مائية المشغّل */
 .jw-icon-logo,.jw-logo,.jw-logo-button,
 .plyr__logo,.vjs-logo,.vjs-watermark,
 [class*="watermark"],[class*="Watermark"],
-[class*="branding"],[class*="source-tag"],
-[class*="provider-logo"] {
-  pointer-events:none!important;
-  cursor:default!important;
+[class*="source-tag"],[class*="powered-by"],
+[class*="provider-logo"],[class*="branding"] {
+  pointer-events:none!important;cursor:default!important;
+  opacity:0!important;
 }
-.jw-icon-logo a,.jw-logo a,[class*="logo"] a,[class*="brand"] a,
 a.jw-logo,a[class*="logo"],a[class*="brand"],a[class*="watermark"] {
-  pointer-events:none!important;
-  cursor:default!important;
+  pointer-events:none!important;cursor:default!important;
 }
+video{pointer-events:auto!important;}
 </style>`;
-
 
 
     if (html.includes('<head>')) {
@@ -4124,6 +4221,54 @@ const server = app.listen(config.PORT, config.HOST, async () => {
     console.error('[VOD] Pre-warm error:', e.message);
 
   }
+
+  // ═══ Always-On: Pre-warm ALL live Xtream channels on startup ═══
+  // Starts FFmpeg for every channel so they're instantly ready when viewers tune in.
+  setTimeout(async () => {
+    try {
+      const channels = await db.prepare(`
+        SELECT c.id, c.name, c.stream_id, c.account_id,
+               a.server_url, a.username, a.password
+        FROM xtream_channels c
+        LEFT JOIN iptv_accounts a ON c.account_id = a.id
+        WHERE c.is_streaming = true AND a.server_url IS NOT NULL
+      `).all();
+
+      if (!channels || channels.length === 0) {
+        console.log('[PreWarm] No xtream channels found to pre-warm');
+        return;
+      }
+
+      console.log(`[PreWarm] 🔥 Starting ${channels.length} always-on channels...`);
+      let ok = 0, fail = 0;
+
+      for (const ch of channels) {
+        const iptvUrl = `${ch.server_url}/live/${ch.username}/${ch.password}/${ch.stream_id}.m3u8`;
+        const streamKey = `xtream_live_${ch.stream_id}`;
+
+        try {
+          const result = await streamManager.requestStream(streamKey, 'live', iptvUrl, ch.name);
+          if (result.success) {
+            streamManager.markPermanent(streamKey);
+            ok++;
+          } else {
+            fail++;
+            console.error(`[PreWarm] ❌ ${ch.name}: ${result.error}`);
+          }
+        } catch (e) {
+          fail++;
+          console.error(`[PreWarm] ❌ ${ch.name}: ${e.message}`);
+        }
+
+        // Small stagger to avoid hammering IPTV provider all at once
+        await new Promise(r => setTimeout(r, 500));
+      }
+
+      console.log(`[PreWarm] ✅ ${ok} channels started, ${fail} failed`);
+    } catch (e) {
+      console.error('[PreWarm] Error:', e.message);
+    }
+  }, 5000); // Wait 5s after startup for DB sync to complete
 
 });
 

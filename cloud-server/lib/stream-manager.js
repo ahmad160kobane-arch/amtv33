@@ -28,10 +28,10 @@ const fs   = require('fs');
 const config = require('../config');
 
 // ── Tunables ─────────────────────────────────────────────────
-const MAX_CONCURRENT      = 30;    // max simultaneous channels (FFmpeg procs)
-const LIVE_HLS_TIME       = 4;     // segment duration (s) — 4 is a stable sweet spot
-const LIVE_HLS_LIST_SIZE  = 8;     // keep 8 segments in playlist (~32s window)
-const LIVE_HLS_DELETE_TH  = 4;     // delete segments 4+ beyond list
+const MAX_CONCURRENT      = 100;   // max simultaneous channels (FFmpeg procs)
+const LIVE_HLS_TIME       = 2;     // segment duration (s) — 2s = smaller downloads, vital for 4G
+const LIVE_HLS_LIST_SIZE  = 12;    // keep 12 segments in playlist (~24s window)
+const LIVE_HLS_DELETE_TH  = 6;     // delete segments 6+ beyond list (extra headroom for slow clients)
 const RESTART_MAX         = 5;     // max auto-restarts on unexpected exit
 const RESTART_BACKOFF_MS  = 2000;  // base delay between restarts
 const UA                  = 'VLC/3.0.20 LibVLC/3.0.20';
@@ -93,10 +93,10 @@ class StreamManager {
 
     if (!sourceUrl) return { success: false, error: 'sourceUrl required' };
 
-    // Enforce concurrency cap — evict least-recently-accessed channel.
+    // Enforce concurrency cap — evict least-recently-accessed non-permanent channel.
     if (this.streams.size >= MAX_CONCURRENT) {
       const oldest = [...this.streams.entries()]
-        .filter(([, s]) => !s.completed)
+        .filter(([, s]) => !s.completed && !s.permanent)
         .sort((a, b) => a[1].lastAccess - b[1].lastAccess)[0];
       if (oldest) {
         console.log(`[Stream] LRU evict: ${oldest[1].name}`);
@@ -138,6 +138,8 @@ class StreamManager {
         this._wipeHlsDir(streamId, info.type);
         return;
       }
+      // Permanent (always-on) streams never idle-shutdown.
+      if (info.permanent) return;
       // Schedule idle shutdown.
       info.idleTimer = setTimeout(() => {
         const cur = this.streams.get(streamId);
@@ -285,11 +287,11 @@ class StreamManager {
         return;
       }
 
-      // Unexpected exit with active viewers → bounded auto-restart.
+      // Unexpected exit with active viewers OR permanent streams → bounded auto-restart.
       const shouldRestart =
         type === 'live' &&
         info &&
-        info.viewers > 0 &&
+        (info.viewers > 0 || info.permanent) &&
         !info._shutdown &&
         (info.restartCount || 0) < RESTART_MAX;
 
@@ -308,7 +310,11 @@ class StreamManager {
           const res = this._startLive(streamId, upstream, info.sourceUrl, name);
           if (res.success) {
             const ns = this.streams.get(streamId);
-            if (ns) { ns.viewers = info.viewers; ns.restartCount = attempt; }
+            if (ns) {
+              ns.viewers = info.viewers;
+              ns.restartCount = attempt;
+              if (info.permanent) ns.permanent = true;
+            }
           }
         }, delay);
       } else if (code !== 0) {
@@ -435,8 +441,20 @@ class StreamManager {
         console.log(`[Stream] ${info.name} process gone — cleaning`);
         if (info.idleTimer) clearTimeout(info.idleTimer);
         this.streams.delete(id);
+        this._wipeHlsDir(id, info.type); // Remove stale segments so isReady() won't return true
       }
     }
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // Always-on: mark a running stream as permanent (never idle-killed)
+  // ─────────────────────────────────────────────────────────
+  markPermanent(streamId) {
+    const info = this.streams.get(streamId);
+    if (!info) return false;
+    info.permanent = true;
+    if (info.idleTimer) { clearTimeout(info.idleTimer); info.idleTimer = null; }
+    return true;
   }
 
   // ─────────────────────────────────────────────────────────

@@ -135,7 +135,7 @@ class VidSrcM3U8Extractor {
 
       const response = await axios.get(embedUrl, {
         headers: this.headers,
-        timeout: 15000,
+        timeout: 8000,
       });
 
       const dom = new JSDOM(response.data);
@@ -316,11 +316,7 @@ class VidSrcM3U8Extractor {
       if (netResult) results.push(netResult);
     }
 
-    // 4. جرب vidsrc.pro (TMDB - جودة عالية)
-    if (tmdbId) {
-      const proResult = await this.extractFromVidSrcPro(tmdbId, type, season, episode);
-      if (proResult) results.push(proResult);
-    }
+    // 4. vidsrc.pro — محذوف: يعتمد على embed.su الذي يفشل DNS من VPS
 
     if (results.length === 0) {
       console.log('[VidSrc M3U8 Extractor] ✗ No m3u8 found from any source');
