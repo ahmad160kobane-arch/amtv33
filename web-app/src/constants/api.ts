@@ -702,7 +702,8 @@ export interface VidSrcStreamResult {
   provider?: string;
   quality?: string;
   type?: string;
-  sources?: Array<{ provider: string; url: string; type: string }>;
+  sources?: Array<{ url: string; name?: string; provider?: string; type?: string }>;
+  allEmbedUrls?: string[];
   subtitles?: any[];
   error?: string;
   requiresSubscription?: boolean;
@@ -719,7 +720,7 @@ export async function requestVidsrcStream(opts: {
   try {
     console.log('[VidSrc API] Requesting stream:', opts);
     
-    const res = await apiFetch('/api/stream/vidsrc-full', {
+    const res = await apiFetch('/api/stream/vidsrc', {
       method: 'POST',
       body: JSON.stringify(opts),
     });
@@ -737,15 +738,18 @@ export async function requestVidsrcStream(opts: {
 
     console.log('[VidSrc API] Success:', {
       provider: data.provider,
-      hasStreamUrl: !!data.streamUrl,
-      hasSubtitles: !!data.subtitles?.length,
+      hasHlsUrl: !!data.hlsUrl,
+      hasEmbedUrl: !!data.embedUrl,
       subtitlesCount: data.subtitles?.length || 0
     });
 
     return { 
       success: true,
-      streamUrl: data.streamUrl || data.hlsUrl,
-      hlsUrl: data.streamUrl || data.hlsUrl,
+      hlsUrl: data.hlsUrl || data.streamUrl,
+      vodUrl: data.hlsUrl || data.streamUrl,
+      embedUrl: data.embedUrl,
+      sources: data.sources,
+      allEmbedUrls: data.allEmbedUrls,
       provider: data.provider,
       subtitles: data.subtitles || []
     };
