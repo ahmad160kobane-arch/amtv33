@@ -300,6 +300,7 @@ function DetailContent() {
                 allowFullScreen
                 allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
                 referrerPolicy="no-referrer"
+                sandbox="allow-scripts allow-same-origin allow-forms allow-presentation allow-pointer-lock"
               />
             ) : (
               <iframe
