@@ -7,56 +7,52 @@ const ALLOWED = [
 ];
 
 // ─── Ad-blocking script injected at the TOP of <head> ────────────────────────
-// Runs before any page script → full interception of window.open / fetch / XHR
-// Also blocks parent/top navigation and popup tabs
+// Blocks window.open (popups), ad network XHR/fetch, and _blank link clicks.
+// Does NOT block internal navigation (location.replace/assign) — VidSrc needs
+// these to load its CDN player.
 const AD_BLOCKER_SCRIPT = `<script>(function(){
 var _AD=[
   'doubleclick','googlesyndication','adservice','adnxs','advertising',
   'popads','popcash','exoclick','trafficjunky','juicyads','adsterra',
-  'propellerads','revcontent','outbrain','taboola','mgid','adclick',
+  'propellerads','revcontent','outbrain','taboola','mgid',
   'yllix','popunder','hilltopads','adskeeper','clickadu','bidvertiser',
   'adblade','infolinks','vibrantmedia','zedo','valueclick','adform',
-  'smartadserver','rubiconproject','openx','pubmatic','criteo','quantserve',
-  'scorecardresearch','conversantmedia','yieldmanager','clicksor','kontera',
-  'media.net','justpremium','admixer','adtelligent','undertone',
-  'realgm','popup','popunder','redirect-','go.php','click.php'
+  'smartadserver','rubiconproject','openx','pubmatic','criteo',
+  'scorecardresearch','conversantmedia','yieldmanager','clicksor',
+  'media.net','justpremium','admixer','adtelligent','undertone'
 ];
 function _bad(u){
-  if(!u)return false;
-  try{var h=new URL(String(u)).hostname.toLowerCase();
-    return _AD.some(function(d){return h.includes(d);});
+  if(!u||typeof u!=='string')return false;
+  try{var h=new URL(u).hostname.toLowerCase();
+    return _AD.some(function(d){return h.indexOf(d)!==-1;});
   }catch(e){return false;}
 }
 // 1. Block window.open — return fake window object
-var _fakeWin={focus:function(){},blur:function(){},close:function(){},closed:true,document:{write:function(){}},location:{href:''}};
-window.open=function(){return _fakeWin;};
+var _fakeWin={focus:function(){},blur:function(){},close:function(){},closed:true,
+  document:{write:function(){},body:{}},location:{href:''}};
+try{Object.defineProperty(window,'open',{value:function(){return _fakeWin;},writable:false,configurable:false});}
+catch(e){window.open=function(){return _fakeWin;};}
 
-// 2. Block parent/top window navigation (popunders)
-try{
-  Object.defineProperty(window,'top',{get:function(){return window;},configurable:false});
-  Object.defineProperty(window,'parent',{get:function(){return window;},configurable:false});
-}catch(e){}
+// 2. Block link clicks that open new tabs
+['click','mousedown','auxclick'].forEach(function(evt){
+  document.addEventListener(evt,function(e){
+    var el=e.target;
+    while(el&&el!==document.body){
+      if(el.tagName==='A'){
+        var href=el.getAttribute('href')||'';
+        var tgt=el.getAttribute('target')||'';
+        if(tgt==='_blank'||tgt==='_top'||tgt==='_parent'||
+           href.startsWith('javascript:')||_bad(href)){
+          e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();return;
+        }
+      }
+      el=el.parentElement;
+    }
+  },true);
+});
 
-// 3. Block location changes to external URLs
-var _selfHost=window.location.hostname;
-function _isExternal(u){
-  if(!u||u.startsWith('#')||u.startsWith('javascript'))return false;
-  try{return new URL(u,window.location.href).hostname!==_selfHost;}catch(e){return false;}
-}
-var _origAssign=window.location.assign.bind(window.location);
-var _origReplace=window.location.replace.bind(window.location);
-window.location.assign=function(u){if(!_isExternal(u))_origAssign(u);};
-window.location.replace=function(u){if(!_isExternal(u))_origReplace(u);};
-try{
-  var _locDesc=Object.getOwnPropertyDescriptor(Location.prototype,'href');
-  if(_locDesc&&_locDesc.set){
-    Object.defineProperty(Location.prototype,'href',{
-      get:_locDesc.get,
-      set:function(u){if(!_isExternal(u)){_locDesc.set.call(this,u);}},
-      configurable:true
-    });
-  }
-}catch(e){}
+// 3. Re-focus if focus stolen by popunder
+window.addEventListener('blur',function(){setTimeout(function(){try{window.focus();}catch(e){}},100);});
 
 // 4. Block fetch to ad networks
 var _F=window.fetch;
@@ -72,58 +68,21 @@ XMLHttpRequest.prototype.open=function(m,u){
   if(_bad(u)){this.__bl=1;return;}
   return _XO.apply(this,arguments);
 };
-XMLHttpRequest.prototype.send=function(){
-  if(this.__bl)return;
-  return _XS.apply(this,arguments);
-};
+XMLHttpRequest.prototype.send=function(){if(this.__bl)return;return _XS.apply(this,arguments);};
 
-// 6. Block all link clicks that open new tabs or redirect externally
-['click','mousedown','pointerdown','auxclick'].forEach(function(evt){
-  document.addEventListener(evt,function(e){
-    var el=e.target;
-    while(el&&el!==document.body){
-      if(el.tagName==='A'){
-        var href=el.getAttribute('href')||'';
-        var tgt=el.getAttribute('target')||'';
-        if(tgt==='_blank'||tgt==='_top'||tgt==='_parent'||
-           href.startsWith('javascript:')||_isExternal(href)){
-          e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();return;
-        }
-      }
-      el=el.parentElement;
-    }
-  },true);
-});
-
-// 7. MutationObserver — remove ad scripts/iframes/links as they are added
+// 6. MutationObserver — remove ad scripts/iframes as they are added
 new MutationObserver(function(ms){
   ms.forEach(function(m){
     m.addedNodes.forEach(function(n){
       if(!n||n.nodeType!==1)return;
-      var src=n.src||n.href||'';
-      if(_bad(src)){n.remove();return;}
-      if((n.tagName==='SCRIPT'||n.tagName==='IFRAME')&&n.src&&_bad(n.src)){n.remove();}
-      // Patch anchor targets added dynamically
+      if((n.tagName==='SCRIPT'||n.tagName==='IFRAME')&&_bad(n.src||n.getAttribute('src')||'')){n.remove();}
       if(n.tagName==='A'){
-        if(n.getAttribute('target')==='_blank'||n.getAttribute('target')==='_top'){
-          n.setAttribute('target','_self');
-        }
+        var tgt=n.getAttribute('target');
+        if(tgt==='_blank'||tgt==='_top')n.setAttribute('target','_self');
       }
     });
   });
 }).observe(document.documentElement,{childList:true,subtree:true});
-
-// 8. Stop iframe from navigating parent via beforeunload
-window.addEventListener('beforeunload',function(e){e.stopImmediatePropagation();},true);
-
-// 9. Re-focus if focus stolen by popup
-window.addEventListener('blur',function(){setTimeout(function(){try{window.focus();}catch(e){}},50);});
-
-// 10. Override history methods to block external pushes
-var _hPush=history.pushState.bind(history);
-var _hRepl=history.replaceState.bind(history);
-history.pushState=function(s,t,u){if(u&&_isExternal(String(u)))return;return _hPush(s,t,u);};
-history.replaceState=function(s,t,u){if(u&&_isExternal(String(u)))return;return _hRepl(s,t,u);};
 })();</script>`;
 
 const FETCH_HEADERS = {

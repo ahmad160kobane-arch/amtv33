@@ -298,7 +298,6 @@ function DetailContent() {
               className="flex-1 w-full border-0"
               allowFullScreen
               allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
-              sandbox="allow-scripts allow-same-origin allow-forms allow-presentation allow-pointer-lock"
               referrerPolicy="no-referrer-when-downgrade"
             />
             {/* Arabic subtitle download links */}
