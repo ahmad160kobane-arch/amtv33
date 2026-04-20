@@ -719,7 +719,7 @@ export async function requestVidsrcStream(opts: {
   try {
     console.log('[VidSrc API] Requesting stream:', opts);
     
-    const res = await apiFetch('/api/stream/vidsrc', {
+    const res = await apiFetch('/api/stream/vidsrc-full', {
       method: 'POST',
       body: JSON.stringify(opts),
     });
@@ -738,26 +738,15 @@ export async function requestVidsrcStream(opts: {
     console.log('[VidSrc API] Success:', {
       provider: data.provider,
       hasStreamUrl: !!data.streamUrl,
-      hasEmbedUrl: !!data.embedUrl,
-      type: data.type,
-      sourcesCount: data.sources?.length || 0
+      hasSubtitles: !!data.subtitles?.length,
+      subtitlesCount: data.subtitles?.length || 0
     });
 
-    // النظام الجديد يعيد:
-    // - streamUrl: رابط HLS مباشر (إذا تم استخراجه)
-    // - embedUrl: رابط embed (fallback)
-    // - sources: قائمة بجميع المصادر المتاحة
-    
     return { 
       success: true,
       streamUrl: data.streamUrl || data.hlsUrl,
-      embedUrl: data.embedUrl,
-      hlsUrl: data.streamUrl || data.hlsUrl || data.embedUrl,
-      vodUrl: data.vodUrl,
+      hlsUrl: data.streamUrl || data.hlsUrl,
       provider: data.provider,
-      quality: data.quality || 'auto',
-      type: data.type || 'embed',
-      sources: data.sources || [],
       subtitles: data.subtitles || []
     };
   } catch (err: any) { 
