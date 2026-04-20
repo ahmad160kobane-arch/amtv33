@@ -1,13 +1,13 @@
 'use client';
 import React, { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { fetchFreeChannels, fetchLuluHome, FreeChannel, LuluItem } from '@/constants/api';
+import { fetchFreeChannels, fetchVidsrcHome, FreeChannel, VidsrcItem } from '@/constants/api';
 import ContentRow from '@/components/ContentRow';
 import HeroSlider from '@/components/HeroSlider';
 import { SkeletonRow, SkeletonHero } from '@/components/Skeleton';
 
-function luluToContentItem(v: LuluItem) {
-  return { id: v.id, title: v.title, poster: v.poster, vod_type: v.vod_type, year: v.year, rating: v.rating, source: 'lulu' };
+function vidsrcToContentItem(v: VidsrcItem) {
+  return { id: v.id, title: v.title, poster: v.poster, vod_type: v.vod_type, year: v.year, rating: v.rating, tmdb_id: v.tmdb_id, imdb_id: v.imdb_id };
 }
 
 
@@ -16,18 +16,20 @@ export default function HomePage() {
   const [channels, setChannels] = useState<FreeChannel[]>([]);
   const [logoErrors, setLogoErrors] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
-  const [luluMovies, setLuluMovies] = useState<LuluItem[]>([]);
-  const [luluSeries, setLuluSeries] = useState<LuluItem[]>([]);
+  const [vidsrcMovies, setVidsrcMovies] = useState<VidsrcItem[]>([]);
+  const [vidsrcSeries, setVidsrcSeries] = useState<VidsrcItem[]>([]);
+  const [trending, setTrending] = useState<VidsrcItem[]>([]);
 
   const loadData = useCallback(async () => {
     try {
-      const [chData, luluData] = await Promise.all([
+      const [chData, vidsrcData] = await Promise.all([
         fetchFreeChannels({ limit: 12 }),
-        fetchLuluHome(),
+        fetchVidsrcHome(),
       ]);
       setChannels(chData?.channels || []);
-      setLuluMovies(luluData.latestMovies || []);
-      setLuluSeries(luluData.latestSeries || []);
+      setVidsrcMovies(vidsrcData.latestMovies || []);
+      setVidsrcSeries(vidsrcData.latestTvShows || []);
+      setTrending(vidsrcData.trending || []);
     } catch (e) {
       console.error('Home load error:', e);
     } finally {
@@ -37,7 +39,19 @@ export default function HomePage() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  const heroItems = luluMovies.slice(0, 5).map(v => ({ id: v.id, title: v.title, poster: v.poster, backdrop: v.poster, vod_type: v.vod_type, year: v.year, rating: v.rating, genres: [], tmdb_id: v.id, source: 'lulu' }));
+  const heroItems = trending.slice(0, 5).map(v => ({ 
+    id: v.id, 
+    title: v.title, 
+    poster: v.poster, 
+    backdrop: v.backdrop || v.poster, 
+    vod_type: v.vod_type, 
+    year: v.year, 
+    rating: v.rating, 
+    genres: v.genres || [], 
+    tmdb_id: v.tmdb_id,
+    imdb_id: v.imdb_id,
+    description: v.description
+  }));
 
   return (
     <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-20 md:pb-6">
@@ -108,14 +122,18 @@ export default function HomePage() {
           <>
             <SkeletonRow />
             <SkeletonRow />
+            <SkeletonRow />
           </>
         ) : (
           <>
-            {luluMovies.length > 0 && (
-              <ContentRow title="أحدث الأفلام" items={luluMovies.map(luluToContentItem)} seeAllHref="/allcontent?type=movie" showBadge />
+            {trending.length > 0 && (
+              <ContentRow title="الأكثر مشاهدة" items={trending.map(vidsrcToContentItem)} seeAllHref="/allcontent?type=trending" showBadge />
             )}
-            {luluSeries.length > 0 && (
-              <ContentRow title="أحدث المسلسلات" items={luluSeries.map(luluToContentItem)} seeAllHref="/allcontent?type=series" showBadge />
+            {vidsrcMovies.length > 0 && (
+              <ContentRow title="أحدث الأفلام" items={vidsrcMovies.map(vidsrcToContentItem)} seeAllHref="/allcontent?type=movie" showBadge />
+            )}
+            {vidsrcSeries.length > 0 && (
+              <ContentRow title="أحدث المسلسلات" items={vidsrcSeries.map(vidsrcToContentItem)} seeAllHref="/allcontent?type=series" showBadge />
             )}
           </>
         )}

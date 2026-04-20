@@ -1,33 +1,51 @@
 'use client';
 import React, { useEffect, useState, useCallback, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { fetchLuluList, LuluItem } from '@/constants/api';
+import { fetchVidsrcBrowse, searchVidsrc, VidsrcItem } from '@/constants/api';
 import ContentCard from '@/components/ContentCard';
 import { SkeletonGrid } from '@/components/Skeleton';
 
-const TYPES = [{ id: 'movie', label: 'أفلام' }, { id: 'series', label: 'مسلسلات' }];
+const TYPES = [
+  { id: 'movie', label: 'أفلام' }, 
+  { id: 'tv', label: 'مسلسلات' },
+  { id: 'trending', label: 'الأكثر مشاهدة' }
+];
 
 function AllContentContent() {
   const params = useSearchParams();
   const router = useRouter();
-  const [items, setItems] = useState<LuluItem[]>([]);
+  const [items, setItems] = useState<VidsrcItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const [search, setSearch] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeType, setActiveType] = useState<'movie' | 'series'>(
-    (params.get('type') as 'movie' | 'series') || 'movie'
+  const paramType = params.get('type');
+  const [activeType, setActiveType] = useState<'movie' | 'tv' | 'trending'>(
+    (paramType === 'series' ? 'tv' : paramType as 'movie' | 'tv' | 'trending') || 'movie'
   );
 
   const load = useCallback(async (p = 1, reset = false) => {
     if (p === 1) setLoading(true); else setLoadingMore(true);
     try {
-      const data = await fetchLuluList({ type: activeType, page: p, search: searchQuery || undefined });
+      let data;
+      if (searchQuery) {
+        // بحث
+        const results = await searchVidsrc(searchQuery);
+        data = { items: results, hasMore: false, page: 1, total: results.length };
+      } else {
+        // تصفح حسب النوع
+        data = await fetchVidsrcBrowse({ 
+          type: activeType === 'trending' ? undefined : activeType, 
+          category: activeType === 'trending' ? 'trending' : undefined,
+          page: p, 
+          limit: 20 
+        });
+      }
       const newItems = data.items || [];
       setItems(prev => reset ? newItems : [...prev, ...newItems]);
-      setHasMore(data.hasMore);
+      setHasMore(data.hasMore && !searchQuery);
     } catch (e) {
       console.error('Content load error:', e);
     } finally {
@@ -42,14 +60,15 @@ function AllContentContent() {
 
   const handleSearch = (e: React.FormEvent) => { e.preventDefault(); setSearchQuery(search); };
 
-  const toCard = (item: LuluItem) => ({
+  const toCard = (item: VidsrcItem) => ({
     id    : item.id,
     title : item.title,
     poster: item.poster,
     vod_type: item.vod_type,
     year  : item.year,
     rating: item.rating,
-    source: 'lulu',
+    tmdb_id: item.tmdb_id,
+    imdb_id: item.imdb_id,
   });
 
   return (

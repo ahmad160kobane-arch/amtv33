@@ -1,7 +1,7 @@
 'use client';
 import React, { useEffect, useState, useCallback, useRef, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { fetchVidsrcDetail, fetchLuluDetail, requestVidsrcStream, requestLuluStream, checkFavorite, toggleFavorite, addWatchHistory, isLoggedIn, VidsrcDetail, VidsrcEpisode } from '@/constants/api';
+import { fetchVidsrcDetail, requestVidsrcStream, checkFavorite, toggleFavorite, addWatchHistory, isLoggedIn, VidsrcDetail, VidsrcEpisode } from '@/constants/api';
 import VodPlayer from '@/components/VodPlayer';
 
 /* ─── YouTube-style Detail Page ─────────────────────────────────── */
@@ -46,42 +46,8 @@ function DetailContent() {
   const loadData = useCallback(async () => {
     if (!contentId) return;
     try {
-      if (sourceLulu) {
-        // ── جلب التفاصيل من LuluStream مباشرة ──
-        const luluType = (vodType === 'series' || vodType === 'tv') ? 'series' : 'movie';
-        const lData = await fetchLuluDetail(contentId, luluType);
-        if (lData) {
-          // تحويل LuluDetail → VidsrcDetail
-          const episodes: VidsrcEpisode[] = (lData.episodes || []).map(e => ({
-            id        : e.id,
-            episode   : e.episode,
-            season    : e.season,
-            title     : e.title,
-            luluHls      : e.hlsUrl,
-            luluEmbed    : e.embedUrl,
-            subtitleUrls : e.subtitleUrls || null,
-          }));
-          const seasonNums = Array.from(new Set(episodes.map(e => e.season))).sort((a, b) => a - b);
-          setDetail({
-            id         : lData.id,
-            title      : lData.title,
-            poster     : lData.poster || paramPoster,
-            backdrop   : lData.backdrop || lData.poster || paramPoster,
-            description: [lData.lang && `🌐 ${lData.lang}`, lData.genre && `🎭 ${lData.genre}`].filter(Boolean).join('   '),
-            vod_type   : lData.vod_type,
-            year       : lData.year || '',
-            rating     : lData.rating || '',
-            seasons    : seasonNums,
-            episodes,
-            luluHls      : lData.hlsUrl,
-            luluEmbed    : lData.embedUrl,
-            subtitleUrls : lData.subtitleUrls || null,
-          } as VidsrcDetail);
-        }
-      } else {
-        const data = await fetchVidsrcDetail(fetchType as 'movie' | 'tv', contentId);
-        setDetail(data);
-      }
+      const data = await fetchVidsrcDetail(fetchType as 'movie' | 'tv', contentId);
+      setDetail(data);
       const logged = await isLoggedIn();
       setLoggedIn(logged);
       if (logged) {
@@ -93,7 +59,7 @@ function DetailContent() {
     } finally {
       setLoading(false);
     }
-  }, [contentId, fetchType, sourceLulu, vodType, paramPoster]);
+  }, [contentId, fetchType]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -200,74 +166,28 @@ function DetailContent() {
     };
 
     try {
-      // ── 1. مصدر LuluStream: استعمل embedUrl (إيفرام LuluStream) ──
-      if (sourceLulu) {
-        const embedU = ep ? ep.luluEmbed : detail?.luluEmbed;
-        if (embedU) {
-          setEmbedSources([{ url: embedU, name: 'LuluStream' }]);
-          setEmbedSourceIdx(0);
-          setEmbedUrl(embedU);
-          setStreamUrl('');
-          // ترجمات من SubDL
-          const subUrls = (ep?.subtitleUrls || detail?.subtitleUrls) as { ar?: string; ku?: string } | null | undefined;
-          if (subUrls) {
-            const subs: any[] = [];
-            if (subUrls.ar) subs.push({ url: subUrls.ar, label: '🇸🇦 عربي', language: 'ar' });
-            if (subUrls.ku) subs.push({ url: subUrls.ku, label: '🏳️ كردي', language: 'ku' });
-            setSubtitles(subs);
-          }
-          recordHistory(ep ? `${contentId}_${ep.season}_${ep.episode}` : contentId);
-          setStreamLoading(false);
-          return;
-        }
-        // fallback: requestLuluStream
-        const luluOpts = ep
-          ? { type: 'series' as const, ep_id: ep.id || '' }
-          : { type: 'movie' as const, id: contentId };
-        const lulu = await requestLuluStream(luluOpts);
-        if (lulu.embedUrl) {
-          setEmbedSources([{ url: lulu.embedUrl, name: 'LuluStream' }]);
-          setEmbedSourceIdx(0);
-          setEmbedUrl(lulu.embedUrl);
-          setStreamUrl('');
-          recordHistory(ep ? `${contentId}_${ep.season}_${ep.episode}` : contentId);
-          setStreamLoading(false);
-          return;
-        }
-        setStreamError('لم يتوفر الفيديو بعد، جاري المعالجة...');
-        setStreamLoading(false);
-        return;
-      }
-
-      // ── 2. مصدر آخر: جرب LuluStream بالـ ID ──
-      const luluOpts2 = ep
-        ? { type: 'series' as const, ep_id: ep.id || '' }
-        : { type: 'movie' as const, id: contentId };
-      if (ep?.id || contentId) {
-        const lulu = await requestLuluStream(luluOpts2);
-        if (lulu.available && lulu.hlsUrl) {
-          setStreamUrl(lulu.hlsUrl);
-          recordHistory(ep ? `${contentId}_${ep.season}_${ep.episode}` : contentId);
-          setStreamLoading(false);
-          fetchSubtitles(detail?.tmdb_id || contentId, ep ? 'tv' : 'movie', ep?.season, ep?.episode);
-          return;
-        }
-      }
-
-      // ── 2. Fallback: vidsrc ──
+      // استخدام VidSrc Advanced Resolver
       const type = ep ? 'tv' : 'movie';
       const result = await requestVidsrcStream({
         tmdbId: detail?.tmdb_id || contentId,
+        imdbId: detail?.imdb_id,
         type,
         ...(ep ? { season: ep.season, episode: ep.episode } : {}),
         title,
       });
+      
       if (result.success) {
         applyStreamResult(result);
         recordHistory(ep ? `${contentId}_${ep.season}_${ep.episode}` : contentId);
-        if (!result.subtitles?.length) fetchSubtitles(detail?.tmdb_id || contentId, type, ep?.season, ep?.episode);
+        if (!result.subtitles?.length) {
+          fetchSubtitles(detail?.tmdb_id || contentId, type, ep?.season, ep?.episode);
+        }
       } else {
-        setStreamError(result.error || 'فشل تحميل المحتوى');
+        if (result.requiresSubscription) {
+          setStreamError('هذا المحتوى يتطلب اشتراك بريميوم 💎');
+        } else {
+          setStreamError(result.error || 'فشل تحميل المحتوى');
+        }
       }
     } catch {
       setStreamError('خطأ في الاتصال');
