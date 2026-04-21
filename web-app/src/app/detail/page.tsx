@@ -137,18 +137,14 @@ function DetailContent() {
     };
 
     try {
-      // LuluStream: استخدام embed iframe فقط (HLS يحتاج referrer خاص)
+      // ── LuluStream: رابط embed مباشر من luluvdo.com ──────────────────────────
+      // المتصفح يتصل بـ luluvdo.com CDN مباشرةً — لا يمر أي بيانات فيديو عبر السيرفر
       if (sourceLulu) {
-        let luluEmbed = '';
-        if (ep) {
-          luluEmbed = (ep as any).embedUrl || '';
-        } else {
-          luluEmbed = (detail as any)?.luluEmbed || '';
-        }
-        if (luluEmbed) {
-          setEmbedSources([{ url: luluEmbed, name: 'LuluStream' }]);
+        const embedUrl = ep ? (ep as any).embedUrl : (detail as any)?.luluEmbed;
+        if (embedUrl) {
+          setEmbedSources([{ url: embedUrl, name: 'LuluStream' }]);
           setEmbedSourceIdx(0);
-          setEmbedUrl(luluEmbed);
+          setEmbedUrl(embedUrl);
           setStreamUrl('');
         } else {
           setStreamError('المحتوى غير متاح حالياً');
@@ -290,6 +286,7 @@ function DetailContent() {
               allowFullScreen
               allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
               referrerPolicy="no-referrer-when-downgrade"
+              sandbox="allow-scripts allow-same-origin allow-forms allow-presentation allow-pointer-lock allow-downloads"
             />
             {/* Source switcher + subtitle links */}
             <div className="flex-shrink-0 px-3 py-1.5 bg-black/95 border-t border-white/10 flex items-center gap-2 overflow-x-auto no-scrollbar">

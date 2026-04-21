@@ -2013,201 +2013,209 @@ app.get('/api/vidsrc/episodes', async (req, res) => {
 
 
 
-// ─── LuluStream: رابط HLS للمحتوى المرفوع ──────────────────────────────────
-const LULU_KEY          = '268476xsqgnehs76lhfq0q';
-const LULU_PROGRESS_PATH = '/root/lulu_progress.json';
-let _luluProgress = null;
-let _luluProgressTs = 0;
-const _luluCanplayCache = new Map(); // fileCode → { canplay, ts }
+// ─── LuluStream: جلب المحتوى مباشرةً من LuluStream API ──────────────────────
+const LULU_KEY         = '268476xsqgnehs76lhfq0q';
+const LULU_ROOT_FLD    = 74466;  // [AR] Arabic Movies
+const LULU_API         = 'https://api.lulustream.com/api';
+const LULU_CACHE_TTL   = 5 * 60 * 1000; // 5 دقائق
 
-function getLuluProgress() {
+let _luluCatalog    = null;  // [{ id, fld_id, title, poster, fileCode, vod_type, ts, episodeCount }]
+let _luluCatalogTs  = 0;
+
+async function luluGet(endpoint, params = {}) {
+  const url = new URL(`${LULU_API}${endpoint}`);
+  url.searchParams.set('key', LULU_KEY);
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  const r = await fetch(url.toString(), { signal: AbortSignal.timeout(12000) });
+  const d = await r.json();
+  if (d.status !== 200) throw new Error(d.msg || 'LuluStream API error');
+  return d.result;
+}
+
+// يجلب قائمة المجلدات الفرعية مع pagination حتى يحصل على الكل
+async function luluGetAllSubfolders(parentFldId) {
+  const folders = [];
+  let page = 1;
+  while (true) {
+    const res = await luluGet('/folder/list', { fld_id: parentFldId, page, per_page: 100 });
+    const batch = res?.folders || [];
+    folders.push(...batch);
+    if (batch.length < 100) break;
+    page++;
+  }
+  return folders;
+}
+
+// يبني الكتالوج من المجلدات الفرعية (كل مجلد = فيلم أو مسلسل)
+async function buildLuluCatalog() {
   const now = Date.now();
-  if (!_luluProgress || now - _luluProgressTs > 60000) {
-    try { _luluProgress = JSON.parse(fs.readFileSync(LULU_PROGRESS_PATH, 'utf8')); }
-    catch { _luluProgress = { uploaded: {}, failed: {} }; }
-    _luluProgressTs = now;
-  }
-  return _luluProgress;
-}
+  if (_luluCatalog && now - _luluCatalogTs < LULU_CACHE_TTL) return _luluCatalog;
 
-async function checkLuluCanplay(fileCode) {
-  const cached = _luluCanplayCache.get(fileCode);
-  if (cached && Date.now() - cached.ts < 5 * 60 * 1000) return cached.canplay;
   try {
-    const r = await fetch(
-      `https://api.lulustream.com/api/file/info?key=${LULU_KEY}&file_code=${fileCode}`,
-      { signal: AbortSignal.timeout(8000) }
-    );
-    const d = await r.json();
-    const canplay = d?.result?.[0]?.canplay === 1;
-    _luluCanplayCache.set(fileCode, { canplay, ts: Date.now() });
-    return canplay;
-  } catch {
-    return false;
-  }
-}
+    const folders = await luluGetAllSubfolders(LULU_ROOT_FLD);
 
-app.get('/api/lulu/stream', async (req, res) => {
-  const { type, id, ep_id } = req.query;
-  const prog = getLuluProgress();
-  let entry = null;
-  if (type === 'movie' && id)          entry = prog.uploaded[`movie_${id}`];
-  else if (type === 'series' && ep_id) entry = prog.uploaded[`series_${ep_id}`];
-  if (!entry) return res.json({ available: false });
-
-  const fc = entry.fileCode;
-  const canplay = await checkLuluCanplay(fc);
-  if (!canplay) return res.json({ available: false, reason: 'encoding' });
-
-  res.json({
-    available : true,
-    fileCode  : fc,
-    hlsUrl    : `https://luluvdo.com/hls/${fc}/master.m3u8`,
-    embedUrl  : `https://lulustream.com/e/${fc}`,
-    title     : entry.title,
-  });
-});
-
-
-
-// ─── LuluStream: بناء قائمة الأفلام من progress.json ─────────────────────
-function buildLuluMovieItem(streamId, entry) {
-  return {
-    id          : streamId,
-    title       : entry.title       || '',
-    poster      : entry.poster      || '',
-    year        : entry.year        || '',
-    genre       : entry.genre       || '',
-    rating      : entry.rating      || '',
-    lang        : entry.lang        || '',
-    cat         : entry.cat         || '',
-    vod_type    : 'movie',
-  };
-}
-
-function buildLuluSeriesMap(prog) {
-  const showMap = {};
-  for (const [k, v] of Object.entries(prog.uploaded)) {
-    if (!k.startsWith('series_')) continue;
-    const show = v.show || v.title || k;
-    if (!showMap[show]) {
-      showMap[show] = {
-        id           : 'lulu:' + encodeURIComponent(show),
-        title        : show,
-        poster       : v.poster || '',
-        genre        : v.genre  || '',
-        rating       : v.rating || '',
-        lang         : v.lang   || '',
-        vod_type     : 'series',
-        ts           : v.ts     || 0,
-        episodeCount : 0,
-      };
+    // جلب الملف الأول من كل مجلد بشكل متوازٍ (بحد أقصى 10 معاً)
+    const CONCURRENCY = 10;
+    const items = [];
+    for (let i = 0; i < folders.length; i += CONCURRENCY) {
+      const batch = folders.slice(i, i + CONCURRENCY);
+      const results = await Promise.all(batch.map(async (folder) => {
+        try {
+          const filesRes = await luluGet('/file/list', { fld_id: folder.fld_id, per_page: 20 });
+          const files = filesRes?.files || [];
+          // اختر أول ملف جاهز للتشغيل، وإلا أول ملف
+          const mainFile = files.find(f => f.canplay === 1) || files[0];
+          if (!mainFile) return null;
+          return {
+            id           : String(folder.fld_id),
+            fld_id       : folder.fld_id,
+            title        : folder.name,
+            poster       : mainFile.thumbnail || '',
+            fileCode     : mainFile.file_code,
+            embedUrl     : `https://luluvdo.com/e/${mainFile.file_code}`,
+            hlsUrl       : `https://luluvdo.com/hls/${mainFile.file_code}/master.m3u8`,
+            vod_type     : files.length > 2 ? 'series' : 'movie',
+            episodeCount : files.length,
+            ts           : new Date(mainFile.uploaded || 0).getTime(),
+            canplay      : mainFile.canplay === 1,
+          };
+        } catch { return null; }
+      }));
+      items.push(...results.filter(Boolean));
     }
-    showMap[show].episodeCount = (showMap[show].episodeCount || 0) + 1;
-    if ((v.ts || 0) > showMap[show].ts) { showMap[show].ts = v.ts; showMap[show].poster = v.poster || showMap[show].poster; }
+
+    _luluCatalog   = items;
+    _luluCatalogTs = now;
+    console.log(`[Lulu] Catalog built: ${items.length} items from ${folders.length} folders`);
+    return items;
+  } catch (e) {
+    console.error('[Lulu] buildLuluCatalog error:', e.message);
+    return _luluCatalog || [];
   }
-  return Object.values(showMap);
 }
 
 // GET /api/lulu/home
-app.get('/api/lulu/home', (req, res) => {
-  const prog = getLuluProgress();
-  const movies = Object.entries(prog.uploaded)
-    .filter(([k]) => k.startsWith('movie_'))
-    .sort(([, a], [, b]) => (b.ts || 0) - (a.ts || 0))
-    .slice(0, 24)
-    .map(([k, v]) => buildLuluMovieItem(k.replace('movie_', ''), v));
-  const series = buildLuluSeriesMap(prog)
-    .sort((a, b) => (b.ts || 0) - (a.ts || 0))
-    .slice(0, 24);
-  res.json({ latestMovies: movies, latestSeries: series });
-});
-
-// GET /api/lulu/list?type=movie|series&page=1&search=&cat=
-app.get('/api/lulu/list', (req, res) => {
-  const { type = 'movie', page = '1', search = '', cat = '' } = req.query;
-  const prog  = getLuluProgress();
-  const pg    = Math.max(1, parseInt(page));
-  const limit = 24;
-  const q     = String(search).toLowerCase();
-
-  let items = [];
-  if (type === 'movie') {
-    items = Object.entries(prog.uploaded)
-      .filter(([k]) => k.startsWith('movie_'))
-      .map(([k, v]) => buildLuluMovieItem(k.replace('movie_', ''), v));
-    if (q)   items = items.filter(i => i.title.toLowerCase().includes(q));
-    if (cat) items = items.filter(i => i.cat === cat);
-    items.sort((a, b) => 0); // preserve insertion order (newest first from sync)
-  } else {
-    items = buildLuluSeriesMap(prog).sort((a, b) => (b.ts || 0) - (a.ts || 0));
-    if (q) items = items.filter(i => i.title.toLowerCase().includes(q));
-  }
-
-  const total = items.length;
-  res.json({ items: items.slice((pg - 1) * limit, pg * limit), page: pg, total, hasMore: pg * limit < total });
-});
-
-// GET /api/lulu/detail?type=movie&id={stream_id}
-// GET /api/lulu/detail?type=series&show={encoded_show_name}
-app.get('/api/lulu/detail', (req, res) => {
-  const { type, id, show } = req.query;
-  const prog = getLuluProgress();
-
-  if (type === 'movie' && id) {
-    const entry = prog.uploaded[`movie_${id}`];
-    if (!entry) return res.status(404).json({ error: 'not found' });
-    const fc = entry.fileCode;
-    return res.json({
-      id, title: entry.title, poster: entry.poster || '', backdrop: entry.poster || '',
-      year: entry.year || '', genre: entry.genre || '', rating: entry.rating || '',
-      lang: entry.lang || '', cat: entry.cat || '', vod_type: 'movie',
-      fileCode    : fc,
-      hlsUrl      : `https://luluvdo.com/hls/${fc}/master.m3u8`,
-      embedUrl    : `https://lulustream.com/e/${fc}`,
-      subtitleUrls: entry.subtitleUrls || null,
+app.get('/api/lulu/home', async (req, res) => {
+  try {
+    const catalog = await buildLuluCatalog();
+    const sorted  = [...catalog].sort((a, b) => b.ts - a.ts);
+    res.json({
+      latestMovies : sorted.filter(i => i.vod_type === 'movie').slice(0, 24),
+      latestSeries : sorted.filter(i => i.vod_type === 'series').slice(0, 24),
     });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
+});
 
-  if (type === 'series' && show) {
-    const showName = decodeURIComponent(String(show));
-    const epEntries = Object.entries(prog.uploaded)
-      .filter(([k, v]) => k.startsWith('series_') && (v.show || '') === showName);
-    if (!epEntries.length) return res.status(404).json({ error: 'not found' });
+// GET /api/lulu/list?type=movie|series&page=1&search=
+app.get('/api/lulu/list', async (req, res) => {
+  try {
+    const { type = 'movie', page = '1', search = '' } = req.query;
+    const catalog = await buildLuluCatalog();
+    const pg      = Math.max(1, parseInt(page));
+    const limit   = 24;
+    const q       = String(search).toLowerCase();
 
-    const first   = epEntries[0][1];
-    const seasonMap = {};
-    for (const [k, v] of epEntries) {
-      const s = String(v.season || 1);
-      if (!seasonMap[s]) seasonMap[s] = [];
-      const fc = v.fileCode;
-      seasonMap[s].push({
-        id      : k.replace('series_', ''),
-        episode : v.ep || 1,
-        season  : Number(s),
-        title   : v.title || `الحلقة ${v.ep}`,
-        fileCode: fc,
-        hlsUrl      : `https://luluvdo.com/hls/${fc}/master.m3u8`,
-        embedUrl    : `https://lulustream.com/e/${fc}`,
-        subtitleUrls: v.subtitleUrls || null,
-        ext         : 'mp4',
+    let items = catalog.filter(i => i.vod_type === type);
+    if (q) items = items.filter(i => i.title.toLowerCase().includes(q));
+    items = [...items].sort((a, b) => b.ts - a.ts);
+
+    const total = items.length;
+    res.json({ items: items.slice((pg - 1) * limit, pg * limit), page: pg, total, hasMore: pg * limit < total });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/lulu/detail?id={fld_id}
+app.get('/api/lulu/detail', async (req, res) => {
+  try {
+    const { id } = req.query;
+    if (!id) return res.status(400).json({ error: 'missing id' });
+
+    // ابحث في الكتالوج
+    const catalog = await buildLuluCatalog();
+    const item    = catalog.find(i => i.id === String(id));
+    const title   = item?.title || '';
+
+    // جلب كل ملفات المجلد
+    const filesRes = await luluGet('/file/list', { fld_id: id, per_page: 100 });
+    const files    = filesRes?.files || [];
+
+    if (!files.length) return res.status(404).json({ error: 'not found' });
+
+    const mainFile = files.find(f => f.canplay === 1) || files[0];
+    const isMovie  = files.length <= 2;
+
+    if (isMovie) {
+      return res.json({
+        id, title, vod_type: 'movie',
+        poster      : mainFile.thumbnail || '',
+        backdrop    : mainFile.thumbnail || '',
+        fileCode    : mainFile.file_code,
+        embedUrl    : `https://luluvdo.com/e/${mainFile.file_code}`,
+        hlsUrl      : `https://luluvdo.com/hls/${mainFile.file_code}/master.m3u8`,
+        canplay     : mainFile.canplay === 1,
       });
     }
-    const seasons = Object.entries(seasonMap)
-      .sort(([a], [b]) => Number(a) - Number(b))
-      .map(([s, eps]) => ({ season: Number(s), episodes: eps.sort((a, b) => a.episode - b.episode) }));
+
+    // مسلسل: كل ملف = حلقة
+    const episodes = files.map((f, idx) => ({
+      id          : f.file_code,
+      episode     : idx + 1,
+      season      : 1,
+      title       : f.title || `الحلقة ${idx + 1}`,
+      fileCode    : f.file_code,
+      embedUrl    : `https://luluvdo.com/e/${f.file_code}`,
+      hlsUrl      : `https://luluvdo.com/hls/${f.file_code}/master.m3u8`,
+      canplay     : f.canplay === 1,
+      thumbnail   : f.thumbnail || '',
+    }));
 
     return res.json({
-      id: showName, title: showName, vod_type: 'series',
-      poster: first.poster || '', backdrop: first.poster || '',
-      genre: first.genre || '', rating: first.rating || '', lang: first.lang || '',
-      subtitleUrls: first.subtitleUrls || null,
-      seasons,
-      episodes: seasons.flatMap(s => s.episodes),
+      id, title, vod_type: 'series',
+      poster   : mainFile.thumbnail || '',
+      backdrop : mainFile.thumbnail || '',
+      seasons  : [{ season: 1, episodes }],
+      episodes,
     });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
+});
 
-  res.status(400).json({ error: 'invalid params' });
+// GET /api/lulu/stream?file_code={fc}  أو  ?id={fld_id}
+app.get('/api/lulu/stream', async (req, res) => {
+  try {
+    const { file_code, id } = req.query;
+    let fc = file_code;
+
+    if (!fc && id) {
+      // جلب أول ملف من المجلد
+      const filesRes = await luluGet('/file/list', { fld_id: id, per_page: 1 });
+      const files    = filesRes?.files || [];
+      if (!files.length) return res.json({ available: false });
+      fc = files[0].file_code;
+    }
+
+    if (!fc) return res.json({ available: false });
+
+    const info = await luluGet('/file/info', { file_code: fc });
+    const f    = Array.isArray(info) ? info[0] : info;
+    const canplay = f?.canplay === 1;
+
+    res.json({
+      available : canplay,
+      fileCode  : fc,
+      hlsUrl    : `https://luluvdo.com/hls/${fc}/master.m3u8`,
+      embedUrl  : `https://luluvdo.com/e/${fc}`,
+      title     : f?.file_title || '',
+      reason    : canplay ? undefined : 'encoding',
+    });
+  } catch (e) {
+    res.status(500).json({ available: false, error: e.message });
+  }
 });
 
 
@@ -2432,6 +2440,9 @@ const ALLOWED_EMBED_HOSTS = [
   'vidsrc.pro', 'www.vidsrc.pro',
   'vidsrc.to', 'www.vidsrc.to',
   'vidsrc.net', 'www.vidsrc.net',
+  // LuluStream player domains
+  'luluvdo.com', 'www.luluvdo.com',
+  'lulustream.com', 'www.lulustream.com',
 ];
 
 app.get('/api/embed-proxy', async (req, res) => {
@@ -2473,212 +2484,8 @@ app.get('/api/embed-proxy', async (req, res) => {
 
     let html = await response.text();
 
-    // ─── طبقة 2: تنظيف HTML من جهة السيرفر قبل إرساله للمتصفح ──────────────
-    // يزيل target="_blank" من كل الروابط — قبل أي تحليل من المتصفح
-    html = html.replace(/(<a\b[^>]*?)\s+target\s*=\s*(["'])(_blank|_top|_parent)\2/gi, '$1 target="_self"');
-    // يزيل سكريبتات وiframes شبكات الإعلانات من HTML مباشرةً
-    const _HTML_AD=['doubleclick','googlesyndication','adnxs','popads','popcash','exoclick',
-      'trafficjunky','adsterra','propellerads','hilltopads','trafficfactory','trafficstars',
-      'adspyglass','pluginjacker','juicyads','yllix','popunder'];
-    _HTML_AD.forEach(function(d){
-      const esc=d.replace(/\./g,'\\.');
-      // سكريبتات (src)
-      html=html.replace(new RegExp('<script[^>]+src=(["\'])[^"\']*/'+esc+'[^"\']*(\\1)[^>]*>.*?<\/script>','gis'),'');
-      html=html.replace(new RegExp('<script[^>]+src=(["\'])[^"\']*/'+esc+'[^"\']*\\1[^>]*/?>','gi'),'');
-      // iframes
-      html=html.replace(new RegExp('<iframe[^>]+src=(["\'])[^"\']*/'+esc+'[^"\']*(\\1)[^>]*>.*?<\/iframe>','gis'),'');
-      html=html.replace(new RegExp('<iframe[^>]+src=(["\'])[^"\']*/'+esc+'[^"\']*\\1[^>]*/?>','gi'),'');
-    });
-
     const baseHref = `${parsedTarget.protocol}//${parsedTarget.host}/`;
-    const inject = `<base href="${baseHref}">
-<script>
-(function(){
-  // ─── قائمة شبكات الإعلانات المعروفة ───
-  var _AD=[
-    'doubleclick','googlesyndication','adservice','adnxs','advertising',
-    'popads','popcash','exoclick','trafficjunky','juicyads','adsterra',
-    'propellerads','revcontent','outbrain','taboola','mgid',
-    'yllix','popunder','hilltopads','adskeeper','clickadu','bidvertiser',
-    'adblade','infolinks','vibrantmedia','zedo','valueclick','adform',
-    'smartadserver','rubiconproject','openx','pubmatic','criteo',
-    'scorecardresearch','conversantmedia','yieldmanager','clicksor',
-    'media.net','justpremium','admixer','adtelligent','undertone',
-    'trafficfactory','pluginjacker','adspyglass','adspeed','undertone',
-    'adpusher','hilltopads','trafficstars','popads.net','popcash.net',
-    'go.php','click.php','redirect-','tracker.','track.','clk.','ad.','ads.'
-  ];
-  function _badHost(u){
-    if(!u||typeof u!=='string')return false;
-    try{
-      var h=new URL(u).hostname.toLowerCase();
-      return _AD.some(function(d){return h.indexOf(d)!==-1;});
-    }catch(e){return false;}
-  }
-
-  // ═══ 1. حجب window.open — Instance + Prototype (لا يمكن تجاوزه) ═══
-  var _fakeWin={focus:function(){},blur:function(){},close:function(){},closed:true,
-    document:{write:function(){},body:{}},location:{href:''}};
-  var _blockOpen=function(){return _fakeWin;};
-  try{Object.defineProperty(window,'open',{value:_blockOpen,writable:false,configurable:false});}
-  catch(e){window.open=_blockOpen;}
-  try{Object.defineProperty(Window.prototype,'open',{value:_blockOpen,writable:false,configurable:false});}
-  catch(e){}
-  // إعادة الفرض كل ثانية في حال حاولت سكريبتات الإعلانات استعادته
-  setInterval(function(){
-    try{Object.defineProperty(window,'open',{value:_blockOpen,writable:false,configurable:false});}catch(e){}
-  },1000);
-
-  // ═══ 2. حجب location.assign/replace/href للأدومين الإعلانية فقط ═══
-  // ملاحظة: لا نحجب كامل navigation لأن VidSrc يستخدمه داخلياً للتحميل
-  var _origAssign=window.location.assign.bind(window.location);
-  var _origReplace=window.location.replace.bind(window.location);
-  window.location.assign=function(u){if(!_badHost(String(u)))_origAssign(u);};
-  window.location.replace=function(u){if(!_badHost(String(u)))_origReplace(u);};
-  try{
-    var _locDesc=Object.getOwnPropertyDescriptor(Location.prototype,'href');
-    if(_locDesc&&_locDesc.set){
-      Object.defineProperty(Location.prototype,'href',{
-        get:_locDesc.get,
-        set:function(u){if(!_badHost(String(u))){_locDesc.set.call(this,u);}},
-        configurable:true
-      });
-    }
-  }catch(e){}
-
-  // ═══ 3. حجب النقر على روابط _blank وإعلانية فقط ═══
-  ['click','mousedown','auxclick'].forEach(function(evt){
-    document.addEventListener(evt,function(e){
-      var el=e.target;
-      while(el&&el!==document.body){
-        if(el.tagName==='A'){
-          var href=el.getAttribute('href')||'';
-          var tgt=el.getAttribute('target')||'';
-          if(tgt==='_blank'||tgt==='_top'||tgt==='_parent'||_badHost(href)){
-            e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();return;
-          }
-        }
-        el=el.parentElement;
-      }
-    },true);
-  });
-
-  // ═══ 4. إعادة التركيز عند سرقته (popunder) ═══
-  window.addEventListener('blur',function(){setTimeout(function(){try{window.focus();}catch(e){}},100);});
-
-  // ═══ 5. حجب إنشاء روابط _blank ديناميكياً ═══
-  var _origCreate=document.createElement.bind(document);
-  document.createElement=function(tag){
-    var el=_origCreate(tag);
-    if(typeof tag==='string'&&tag.toLowerCase()==='a'){
-      setTimeout(function(){if(el.target==='_blank'||el.target==='_top'){el.target='_self';}},0);
-    }
-    return el;
-  };
-
-  // ═══ 6. كشف وإزالة overlay divs الإعلانية (click-jacking) ═══
-  // VidSrc يضع div أو a شفاف فوق المشغّل ينقلك لإعلان عند الضغط
-  function removeAdOverlays(){
-    try{
-      var vw=window.innerWidth||document.documentElement.clientWidth||800;
-      var vh=window.innerHeight||document.documentElement.clientHeight||600;
-      var all=document.querySelectorAll('a[href],div[onclick],span[onclick],div[style]');
-      all.forEach(function(el){
-        try{
-          var s=window.getComputedStyle(el);
-          var pos=s.position;
-          if(pos!=='fixed'&&pos!=='absolute')return;
-          var r=el.getBoundingClientRect();
-          // يغطي أكثر من 60% من الشاشة
-          if(r.width<vw*0.6||r.height<vh*0.6)return;
-          // ليس عنصر video أو player أصلي
-          if(el.tagName==='VIDEO')return;
-          if(el.id&&(el.id.indexOf('player')!==-1||el.id.indexOf('video')!==-1))return;
-          var href=(el.getAttribute('href')||'').trim();
-          var oc=el.getAttribute('onclick')||'';
-          var hasAdLink=href&&href!==''&&href!=='#'&&href!=='javascript:void(0)'&&href!=='javascript:;';
-          var hasSuspiciousClick=oc&&(oc.indexOf('open')!==-1||oc.indexOf('location')!==-1||oc.indexOf('href')!==-1);
-          if(hasAdLink||hasSuspiciousClick){
-            el.style.pointerEvents='none';
-            if(el.tagName==='A'){el.removeAttribute('href');}
-            el.removeAttribute('onclick');
-          }
-        }catch(x){}
-      });
-    }catch(e){}
-  }
-  // تشغيل مبكر وبشكل دوري
-  setTimeout(removeAdOverlays,100);
-  setTimeout(removeAdOverlays,500);
-  setTimeout(removeAdOverlays,1500);
-  setInterval(removeAdOverlays,2000);
-
-  // ═══ 7. MutationObserver — إزالة عناصر إعلانية من شبكات معروفة ═══
-  function cleanAds(){
-    try{
-      document.querySelectorAll('iframe[src],script[src]').forEach(function(el){
-        if(_badHost(el.src||el.getAttribute('src')||''))el.remove();
-      });
-      document.querySelectorAll('a[target="_blank"],a[target="_top"]').forEach(function(a){
-        a.setAttribute('target','_self');
-      });
-    }catch(e){}
-  }
-  if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',cleanAds);}else{cleanAds();}
-  try{
-    new MutationObserver(function(){cleanAds();removeAdOverlays();}).observe(document.documentElement,{childList:true,subtree:true});
-  }catch(e){}
-
-  // ═══ 8. حجب XHR لشبكات الإعلانات فقط ═══
-  var _XO=XMLHttpRequest.prototype.open;
-  var _XS=XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.open=function(m,u){
-    if(_badHost(u)){this.__blk=1;return;}
-    return _XO.apply(this,arguments);
-  };
-  XMLHttpRequest.prototype.send=function(){
-    if(this.__blk)return;
-    return _XS.apply(this,arguments);
-  };
-
-  // ═══ 9. حجب fetch لشبكات الإعلانات فقط ═══
-  var _oF=window.fetch;
-  window.fetch=function(u,o){
-    var url=typeof u==='string'?u:(u&&u.url)||'';
-    if(_badHost(url))return new Promise(function(){});
-    return _oF.apply(this,arguments);
-  };
-
-  console.log('[AdBlock] Active — popup/overlay/ad-network blocking enabled');
-})();
-</script>
-<style>
-/* شبكات الإعلانات الشائعة */
-iframe[src*="doubleclick"],iframe[src*="googlesyndication"],
-iframe[src*="adnxs"],iframe[src*="advertising"],iframe[src*="popads"],
-iframe[src*="exoclick"],iframe[src*="adsterra"],iframe[src*="propellerads"],
-iframe[src*="popunder"],iframe[src*="hilltopads"],
-[id*="google_ads"],[class*="adsbygoogle"],[id*="adsbygoogle"],
-[data-ad],[data-ad-slot] {
-  display:none!important;visibility:hidden!important;
-  pointer-events:none!important;position:absolute!important;
-  left:-9999px!important;top:-9999px!important;
-  width:0!important;height:0!important;
-}
-/* تعطيل شعار/علامة مائية المشغّل */
-.jw-icon-logo,.jw-logo,.jw-logo-button,
-.plyr__logo,.vjs-logo,.vjs-watermark,
-[class*="watermark"],[class*="Watermark"],
-[class*="source-tag"],[class*="powered-by"],
-[class*="provider-logo"],[class*="branding"] {
-  pointer-events:none!important;cursor:default!important;
-  opacity:0!important;
-}
-a.jw-logo,a[class*="logo"],a[class*="brand"],a[class*="watermark"] {
-  pointer-events:none!important;cursor:default!important;
-}
-video{pointer-events:auto!important;}
-</style>`;
+    const inject = `<base href="${baseHref}">`;
 
 
     if (html.includes('<head>')) {
