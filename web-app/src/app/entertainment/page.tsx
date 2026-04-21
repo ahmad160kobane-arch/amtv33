@@ -1,6 +1,6 @@
 'use client';
 import React, { useEffect, useState, useCallback } from 'react';
-import { fetchVidsrcBrowse, searchVidsrc, VidsrcItem } from '@/constants/api';
+import { fetchLuluList, LuluItem } from '@/constants/api';
 import ContentCard from '@/components/ContentCard';
 import { SkeletonGrid } from '@/components/Skeleton';
 
@@ -11,11 +11,11 @@ const TYPES = [
 ];
 
 export default function EntertainmentPage() {
-  const [activeType, setActiveType] = useState('');
+  const [activeType, setActiveType] = useState<'movie' | 'series' | ''>('');
   const [search, setSearch] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
 
-  const [items, setItems] = useState<VidsrcItem[]>([]);
+  const [items, setItems] = useState<LuluItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [page, setPage] = useState(1);
@@ -24,17 +24,15 @@ export default function EntertainmentPage() {
   const load = useCallback(async (p = 1, reset = false) => {
     if (p === 1) setLoading(true); else setLoadingMore(true);
     try {
-      if (searchQuery.trim()) {
-        const results = await searchVidsrc(searchQuery);
-        setItems(reset ? results : prev => [...prev, ...results]);
-        setHasMore(false);
-      } else {
-        const apiType = activeType === 'series' ? 'tv' : (activeType === 'movie' ? 'movie' : undefined);
-        const data = await fetchVidsrcBrowse({ type: apiType, page: p });
-        const newItems = data.items || [];
-        setItems(prev => reset ? newItems : [...prev, ...newItems]);
-        setHasMore(data.hasMore ?? newItems.length >= 20);
-      }
+      const type = activeType === 'series' ? 'series' : activeType === 'movie' ? 'movie' : 'movie';
+      const data = await fetchLuluList({
+        type: type as 'movie' | 'series',
+        page: p,
+        search: searchQuery.trim() || undefined,
+      });
+      const newItems = data.items || [];
+      setItems(prev => reset ? newItems : [...prev, ...newItems]);
+      setHasMore(data.hasMore ?? newItems.length >= 20);
     } catch (e) {
       console.error('Content load error:', e);
     } finally {
@@ -56,13 +54,14 @@ export default function EntertainmentPage() {
     setSearchQuery(search);
   };
 
-  const toCard = (item: VidsrcItem) => ({
+  const toCard = (item: LuluItem) => ({
     id: item.id,
     title: item.title,
     poster: item.poster,
     vod_type: item.vod_type,
     year: item.year,
     rating: item.rating,
+    source: 'lulu',
   });
 
   return (
