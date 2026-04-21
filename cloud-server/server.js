@@ -2017,10 +2017,39 @@ app.get('/api/vidsrc/episodes', async (req, res) => {
 const LULU_KEY         = '268476xsqgnehs76lhfq0q';
 const LULU_ROOT_FLD    = 74466;  // [AR] Arabic Movies
 const LULU_API         = 'https://api.lulustream.com/api';
-const LULU_CACHE_TTL   = 5 * 60 * 1000; // 5 دقائق
+const LULU_CACHE_TTL   = 60 * 60 * 1000; // ساعة كاملة (كان 5 دقائق — سبب rate limit)
+const LULU_CACHE_FILE  = path.join(__dirname, 'data', 'lulu_catalog.json');
 
-let _luluCatalog    = null;  // [{ id, fld_id, title, poster, fileCode, vod_type, ts, episodeCount }]
-let _luluCatalogTs  = 0;
+let _luluCatalog       = null;
+let _luluCatalogTs     = 0;
+let _luluRebuildActive = false; // يمنع تشغيل rebuild متعدد
+
+// ─── تحميل الكاش من القرص عند بدء التشغيل ───────────────────────────────────
+function _loadLuluCacheFromDisk() {
+  try {
+    if (fs.existsSync(LULU_CACHE_FILE)) {
+      const raw = fs.readFileSync(LULU_CACHE_FILE, 'utf8');
+      const { catalog, ts } = JSON.parse(raw);
+      if (Array.isArray(catalog) && catalog.length > 0) {
+        _luluCatalog   = catalog;
+        _luluCatalogTs = ts || 0;
+        console.log(`[Lulu] Loaded ${catalog.length} items from disk cache`);
+      }
+    }
+  } catch (e) {
+    console.warn('[Lulu] Could not load disk cache:', e.message);
+  }
+}
+_loadLuluCacheFromDisk();
+
+// ─── حفظ الكاش على القرص ─────────────────────────────────────────────────────
+function _saveLuluCacheToDisk(catalog) {
+  try {
+    fs.writeFileSync(LULU_CACHE_FILE, JSON.stringify({ catalog, ts: Date.now() }), 'utf8');
+  } catch (e) {
+    console.warn('[Lulu] Could not save disk cache:', e.message);
+  }
+}
 
 async function luluGet(endpoint, params = {}) {
   const url = new URL(`${LULU_API}${endpoint}`);
@@ -2049,48 +2078,79 @@ async function luluGetAllSubfolders(parentFldId) {
 // يبني الكتالوج من المجلدات الفرعية (كل مجلد = فيلم أو مسلسل)
 async function buildLuluCatalog() {
   const now = Date.now();
-  if (_luluCatalog && now - _luluCatalogTs < LULU_CACHE_TTL) return _luluCatalog;
+  const cacheValid = _luluCatalog && (now - _luluCatalogTs < LULU_CACHE_TTL);
 
-  try {
-    const folders = await luluGetAllSubfolders(LULU_ROOT_FLD);
+  // ── إذا الكاش صالح → أرجعه فوراً بدون أي طلب خارجي ──
+  if (cacheValid) return _luluCatalog;
 
-    // جلب الملف الأول من كل مجلد بشكل متوازٍ (بحد أقصى 10 معاً)
-    const CONCURRENCY = 10;
-    const items = [];
-    for (let i = 0; i < folders.length; i += CONCURRENCY) {
-      const batch = folders.slice(i, i + CONCURRENCY);
-      const results = await Promise.all(batch.map(async (folder) => {
-        try {
-          const filesRes = await luluGet('/file/list', { fld_id: folder.fld_id, per_page: 20 });
-          const files = filesRes?.files || [];
-          // اختر أول ملف جاهز للتشغيل، وإلا أول ملف
-          const mainFile = files.find(f => f.canplay === 1) || files[0];
-          if (!mainFile) return null;
-          return {
-            id           : String(folder.fld_id),
-            fld_id       : folder.fld_id,
-            title        : folder.name,
-            poster       : mainFile.thumbnail || '',
-            fileCode     : mainFile.file_code,
-            embedUrl     : `https://luluvdo.com/e/${mainFile.file_code}`,
-            hlsUrl       : `https://luluvdo.com/hls/${mainFile.file_code}/master.m3u8`,
-            vod_type     : files.length > 2 ? 'series' : 'movie',
-            episodeCount : files.length,
-            ts           : new Date(mainFile.uploaded || 0).getTime(),
-            canplay      : mainFile.canplay === 1,
-          };
-        } catch { return null; }
-      }));
-      items.push(...results.filter(Boolean));
+  // ── إذا يوجد كاش قديم → أرجعه فوراً وابن الجديد في الخلفية ──
+  if (_luluCatalog && !_luluRebuildActive) {
+    _luluRebuildActive = true;
+    _rebuildLuluCatalogInBackground();
+    return _luluCatalog; // لا تُوقف الطلب
+  }
+
+  // ── أول تشغيل بعد الكاش الفارغ (بعد restart بدون ملف قرص) → انتظر ──
+  if (!_luluRebuildActive) {
+    _luluRebuildActive = true;
+    await _rebuildLuluCatalogInBackground(true); // true = انتظر النتيجة
+  }
+
+  return _luluCatalog || [];
+}
+
+async function _rebuildLuluCatalogInBackground(wait = false) {
+  const doRebuild = async () => {
+    try {
+      const folders = await luluGetAllSubfolders(LULU_ROOT_FLD);
+      const CONCURRENCY = 5; // خفّضنا من 10 إلى 5 لتجنب rate limit
+      const items = [];
+      for (let i = 0; i < folders.length; i += CONCURRENCY) {
+        const batch = folders.slice(i, i + CONCURRENCY);
+        const results = await Promise.all(batch.map(async (folder) => {
+          try {
+            const filesRes = await luluGet('/file/list', { fld_id: folder.fld_id, per_page: 20 });
+            const files = filesRes?.files || [];
+            const mainFile = files.find(f => f.canplay === 1) || files[0];
+            if (!mainFile) return null;
+            return {
+              id           : String(folder.fld_id),
+              fld_id       : folder.fld_id,
+              title        : folder.name,
+              poster       : mainFile.thumbnail || '',
+              fileCode     : mainFile.file_code,
+              embedUrl     : `https://luluvdo.com/e/${mainFile.file_code}`,
+              hlsUrl       : `https://luluvdo.com/hls/${mainFile.file_code}/master.m3u8`,
+              vod_type     : files.length > 2 ? 'series' : 'movie',
+              episodeCount : files.length,
+              ts           : new Date(mainFile.uploaded || 0).getTime(),
+              canplay      : mainFile.canplay === 1,
+            };
+          } catch { return null; }
+        }));
+        items.push(...results.filter(Boolean));
+        // توقف قصير بين الدفعات لتجنب rate limit (60 طلب/دقيقة)
+        if (i + CONCURRENCY < folders.length) {
+          await new Promise(r => setTimeout(r, 1200));
+        }
+      }
+      if (items.length > 0) {
+        _luluCatalog   = items;
+        _luluCatalogTs = Date.now();
+        _saveLuluCacheToDisk(items);
+        console.log(`[Lulu] Catalog rebuilt: ${items.length} items from ${folders.length} folders`);
+      }
+    } catch (e) {
+      console.error('[Lulu] buildLuluCatalog error:', e.message);
+    } finally {
+      _luluRebuildActive = false;
     }
+  };
 
-    _luluCatalog   = items;
-    _luluCatalogTs = now;
-    console.log(`[Lulu] Catalog built: ${items.length} items from ${folders.length} folders`);
-    return items;
-  } catch (e) {
-    console.error('[Lulu] buildLuluCatalog error:', e.message);
-    return _luluCatalog || [];
+  if (wait) {
+    await doRebuild();
+  } else {
+    doRebuild(); // بدون await — لا تُوقف الطلب الحالي
   }
 }
 
@@ -3932,6 +3992,18 @@ const server = app.listen(config.PORT, config.HOST, async () => {
   // Sync channels from backend PostgreSQL on startup
   syncChannelsFromBackend(true).catch(e => console.error('[Sync] Startup error:', e.message));
   setInterval(() => syncChannelsFromBackend(true).catch(() => {}), CHANNEL_SYNC_INTERVAL);
+
+  // ─── بناء كتالوج LuluStream في الخلفية (بعد 5 ثواني من البدء) ───
+  // إذا لم يكن هناك كاش على القرص → ابدأ بناء الكتالوج تلقائياً
+  setTimeout(() => {
+    if (!_luluCatalog || _luluCatalog.length === 0) {
+      console.log('[Lulu] No cache found, starting background catalog build...');
+      _luluRebuildActive = true;
+      _rebuildLuluCatalogInBackground(false);
+    } else {
+      console.log(`[Lulu] Using disk cache: ${_luluCatalog.length} items`);
+    }
+  }, 5000);
 
 
 
