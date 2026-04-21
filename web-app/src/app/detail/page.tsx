@@ -306,7 +306,6 @@ function DetailContent() {
               allowFullScreen
               allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
               referrerPolicy="no-referrer-when-downgrade"
-              sandbox="allow-scripts allow-same-origin allow-forms allow-presentation allow-pointer-lock allow-downloads"
             />
             {/* Source switcher + subtitle links */}
             <div className="flex-shrink-0 px-3 py-1.5 bg-black/95 border-t border-white/10 flex items-center gap-2 overflow-x-auto no-scrollbar">
