@@ -2023,6 +2023,8 @@ const LULU_CACHE_FILE  = path.join(__dirname, 'data', 'lulu_catalog.json');
 let _luluCatalog       = null;
 let _luluCatalogTs     = 0;
 let _luluRebuildActive = false; // يمنع تشغيل rebuild متعدد
+let _luluLastFailTs    = 0;     // وقت آخر فشل للـ rebuild (لتجنب retry متكرر)
+const LULU_RETRY_COOLDOWN = 65 * 1000; // 65 ثانية بين المحاولات الفاشلة (rate limit يُعاد بعد 60 ثانية)
 
 // ─── تحميل الكاش من القرص عند بدء التشغيل ───────────────────────────────────
 function _loadLuluCacheFromDisk() {
@@ -2045,7 +2047,10 @@ _loadLuluCacheFromDisk();
 // ─── حفظ الكاش على القرص ─────────────────────────────────────────────────────
 function _saveLuluCacheToDisk(catalog) {
   try {
+    const dir = path.dirname(LULU_CACHE_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(LULU_CACHE_FILE, JSON.stringify({ catalog, ts: Date.now() }), 'utf8');
+    console.log(`[Lulu] Disk cache saved: ${catalog.length} items`);
   } catch (e) {
     console.warn('[Lulu] Could not save disk cache:', e.message);
   }
@@ -2090,6 +2095,11 @@ async function buildLuluCatalog() {
     return _luluCatalog; // لا تُوقف الطلب
   }
 
+  // ── cooldown: إذا فشل مؤخراً، لا تُعيد المحاولة قبل 90 ثانية ──
+  if (!_luluRebuildActive && (now - _luluLastFailTs < LULU_RETRY_COOLDOWN)) {
+    return []; // انتظر انتهاء cooldown
+  }
+
   // ── أول تشغيل بعد الكاش الفارغ (بعد restart بدون ملف قرص) → انتظر ──
   if (!_luluRebuildActive) {
     _luluRebuildActive = true;
@@ -2103,7 +2113,8 @@ async function _rebuildLuluCatalogInBackground(wait = false) {
   const doRebuild = async () => {
     try {
       const folders = await luluGetAllSubfolders(LULU_ROOT_FLD);
-      const CONCURRENCY = 5; // خفّضنا من 10 إلى 5 لتجنب rate limit
+      const CONCURRENCY = 2; // تقليل لتجنب rate limit مع uploader يعمل في الخلفية
+      const BATCH_DELAY  = 2500; // 2.5 ثانية بين الدفعات → ~48 طلب/دقيقة كحد أقصى
       const items = [];
       for (let i = 0; i < folders.length; i += CONCURRENCY) {
         const batch = folders.slice(i, i + CONCURRENCY);
@@ -2129,9 +2140,14 @@ async function _rebuildLuluCatalogInBackground(wait = false) {
           } catch { return null; }
         }));
         items.push(...results.filter(Boolean));
-        // توقف قصير بين الدفعات لتجنب rate limit (60 طلب/دقيقة)
+        // حفظ تدريجي: احفظ كل 20 عنصر ناجح لضمان عدم ضياع البيانات
+        if (items.length > 0 && items.length % 20 === 0) {
+          _luluCatalog = [...items];
+          _saveLuluCacheToDisk(items);
+        }
+        // توقف بين الدفعات لتجنب rate limit
         if (i + CONCURRENCY < folders.length) {
-          await new Promise(r => setTimeout(r, 1200));
+          await new Promise(r => setTimeout(r, BATCH_DELAY));
         }
       }
       if (items.length > 0) {
@@ -2142,6 +2158,7 @@ async function _rebuildLuluCatalogInBackground(wait = false) {
       }
     } catch (e) {
       console.error('[Lulu] buildLuluCatalog error:', e.message);
+      _luluLastFailTs = Date.now(); // سجّل وقت الفشل
     } finally {
       _luluRebuildActive = false;
     }
@@ -3993,17 +4010,20 @@ const server = app.listen(config.PORT, config.HOST, async () => {
   syncChannelsFromBackend(true).catch(e => console.error('[Sync] Startup error:', e.message));
   setInterval(() => syncChannelsFromBackend(true).catch(() => {}), CHANNEL_SYNC_INTERVAL);
 
-  // ─── بناء كتالوج LuluStream في الخلفية (بعد 5 ثواني من البدء) ───
-  // إذا لم يكن هناك كاش على القرص → ابدأ بناء الكتالوج تلقائياً
-  setTimeout(() => {
-    if (!_luluCatalog || _luluCatalog.length === 0) {
-      console.log('[Lulu] No cache found, starting background catalog build...');
-      _luluRebuildActive = true;
-      _rebuildLuluCatalogInBackground(false);
-    } else {
-      console.log(`[Lulu] Using disk cache: ${_luluCatalog.length} items`);
-    }
-  }, 5000);
+  // ─── بناء كتالوج LuluStream في الخلفية ───
+  // نُعطي rate limit وقت كافي للإعادة (65 ثانية) قبل أول طلب
+  if (_luluCatalog && _luluCatalog.length > 0) {
+    console.log(`[Lulu] Disk cache loaded: ${_luluCatalog.length} items`);
+  } else {
+    console.log('[Lulu] No cache — will start build in 65s (rate limit cooldown)...');
+    setTimeout(() => {
+      if (!_luluCatalog || _luluCatalog.length === 0) {
+        console.log('[Lulu] Starting background catalog build...');
+        _luluRebuildActive = true;
+        _rebuildLuluCatalogInBackground(false);
+      }
+    }, 65000); // انتظر 65 ثانية لضمان تجدد rate limit
+  }
 
 
 
