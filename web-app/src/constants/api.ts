@@ -778,14 +778,13 @@ export async function requestVidsrcStream(opts: {
 
 // ─── LuluStream: جلب HLS للمحتوى المرفوع ────────────────
 export async function requestLuluStream(opts: {
-  type: 'movie' | 'series';
+  file_code?: string;
   id?: string;
-  ep_id?: string;
 }): Promise<{ available: boolean; hlsUrl?: string; embedUrl?: string; fileCode?: string }> {
   try {
-    const p = new URLSearchParams({ type: opts.type });
-    if (opts.id)    p.set('id', opts.id);
-    if (opts.ep_id) p.set('ep_id', opts.ep_id);
+    const p = new URLSearchParams();
+    if (opts.file_code) p.set('file_code', opts.file_code);
+    if (opts.id)        p.set('id', opts.id);
     const res = await apiFetch(`/api/lulu/stream?${p}`);
     if (!res.ok) return { available: false };
     return await res.json();
@@ -854,12 +853,9 @@ export async function fetchLuluList(params?: {
   } catch { return { items: [], page: 1, total: 0, hasMore: false }; }
 }
 
-export async function fetchLuluDetail(id: string, type: 'movie' | 'series'): Promise<LuluDetail | null> {
+export async function fetchLuluDetail(id: string): Promise<LuluDetail | null> {
   try {
-    const p = new URLSearchParams({ type });
-    if (type === 'movie')  p.set('id', id);
-    else                   p.set('show', id.startsWith('lulu:') ? id.slice(5) : id);
-    const res = await apiFetch(`/api/lulu/detail?${p}`);
+    const res = await apiFetch(`/api/lulu/detail?id=${encodeURIComponent(id)}`);
     if (!res.ok) return null;
     return await res.json();
   } catch { return null; }

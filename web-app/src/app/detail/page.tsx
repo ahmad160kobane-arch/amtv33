@@ -1,7 +1,7 @@
 'use client';
 import React, { useEffect, useState, useCallback, useRef, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { fetchVidsrcDetail, requestVidsrcStream, checkFavorite, toggleFavorite, addWatchHistory, isLoggedIn, VidsrcDetail, VidsrcEpisode } from '@/constants/api';
+import { fetchVidsrcDetail, requestVidsrcStream, fetchLuluDetail, checkFavorite, toggleFavorite, addWatchHistory, isLoggedIn, VidsrcDetail, VidsrcEpisode } from '@/constants/api';
 import VodPlayer from '@/components/VodPlayer';
 
 /* ─── YouTube-style Detail Page ─────────────────────────────────── */
@@ -46,8 +46,26 @@ function DetailContent() {
   const loadData = useCallback(async () => {
     if (!contentId) return;
     try {
-      const data = await fetchVidsrcDetail(fetchType as 'movie' | 'tv', contentId);
-      setDetail(data);
+      if (sourceLulu) {
+        // LuluStream: جلب التفاصيل مباشرةً من lulu API
+        const data = await fetchLuluDetail(contentId);
+        if (data) {
+          setDetail({
+            title: data.title, poster: data.poster || '', backdrop: data.backdrop || data.poster || '',
+            vod_type: data.vod_type, tmdb_id: '', imdb_id: '', description: '',
+            seasons: (data.seasons?.map(s => s.season) || []) as any,
+            episodes: (data.episodes?.map(ep => ({
+              season: ep.season, episode: ep.episode, title: ep.title,
+              fileCode: ep.fileCode, embedUrl: ep.embedUrl, hlsUrl: ep.hlsUrl,
+            })) || []) as any,
+            // أحتفظ بـ embed و hls للأفلام
+            luluHls: data.hlsUrl, luluEmbed: data.embedUrl, luluFileCode: data.fileCode,
+          } as any);
+        }
+      } else {
+        const data = await fetchVidsrcDetail(fetchType as 'movie' | 'tv', contentId);
+        setDetail(data);
+      }
       const logged = await isLoggedIn();
       setLoggedIn(logged);
       if (logged) {
@@ -59,7 +77,7 @@ function DetailContent() {
     } finally {
       setLoading(false);
     }
-  }, [contentId, fetchType]);
+  }, [contentId, fetchType, sourceLulu]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -166,6 +184,34 @@ function DetailContent() {
     };
 
     try {
+      // LuluStream: استخدام embedUrl مباشرةً
+      if (sourceLulu) {
+        let embedUrl = '';
+        let hlsUrl   = '';
+        if (ep) {
+          // حلقة مسلسل - ep يحتوي على embedUrl و hlsUrl
+          embedUrl = (ep as any).embedUrl || '';
+          hlsUrl   = (ep as any).hlsUrl   || '';
+        } else {
+          // فيلم - من detail مباشرة
+          embedUrl = (detail as any)?.luluEmbed || '';
+          hlsUrl   = (detail as any)?.luluHls   || '';
+        }
+        if (hlsUrl) {
+          setStreamUrl(hlsUrl);
+          setEmbedUrl('');
+        } else if (embedUrl) {
+          setEmbedSources([{ url: embedUrl, name: 'LuluStream' }]);
+          setEmbedSourceIdx(0);
+          setEmbedUrl(embedUrl);
+          setStreamUrl('');
+        } else {
+          setStreamError('المحتوى غير متاح حالياً');
+        }
+        setStreamLoading(false);
+        return;
+      }
+
       // استخدام VidSrc Advanced Resolver
       const type = ep ? 'tv' : 'movie';
       const result = await requestVidsrcStream({
