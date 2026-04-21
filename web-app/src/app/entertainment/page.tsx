@@ -24,15 +24,30 @@ export default function EntertainmentPage() {
   const load = useCallback(async (p = 1, reset = false) => {
     if (p === 1) setLoading(true); else setLoadingMore(true);
     try {
-      const type = activeType === 'series' ? 'series' : activeType === 'movie' ? 'movie' : 'movie';
-      const data = await fetchLuluList({
-        type: type as 'movie' | 'series',
-        page: p,
-        search: searchQuery.trim() || undefined,
-      });
-      const newItems = data.items || [];
+      // إذا "الكل" → جلب أفلام ومسلسلات معاً (صفحة 1 فقط) أو أفلام للصفحات التالية
+      let newItems: LuluItem[] = [];
+      let moreAvailable = false;
+
+      if (activeType === '') {
+        // "الكل": دمج أفلام + مسلسلات في الصفحة الأولى
+        const [moviesData, seriesData] = await Promise.all([
+          fetchLuluList({ type: 'movie', page: p, search: searchQuery.trim() || undefined }),
+          fetchLuluList({ type: 'series', page: p, search: searchQuery.trim() || undefined }),
+        ]);
+        newItems = [...(moviesData.items || []), ...(seriesData.items || [])];
+        moreAvailable = (moviesData.hasMore ?? false) || (seriesData.hasMore ?? false);
+      } else {
+        const data = await fetchLuluList({
+          type: activeType as 'movie' | 'series',
+          page: p,
+          search: searchQuery.trim() || undefined,
+        });
+        newItems = data.items || [];
+        moreAvailable = data.hasMore ?? newItems.length >= 20;
+      }
+
       setItems(prev => reset ? newItems : [...prev, ...newItems]);
-      setHasMore(data.hasMore ?? newItems.length >= 20);
+      setHasMore(moreAvailable);
     } catch (e) {
       console.error('Content load error:', e);
     } finally {
