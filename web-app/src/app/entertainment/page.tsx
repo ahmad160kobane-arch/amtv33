@@ -99,7 +99,7 @@ export default function EntertainmentPage() {
           {TYPES.map(t => (
             <button
               key={t.id}
-              onClick={() => { setActiveType(t.id); setSearchQuery(''); setSearch(''); }}
+              onClick={() => { setActiveType(t.id as '' | 'movie' | 'series'); setSearchQuery(''); setSearch(''); }}
               className={`flex-shrink-0 px-2.5 md:px-3.5 py-2 md:py-2.5 rounded-[10px] md:rounded-xl text-xs md:text-sm font-bold transition ${
                 activeType === t.id
                   ? 'bg-brand-primary text-black'

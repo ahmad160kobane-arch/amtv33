@@ -2014,7 +2014,7 @@ app.get('/api/vidsrc/episodes', async (req, res) => {
 
 
 // ─── LuluStream: رابط HLS للمحتوى المرفوع ──────────────────────────────────
-const LULU_KEY          = '258176jfw9e96irnxai2fm';
+const LULU_KEY          = '268476xsqgnehs76lhfq0q';
 const LULU_PROGRESS_PATH = '/root/lulu_progress.json';
 let _luluProgress = null;
 let _luluProgressTs = 0;
@@ -2354,52 +2354,6 @@ app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => 
 
 
 
-    // ═══ 2. Vidlink.pro — HLS مباشر (بدون iframe = بدون إعلانات) ═══
-
-    try {
-
-      console.log(`[Stream] → Vidlink HLS: ${label}`);
-
-      const vidlink = await resolveVidlinkStream(tmdbId, type, season, episode);
-
-      if (vidlink && vidlink.hlsUrl) {
-
-        console.log(`[Stream] ✓ Vidlink HLS found`);
-
-        await recordHistory();
-
-        const arabicSubs = await arabicSubsPromise;
-
-        const allSubs = [
-
-          ...arabicSubs,
-
-          ...(vidlink.subtitles || []),
-
-        ];
-
-        return res.json({
-
-          success: true, streamId, ready: true,
-
-          hlsUrl: vidlink.hlsUrl,
-
-          provider: 'vidlink',
-
-          subtitles: allSubs,
-
-        });
-
-      }
-
-    } catch (ve) {
-
-      console.log(`[Stream] Vidlink failed: ${ve.message}`);
-
-    }
-
-
-
     // ═══ 2.5. VidSrc M3U8 Extractor — استخراج m3u8 مباشر من VidSrc ═══
     try {
       console.log(`[Stream] → VidSrc M3U8 Extractor: ${label}`);
@@ -2429,50 +2383,31 @@ app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => 
 
 
 
-    // ═══ 3. Vidlink.pro Embed — مع ترجمة عربية مدمجة + مصادر VidSrc احتياطية ═══
-    console.log(`[Stream] → Vidlink.pro embed + VidSrc fallback: ${label}`);
+    // ═══ 3. Fallback: VidSrc Embed URLs (full VidSrc mode) ═══
+    console.log(`[Stream] → VidSrc embed fallback: ${label}`);
 
     const [stream, arabicSubs] = await Promise.all([
-      resolveStream(tmdbId, type, season, episode, imdbId).catch(() => null),
+      resolveStream(tmdbId, type, season, episode, imdbId),
       arabicSubsPromise,
     ]);
 
-    await recordHistory();
+    if (stream && stream.embedUrl) {
+      const proxiedUrl = `/api/embed-proxy?url=${encodeURIComponent(stream.embedUrl)}`;
+      console.log(`[Stream] ✓ VidSrc embed proxy: ${stream.provider} — ${stream.embedUrl}`);
 
-    // Build vidlink.pro embed URL with Arabic subtitle injection via sub_file
-    const vidlinkPath = type === 'tv'
-      ? `/tv/${tmdbId}/${season}/${episode}`
-      : `/movie/${tmdbId}`;
-    const subParams = new URLSearchParams();
-    if (arabicSubs.length > 0 && arabicSubs[0].url) {
-      subParams.set('sub_file', arabicSubs[0].url);
+      await recordHistory();
+
+      return res.json({
+        success: true, streamId, ready: true,
+        embedUrl: proxiedUrl,
+        provider: stream.provider,
+        sources: (stream.sources || []).map(s => ({ ...s, url: `/api/embed-proxy?url=${encodeURIComponent(s.url)}` })),
+        allEmbedUrls: (stream.allEmbedUrls || []).map(u => `/api/embed-proxy?url=${encodeURIComponent(u)}`),
+        subtitles: arabicSubs,
+      });
     }
-    const qs = subParams.toString();
-    const vidlinkEmbedUrl = `https://vidlink.pro${vidlinkPath}${qs ? '?' + qs : ''}`;
-    const proxiedVidlink = `/api/embed-proxy?url=${encodeURIComponent(vidlinkEmbedUrl)}`;
 
-    // VidSrc embed sources as fallback (proxied for ad blocking)
-    const vidsrcSources = stream
-      ? (stream.sources || []).map(s => ({
-          ...s,
-          url: `/api/embed-proxy?url=${encodeURIComponent(s.url)}`,
-        }))
-      : [];
-
-    const allSources = [
-      { url: proxiedVidlink, name: 'Vidlink (الأفضل)' },
-      ...vidsrcSources,
-    ];
-
-    console.log(`[Stream] ✓ Vidlink embed: ${vidlinkEmbedUrl} + ${vidsrcSources.length} VidSrc fallbacks`);
-
-    return res.json({
-      success: true, streamId, ready: true,
-      embedUrl: proxiedVidlink,
-      provider: 'vidlink-embed',
-      sources: allSources,
-      subtitles: arabicSubs,
-    });
+    return res.status(404).json({ success: false, error: 'لا توجد مصادر بث متاحة' });
 
   } catch (e) {
 
