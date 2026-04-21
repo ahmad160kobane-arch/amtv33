@@ -184,26 +184,18 @@ function DetailContent() {
     };
 
     try {
-      // LuluStream: استخدام embedUrl مباشرةً
+      // LuluStream: استخدام embed iframe فقط (HLS يحتاج referrer خاص)
       if (sourceLulu) {
-        let embedUrl = '';
-        let hlsUrl   = '';
+        let luluEmbed = '';
         if (ep) {
-          // حلقة مسلسل - ep يحتوي على embedUrl و hlsUrl
-          embedUrl = (ep as any).embedUrl || '';
-          hlsUrl   = (ep as any).hlsUrl   || '';
+          luluEmbed = (ep as any).embedUrl || '';
         } else {
-          // فيلم - من detail مباشرة
-          embedUrl = (detail as any)?.luluEmbed || '';
-          hlsUrl   = (detail as any)?.luluHls   || '';
+          luluEmbed = (detail as any)?.luluEmbed || '';
         }
-        if (hlsUrl) {
-          setStreamUrl(hlsUrl);
-          setEmbedUrl('');
-        } else if (embedUrl) {
-          setEmbedSources([{ url: embedUrl, name: 'LuluStream' }]);
+        if (luluEmbed) {
+          setEmbedSources([{ url: luluEmbed, name: 'LuluStream' }]);
           setEmbedSourceIdx(0);
-          setEmbedUrl(embedUrl);
+          setEmbedUrl(luluEmbed);
           setStreamUrl('');
         } else {
           setStreamError('المحتوى غير متاح حالياً');

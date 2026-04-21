@@ -22,8 +22,9 @@ export default function HeroSlider({ items }: Props) {
   if (!items.length) return null;
 
   const item = items[current];
-  const type = item.vod_type === 'series' ? 'tv' : 'movie';
-  const href = `/detail?tmdbId=${item.tmdb_id || item.id}&type=${type}&title=${encodeURIComponent(item.title)}&poster=${encodeURIComponent(item.poster || '')}`;
+  const type = item.vod_type === 'series' ? 'series' : 'movie';
+  const sourceParam = (item as any).source ? `&source=${(item as any).source}` : '';
+  const href = `/detail?id=${item.id}&type=${type}&title=${encodeURIComponent(item.title)}&poster=${encodeURIComponent(item.poster || '')}${sourceParam}`;
   const bg = imgErrors.has(current) ? null : (item.backdrop || item.poster);
 
   return (
