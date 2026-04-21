@@ -87,10 +87,12 @@ export interface VidsrcDetail {
   duration?: string;
   runtime?: string;
   trailer?: string;
+  tagline?: string;
   seasons?: number[];      // array of season numbers e.g. [1, 2, 3]
   episodes?: VidsrcEpisode[];
   luluHls?: string;
   luluEmbed?: string;
+  luluFileCode?: string;
   subtitleUrls?: { ar?: string; ku?: string } | null;
 }
 
@@ -803,6 +805,19 @@ export interface LuluItem {
   cat?: string;
   vod_type: 'movie' | 'series';
   episodeCount?: number;
+  // TMDB enrichment fields
+  tmdb_id?: string;
+  tmdb_type?: string;
+  tmdb_title?: string;
+  backdrop?: string;
+  plot?: string;
+  genres?: string[];
+  cast?: string;
+  director?: string;
+  country?: string;
+  runtime?: string;
+  imdb_id?: string;
+  tagline?: string;
 }
 
 export interface LuluEpisode {
@@ -814,7 +829,8 @@ export interface LuluEpisode {
   hlsUrl: string;
   embedUrl: string;
   subtitleUrls?: { ar?: string; ku?: string } | null;
-  ext: string;
+  ext?: string;
+  thumbnail?: string;
 }
 
 export interface LuluSeason {

@@ -155,6 +155,15 @@ db.init = async function () {
     CREATE INDEX IF NOT EXISTS idx_stream_errors_time ON stream_errors(created_at);
   `);
 
+  // ─── Lulu Catalog Cache table ───
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS lulu_catalog_cache (
+      id         INTEGER PRIMARY KEY DEFAULT 1,
+      catalog    JSONB NOT NULL DEFAULT '[]',
+      updated_at BIGINT NOT NULL DEFAULT 0
+    );
+  `);
+
   console.log('[DB] PostgreSQL connected + tables ready');
 };
 

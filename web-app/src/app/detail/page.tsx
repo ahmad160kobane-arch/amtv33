@@ -47,19 +47,39 @@ function DetailContent() {
     if (!contentId) return;
     try {
       if (sourceLulu) {
-        // LuluStream: جلب التفاصيل مباشرةً من lulu API
+        // LuluStream: جلب التفاصيل مباشرةً من lulu API (مع بيانات TMDB المُثراة)
         const data = await fetchLuluDetail(contentId);
         if (data) {
           setDetail({
-            title: data.title, poster: data.poster || '', backdrop: data.backdrop || data.poster || '',
-            vod_type: data.vod_type, tmdb_id: '', imdb_id: '', description: '',
-            seasons: (data.seasons?.map(s => s.season) || []) as any,
-            episodes: (data.episodes?.map(ep => ({
-              season: ep.season, episode: ep.episode, title: ep.title,
-              fileCode: ep.fileCode, embedUrl: ep.embedUrl, hlsUrl: ep.hlsUrl,
+            title       : data.title,
+            poster      : data.poster   || '',
+            backdrop    : data.backdrop || data.poster || '',
+            vod_type    : data.vod_type,
+            tmdb_id     : data.tmdb_id  || '',
+            imdb_id     : data.imdb_id  || '',
+            description : data.plot     || '',
+            rating      : data.rating   || '',
+            year        : data.year     || '',
+            genres      : data.genres   || [],
+            cast        : data.cast     || '',
+            director    : data.director || '',
+            country     : data.country  || '',
+            runtime     : data.runtime  || '',
+            tagline     : data.tagline  || '',
+            seasons     : (data.seasons?.map(s => s.season) || []) as any,
+            episodes    : (data.episodes?.map(ep => ({
+              season   : ep.season,
+              episode  : ep.episode,
+              title    : ep.title,
+              thumbnail: ep.thumbnail || '',
+              fileCode : ep.fileCode,
+              embedUrl : ep.embedUrl,
+              hlsUrl   : ep.hlsUrl,
             })) || []) as any,
             // أحتفظ بـ embed و hls للأفلام
-            luluHls: data.hlsUrl, luluEmbed: data.embedUrl, luluFileCode: data.fileCode,
+            luluHls     : data.hlsUrl,
+            luluEmbed   : data.embedUrl,
+            luluFileCode: data.fileCode,
           } as any);
         }
       } else {
