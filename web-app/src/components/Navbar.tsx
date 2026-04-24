@@ -146,10 +146,20 @@ export default function Navbar() {
           : 'bg-light-header/80 dark:bg-dark-header/80 backdrop-blur-sm'
       }`}>
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between gap-4">
-          {/* Logo */}
-          <Link href="/" className="flex items-center gap-1.5 flex-shrink-0">
-            <span className="text-brand-primary text-2xl font-black tracking-wide">MA</span>
-            <span className="text-xs text-light-muted dark:text-dark-muted mt-1">streaming</span>
+          {/* Logo - matching mobile app design */}
+          <Link href="/" className="flex items-center gap-2 flex-shrink-0">
+            {/* Wifi Icon */}
+            <svg className="w-5 h-5 text-brand-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+              <path d="M5 12.55a11 11 0 0 1 14.08 0" />
+              <path d="M1.42 9a16 16 0 0 1 21.16 0" />
+              <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
+              <line x1="12" y1="20" x2="12.01" y2="20" />
+            </svg>
+            {/* AM + TV Text */}
+            <div className="flex items-end gap-0.5">
+              <span className="text-2xl font-black text-brand-primary tracking-wide leading-none">AM</span>
+              <span className="text-xs font-bold text-white leading-none mb-0.5 tracking-wide">TV</span>
+            </div>
           </Link>
 
           {/* Desktop nav links */}
@@ -174,9 +184,10 @@ export default function Navbar() {
 
           {/* Right actions */}
           <div className="flex items-center gap-2">
+            {/* Search button - visible on all screens */}
             <button
               onClick={() => router.push('/allcontent')}
-              className="p-2 rounded-lg text-light-muted dark:text-dark-muted hover:bg-light-input dark:hover:bg-dark-input transition"
+              className="p-2 rounded-lg text-light-muted dark:text-dark-muted hover:bg-light-input dark:hover:bg-dark-input hover:text-brand-primary transition"
               title="البحث"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -206,43 +217,34 @@ export default function Navbar() {
             >
               {user ? (user.display_name || user.username).split(' ')[0] : 'دخول'}
             </Link>
-
-            {/* Search shortcut on mobile */}
-            <button
-              onClick={() => router.push('/allcontent')}
-              className="md:hidden p-2 rounded-lg text-light-muted dark:text-dark-muted hover:bg-light-input dark:hover:bg-dark-input transition"
-              title="البحث"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-            </button>
           </div>
         </div>
 
       </header>
 
       {/* Bottom nav for mobile */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-light-card/95 dark:bg-dark-card/95 backdrop-blur border-t border-light-border dark:border-dark-border flex">
-        {NAV_ITEMS.map((item) => {
-          const active = pathname === item.href || (item.href !== '/' && pathname.startsWith(item.href));
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={`relative flex-1 flex flex-col items-center py-2 gap-0.5 transition-colors ${
-                active ? 'text-brand-primary' : 'text-light-muted dark:text-dark-muted'
-              }`}
-            >
-              <span className={`transition-transform ${active ? 'scale-110' : ''}`}>
-                {React.createElement(NAV_ICONS[item.href], { active })}
-              </span>
-              <span className="text-[10px] font-semibold">{item.label}</span>
-              {active && <span className="absolute bottom-0 w-8 h-0.5 bg-brand-primary rounded-t-full" />}
-            </Link>
-          );
-        })}
-      </nav>
+      {!pathname.startsWith('/detail') && !pathname.startsWith('/agent') && (
+        <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-light-card/95 dark:bg-dark-card/95 backdrop-blur border-t border-light-border dark:border-dark-border flex">
+          {NAV_ITEMS.map((item) => {
+            const active = pathname === item.href || (item.href !== '/' && pathname.startsWith(item.href));
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={`relative flex-1 flex flex-col items-center py-2 gap-0.5 transition-colors ${
+                  active ? 'text-brand-primary' : 'text-light-muted dark:text-dark-muted'
+                }`}
+              >
+                <span className={`transition-transform ${active ? 'scale-110' : ''}`}>
+                  {React.createElement(NAV_ICONS[item.href], { active })}
+                </span>
+                <span className="text-[10px] font-semibold">{item.label}</span>
+                {active && <span className="absolute bottom-0 w-8 h-0.5 bg-brand-primary rounded-t-full" />}
+              </Link>
+            );
+          })}
+        </nav>
+      )}
     </>
   );
 }

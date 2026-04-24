@@ -848,7 +848,13 @@ export interface LuluDetail extends LuluItem {
   subtitleUrls?: { ar?: string; ku?: string } | null;
 }
 
-export async function fetchLuluHome(): Promise<{ latestMovies: LuluItem[]; latestSeries: LuluItem[] }> {
+export async function fetchLuluHome(): Promise<{ 
+  latestMovies: LuluItem[]; 
+  latestSeries: LuluItem[];
+  topRatedMovies?: LuluItem[];
+  topRatedSeries?: LuluItem[];
+  genreSections?: Record<string, LuluItem[]>;
+}> {
   try {
     const res = await apiFetch('/api/lulu/home');
     if (!res.ok) throw new Error();
@@ -878,13 +884,12 @@ export async function fetchLuluDetail(id: string): Promise<LuluDetail | null> {
 }
 
 // ─── Session Management (cloud-server) ──────────────────
-const CLOUD_URL = 'http://62.171.153.204:8090';
-
+// Use relative URL so Next.js rewrites proxy to cloud-server (bypasses CORS + mixed content)
 async function cloudFetch(path: string, options: RequestInit = {}): Promise<Response> {
   const token = getStorage(TOKEN_KEY);
   const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(options.headers as Record<string, string> || {}) };
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  return fetch(`${CLOUD_URL}${path}`, { ...options, headers });
+  return fetch(path, { ...options, headers });
 }
 
 export async function fetchSessionInfo(): Promise<SessionInfo | null> {

@@ -1,20 +1,20 @@
 'use client';
 import React, { useEffect, useState, useCallback, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { fetchVidsrcBrowse, searchVidsrc, VidsrcItem } from '@/constants/api';
+import { fetchLuluList, LuluItem } from '@/constants/api';
 import ContentCard from '@/components/ContentCard';
 import { SkeletonGrid } from '@/components/Skeleton';
 
 const TYPES = [
+  { id: '', label: 'الكل' },
   { id: 'movie', label: 'أفلام' }, 
-  { id: 'tv', label: 'مسلسلات' },
-  { id: 'trending', label: 'الأكثر مشاهدة' }
+  { id: 'series', label: 'مسلسلات' },
 ];
 
 function AllContentContent() {
   const params = useSearchParams();
   const router = useRouter();
-  const [items, setItems] = useState<VidsrcItem[]>([]);
+  const [items, setItems] = useState<LuluItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [page, setPage] = useState(1);
@@ -22,30 +22,36 @@ function AllContentContent() {
   const [search, setSearch] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const paramType = params.get('type');
-  const [activeType, setActiveType] = useState<'movie' | 'tv' | 'trending'>(
-    (paramType === 'series' ? 'tv' : paramType as 'movie' | 'tv' | 'trending') || 'movie'
+  const [activeType, setActiveType] = useState<'movie' | 'series' | ''>(
+    (paramType as 'movie' | 'series' | '') || ''
   );
 
   const load = useCallback(async (p = 1, reset = false) => {
     if (p === 1) setLoading(true); else setLoadingMore(true);
     try {
-      let data;
-      if (searchQuery) {
-        // بحث
-        const results = await searchVidsrc(searchQuery);
-        data = { items: results, hasMore: false, page: 1, total: results.length };
+      let newItems: LuluItem[] = [];
+      let moreAvailable = false;
+
+      if (activeType === '') {
+        // الكل: دمج أفلام + مسلسلات
+        const [moviesData, seriesData] = await Promise.all([
+          fetchLuluList({ type: 'movie', page: p, search: searchQuery.trim() || undefined }),
+          fetchLuluList({ type: 'series', page: p, search: searchQuery.trim() || undefined }),
+        ]);
+        newItems = [...(moviesData.items || []), ...(seriesData.items || [])];
+        moreAvailable = (moviesData.hasMore ?? false) || (seriesData.hasMore ?? false);
       } else {
-        // تصفح حسب النوع
-        data = await fetchVidsrcBrowse({ 
-          type: activeType === 'trending' ? undefined : activeType, 
-          category: activeType === 'trending' ? 'trending' : undefined,
-          page: p, 
-          limit: 20 
+        const data = await fetchLuluList({
+          type: activeType as 'movie' | 'series',
+          page: p,
+          search: searchQuery.trim() || undefined,
         });
+        newItems = data.items || [];
+        moreAvailable = data.hasMore ?? newItems.length >= 20;
       }
-      const newItems = data.items || [];
+
       setItems(prev => reset ? newItems : [...prev, ...newItems]);
-      setHasMore(data.hasMore && !searchQuery);
+      setHasMore(moreAvailable);
     } catch (e) {
       console.error('Content load error:', e);
     } finally {
@@ -54,21 +60,24 @@ function AllContentContent() {
     }
   }, [activeType, searchQuery]);
 
-  useEffect(() => { setPage(1); load(1, true); }, [activeType, searchQuery]);
+  useEffect(() => { 
+    setPage(1); 
+    load(1, true); 
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeType, searchQuery]);
 
   const loadMore = () => { const next = page + 1; setPage(next); load(next); };
 
   const handleSearch = (e: React.FormEvent) => { e.preventDefault(); setSearchQuery(search); };
 
-  const toCard = (item: VidsrcItem) => ({
-    id    : item.id,
-    title : item.title,
+  const toCard = (item: LuluItem) => ({
+    id: item.id,
+    title: item.title,
     poster: item.poster,
     vod_type: item.vod_type,
-    year  : item.year,
+    year: item.year,
     rating: item.rating,
-    tmdb_id: item.tmdb_id,
-    imdb_id: item.imdb_id,
+    source: 'lulu' as const,
   });
 
   return (
@@ -94,7 +103,7 @@ function AllContentContent() {
 
           <div className="flex gap-2 overflow-x-auto no-scrollbar pb-2 mb-2">
             {TYPES.map(t => (
-              <button key={t.id} onClick={() => { setActiveType(t.id as 'movie' | 'tv' | 'trending'); setSearchQuery(''); setSearch(''); }}
+              <button key={t.id} onClick={() => { setActiveType(t.id as 'movie' | 'series' | ''); setSearchQuery(''); setSearch(''); }}
                 className={`flex-shrink-0 px-3 py-1.5 rounded-lg text-sm font-medium transition ${activeType === t.id ? 'bg-brand-primary text-black' : 'bg-light-input dark:bg-dark-input text-light-muted dark:text-dark-muted hover:text-light-text dark:hover:text-dark-text'}`}
               >{t.label}</button>
             ))}
@@ -114,7 +123,7 @@ function AllContentContent() {
           <>
             <div className="grid grid-cols-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 md:gap-3">
               {items.map((item, i) => (
-                <ContentCard key={`${item.id}_${i}`} item={toCard(item) as any} />
+                <ContentCard key={`${item.id}_${i}`} item={toCard(item)} />
               ))}
             </div>
             {hasMore && (

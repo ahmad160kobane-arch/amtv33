@@ -1,0 +1,9 @@
+@echo off
+echo Deploying improved xtream-proxy.js with better error handling...
+scp cloud-server/lib/xtream-proxy.js root@62.171.153.204:/root/ma-streaming/cloud-server/lib/
+echo.
+echo Restarting cloud-server...
+ssh root@62.171.153.204 "cd /root/ma-streaming/cloud-server && pm2 restart cloud-server"
+echo.
+echo Done! Checking logs...
+ssh root@62.171.153.204 "pm2 logs cloud-server --lines 20 --nostream"

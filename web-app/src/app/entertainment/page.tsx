@@ -1,5 +1,6 @@
 'use client';
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { fetchLuluList, LuluItem } from '@/constants/api';
 import ContentCard from '@/components/ContentCard';
 import { SkeletonGrid } from '@/components/Skeleton';
@@ -10,10 +11,14 @@ const TYPES = [
   { id: 'series', label: 'مسلسلات' },
 ];
 
-export default function EntertainmentPage() {
+function EntertainmentContent() {
+  const searchParams = useSearchParams();
+  const genreParam = searchParams.get('genre');
+  
   const [activeType, setActiveType] = useState<'movie' | 'series' | ''>('');
   const [search, setSearch] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  const [genre, setGenre] = useState(genreParam || '');
 
   const [items, setItems] = useState<LuluItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -21,15 +26,27 @@ export default function EntertainmentPage() {
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
 
+  // تحديث التصنيف من URL
+  useEffect(() => {
+    if (genreParam) {
+      setGenre(genreParam);
+    }
+  }, [genreParam]);
+
   const load = useCallback(async (p = 1, reset = false) => {
     if (p === 1) setLoading(true); else setLoadingMore(true);
     try {
-      // إذا "الكل" → جلب أفلام ومسلسلات معاً (صفحة 1 فقط) أو أفلام للصفحات التالية
       let newItems: LuluItem[] = [];
       let moreAvailable = false;
 
-      if (activeType === '') {
-        // "الكل": دمج أفلام + مسلسلات في الصفحة الأولى
+      // إذا كان هناك تصنيف محدد، استخدم API التصنيف
+      if (genre) {
+        const type = activeType || 'movie';
+        const response = await fetch(`/api/lulu/by-genre?genre=${genre}&type=${type}&limit=24&random=false`);
+        const data = await response.json();
+        newItems = data.items || [];
+        moreAvailable = false; // التصنيفات لا تدعم pagination حالياً
+      } else if (activeType === '') {
         const [moviesData, seriesData] = await Promise.all([
           fetchLuluList({ type: 'movie', page: p, search: searchQuery.trim() || undefined }),
           fetchLuluList({ type: 'series', page: p, search: searchQuery.trim() || undefined }),
@@ -54,9 +71,13 @@ export default function EntertainmentPage() {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [activeType, searchQuery]);
+  }, [activeType, searchQuery, genre]);
 
-  useEffect(() => { setPage(1); load(1, true); }, [activeType, searchQuery]);
+  useEffect(() => { 
+    setPage(1); 
+    load(1, true); 
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeType, searchQuery, genre]);
 
   const loadMore = () => {
     const next = page + 1;
@@ -76,7 +97,7 @@ export default function EntertainmentPage() {
     vod_type: item.vod_type,
     year: item.year,
     rating: item.rating,
-    source: 'lulu',
+    source: 'lulu' as const,
   });
 
   return (
@@ -85,7 +106,9 @@ export default function EntertainmentPage() {
         {/* Header - hidden on mobile (shown in bottom nav), visible on desktop */}
         <div className="hidden md:flex pt-4 pb-2 items-center gap-2">
           <svg className="w-6 h-6 text-brand-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="15" rx="2" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M17 2L12 7L7 2" /><polygon points="10,11 10,17 16,14" fill="currentColor" stroke="none" /></svg>
-          <h1 className="text-xl font-black text-light-text dark:text-dark-text">ترفيه</h1>
+          <h1 className="text-xl font-black text-light-text dark:text-dark-text">
+            {genre ? (genre === 'Action' ? '🔥 أكشن' : genre === 'Drama' ? '🎭 دراما' : genre === 'Comedy' ? '😂 كوميديا' : genre === 'Horror' ? '👻 رعب' : genre === 'Romance' ? '💕 رومانسي' : genre === 'Thriller' ? '🔪 إثارة' : genre) : 'ترفيه'}
+          </h1>
         </div>
 
         {/* Search + Type filters — compact on mobile like the app */}
@@ -139,7 +162,7 @@ export default function EntertainmentPage() {
           <>
             <div className="grid grid-cols-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 md:gap-3">
               {items.map((item, i) => (
-                <ContentCard key={`${item.id}_${i}`} item={toCard(item) as any} />
+                <ContentCard key={`${item.id}_${i}`} item={toCard(item)} />
               ))}
             </div>
             {hasMore && (
@@ -157,5 +180,13 @@ export default function EntertainmentPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function EntertainmentPage() {
+  return (
+    <Suspense fallback={<SkeletonGrid count={24} />}>
+      <EntertainmentContent />
+    </Suspense>
   );
 }

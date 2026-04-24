@@ -6,7 +6,7 @@ import ContentRow from '@/components/ContentRow';
 import { SkeletonRow } from '@/components/Skeleton';
 
 function toContentItem(v: LuluItem) {
-  return { id: v.id, title: v.title, poster: v.poster, vod_type: v.vod_type, year: v.year, rating: v.rating, source: 'lulu' };
+  return { id: v.id, title: v.title, poster: v.poster, vod_type: v.vod_type, year: v.year, rating: v.rating, source: 'lulu' as const };
 }
 
 export default function KidsPage() {
@@ -19,17 +19,24 @@ export default function KidsPage() {
 
   const load = useCallback(async () => {
     try {
-      await Promise.all([
-        fetchFreeChannels({ group: 'أطفال', limit: 20 }).then(d => setChannels(d.channels || [])).catch(() => {}),
-        fetchLuluList({ type: 'movie', search: 'أطفال', page: 1 }).then(d => setKidsMovies((d.items || []).slice(0, 16))).catch(() => {}),
-        fetchLuluList({ type: 'series', search: 'أطفال', page: 1 }).then(d => setKidsSeries((d.items || []).slice(0, 16))).catch(() => {}),
+      const [chData, kidsData] = await Promise.all([
+        fetchFreeChannels({ group: 'أطفال', limit: 20 }),
+        fetch('/api/lulu/kids').then(r => r.json()),
       ]);
+      setChannels(chData?.channels || []);
+      setKidsMovies(kidsData?.movies || []);
+      setKidsSeries(kidsData?.series || []);
+    } catch (e) {
+      console.error('Kids load error:', e);
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { 
+    load(); 
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-20 md:pb-6">

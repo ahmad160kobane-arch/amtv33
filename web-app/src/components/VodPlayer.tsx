@@ -81,6 +81,8 @@ export default function VodPlayer({ streamUrl, title, poster, subtitle, subtitle
   const [currentSubText, setCurrentSubText] = useState('');
   const [showSubMenu, setShowSubMenu] = useState(false);
   const [subLoading, setSubLoading] = useState(false);
+  const [isPiP, setIsPiP] = useState(false);
+  const lastTapRef = useRef<{ time: number; x: number }>({ time: 0, x: 0 });
 
   const scheduleHide = useCallback(() => {
     if (hideTimer.current) clearTimeout(hideTimer.current);
@@ -130,11 +132,46 @@ export default function VodPlayer({ streamUrl, title, poster, subtitle, subtitle
         const loadHls = () => {
           const Hls = (window as any).Hls;
           if (Hls && Hls.isSupported()) {
-            hlsInstance = new Hls({ enableWorker: true });
+            hlsInstance = new Hls({
+              enableWorker: true,
+              lowLatencyMode: false,
+              startLevel: -1,
+              debug: false,
+              startFragPrefetch: true,
+              maxStarvationDelay: 6,
+              maxLoadingDelay: 6,
+              highBufferWatchdogPeriod: 3,
+              maxBufferLength: 60,
+              maxMaxBufferLength: 120,
+              maxBufferSize: 80 * 1024 * 1024,
+              maxBufferHole: 0.8,
+              manifestLoadingTimeOut: 15000,
+              manifestLoadingMaxRetry: 6,
+              manifestLoadingRetryDelay: 500,
+              levelLoadingTimeOut: 15000,
+              levelLoadingMaxRetry: 6,
+              levelLoadingRetryDelay: 500,
+              fragLoadingTimeOut: 25000,
+              fragLoadingMaxRetry: 6,
+              fragLoadingRetryDelay: 500,
+              fragLoadingMaxRetryTimeout: 12000,
+            });
             hlsInstance.loadSource(streamUrl);
             hlsInstance.attachMedia(video);
             hlsInstance.on(Hls.Events.ERROR, (_: any, data: any) => {
-              if (data.fatal) setError('فشل تحميل الفيديو');
+              if (data.fatal) {
+                switch (data.type) {
+                  case Hls.ErrorTypes.NETWORK_ERROR:
+                    hlsInstance.startLoad();
+                    break;
+                  case Hls.ErrorTypes.MEDIA_ERROR:
+                    hlsInstance.recoverMediaError();
+                    break;
+                  default:
+                    setError('فشل تحميل الفيديو');
+                    break;
+                }
+              }
             });
           }
         };
@@ -348,13 +385,17 @@ export default function VodPlayer({ streamUrl, title, poster, subtitle, subtitle
         </div>
       )}
 
-      {/* Error */}
+      {/* Error with retry */}
       {error && (
         <div className={`${isFullscreen ? 'fixed' : 'absolute'} inset-0 flex flex-col items-center justify-center bg-black/80 z-20 gap-3`}>
           <svg className="w-10 h-10 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
           <p className="text-white/80 text-sm font-medium">{error}</p>
+          <button onClick={(e) => { e.stopPropagation(); setError(''); setBuffering(true); if (videoRef.current) { videoRef.current.load(); videoRef.current.play().catch(() => {}); } }}
+            className="px-5 py-2 rounded-xl bg-brand-primary text-black font-bold text-sm hover:bg-brand-dark transition">
+            إعادة المحاولة
+          </button>
         </div>
       )}
 
