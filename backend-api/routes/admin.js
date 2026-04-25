@@ -52,14 +52,14 @@ router.delete('/users/:id', async (req, res) => {
 
 // ─── Channels Management ─────────────────────────────────
 router.post('/channels', async (req, res) => {
-  const { name, group_name, logo_url, stream_url, sort_order, is_direct_passthrough } = req.body;
+  const { name, group_name, logo_url, stream_url, sort_order } = req.body;
   if (!name || !stream_url) return res.status(400).json({ error: 'الاسم ورابط البث مطلوبان' });
 
   const id = uuidv4();
   await db.prepare(`
-    INSERT INTO channels (id, name, group_name, logo_url, stream_url, sort_order, is_direct_passthrough, is_enabled)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-  `).run(id, name, group_name || 'عام', logo_url || '', stream_url, sort_order || 0, is_direct_passthrough || 0);
+    INSERT INTO channels (id, name, group_name, logo_url, stream_url, sort_order)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(id, name, group_name || 'عام', logo_url || '', stream_url, sort_order || 0);
 
   res.status(201).json({ id, name, stream_url });
 });
@@ -81,7 +81,7 @@ router.post('/channels/bulk', async (req, res) => {
 });
 
 router.put('/channels/:id', async (req, res) => {
-  const { name, group_name, logo_url, stream_url, is_enabled, sort_order, is_direct_passthrough } = req.body;
+  const { name, group_name, logo_url, stream_url, is_enabled, sort_order } = req.body;
   const ch = await db.prepare('SELECT id FROM channels WHERE id = ?').get(req.params.id);
   if (!ch) return res.status(404).json({ error: 'القناة غير موجودة' });
 
@@ -92,10 +92,9 @@ router.put('/channels/:id', async (req, res) => {
       logo_url = COALESCE(?, logo_url),
       stream_url = COALESCE(?, stream_url),
       is_enabled = COALESCE(?, is_enabled),
-      sort_order = COALESCE(?, sort_order),
-      is_direct_passthrough = COALESCE(?, is_direct_passthrough)
+      sort_order = COALESCE(?, sort_order)
     WHERE id = ?
-  `).run(name || null, group_name || null, logo_url || null, stream_url || null, is_enabled ?? null, sort_order ?? null, is_direct_passthrough ?? null, req.params.id);
+  `).run(name || null, group_name || null, logo_url || null, stream_url || null, is_enabled ?? null, sort_order ?? null, req.params.id);
 
   res.json({ success: true });
 });

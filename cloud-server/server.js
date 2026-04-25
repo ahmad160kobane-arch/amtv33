@@ -46,8 +46,6 @@ const { resolveConsumetStream } = require('./lib/consumet-resolver');
 
 const { extractStream } = require('./lib/stream-extractor');
 
-const { extractVidSrcM3U8 } = require('./lib/vidsrc-m3u8-extractor');
-
 const { scrapeEmbedSources } = require('./lib/embed-scraper');
 
 const { puppeteerExtract } = require('./lib/puppeteer-extractor');
@@ -58,11 +56,11 @@ const LiveProxy = require('./lib/live-proxy');
 
 const { XTREAM, searchAccountChannels, addChannelsToDB, getChannelAccount, refreshChannelStream, initXtreamFromDB } = require('./lib/xtream');
 
+const xtreamProxy = require('./lib/xtream-proxy');
+
 const vidsrcApi = require('./lib/vidsrc-api'); // DISABLED — replaced by xtream-vod
 
 const xtreamVod = require('./lib/xtream-vod');
-
-const { enrichBatch, fetchTmdbFullDetail } = require('./lib/lulu-enricher');
 
 const { fetchArabicSubtitles } = require('./lib/subtitle-fetcher');
 
@@ -783,7 +781,7 @@ app.post('/api/stream/live/:channelId', requireAuth, requirePremium, async (req,
 
   // -- Xtream live channel (xtream_live_<streamId> or bare numeric ID) --
 
-  // ═══ استخدام FFmpeg بدلاً من XtreamProxy ═══
+  // Use HLS proxy (shared upstream, segment caching, multi-user safe)
 
   const xtreamMatch = rawId.match(/^xtream_live_(\d+)$/) || rawId.match(/^(\d+)$/);
 
@@ -791,65 +789,31 @@ app.post('/api/stream/live/:channelId', requireAuth, requirePremium, async (req,
 
     const streamNumId = xtreamMatch[1];
 
-    const xch = await db.prepare('SELECT id, name, logo, category, stream_id, base_url, account_id FROM xtream_channels WHERE stream_id = ? OR id = ?').get(Number(streamNumId), streamNumId);
+    const xch = await db.prepare('SELECT id, name, logo, category, stream_id, base_url FROM xtream_channels WHERE stream_id = ? OR id = ?').get(Number(streamNumId), streamNumId);
 
     if (xch) {
 
-      // الحصول على بيانات الحساب
+      const sid = `live_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-      const account = await db.prepare('SELECT server_url, username, password FROM iptv_accounts WHERE id = ?').get(xch.account_id);
+      const base = encodeURIComponent(xch.base_url || XTREAM.primary);
 
-      if (!account) {
+      // HLS proxy: segment caching, request coalescing, multi-user safe
 
-        return res.status(500).json({ error: 'حساب IPTV غير موجود' });
+      const hlsUrl = `/proxy/live/${xch.stream_id}/index.m3u8?sid=${sid}&base=${base}`;
 
-      }
+      // Direct URL as fallback for mobile ExoPlayer
 
-
-
-      // بناء رابط IPTV المباشر
-
-      const iptvUrl = `${account.server_url}/live/${account.username}/${account.password}/${xch.stream_id}.m3u8`;
-
-      
-
-      console.log(`[Live] Starting FFmpeg for channel ${xch.name} (${xch.stream_id})`);
-
-      
-
-      // بدء FFmpeg
-
-      const result = await streamManager.requestStream(
-
-        `xtream_live_${xch.stream_id}`,
-
-        'live',
-
-        iptvUrl,
-
-        xch.name
-
-      );
-
-
-
-      if (!result.success) {
-
-        return res.status(500).json({ error: 'فشل بدء البث', details: result.error });
-
-      }
-
-
+      const token = jwt.sign({ sid: String(xch.stream_id), t: 'xt' }, config.JWT_SECRET, { expiresIn: '6h' });
 
       return res.json({
 
         success: true,
 
-        hlsUrl: `/hls/xtream_live_${xch.stream_id}/stream.m3u8`,
+        hlsUrl,
 
-        ready: result.ready || false,
+        directUrl: `/xtream-play/${token}/index.m3u8`,
 
-        waiting: result.waiting || false,
+        ready: true,
 
         streamId: String(xch.stream_id),
 
@@ -858,8 +822,6 @@ app.post('/api/stream/live/:channelId', requireAuth, requirePremium, async (req,
         name: xch.name,
 
         logo: xch.logo,
-
-        mode: 'ffmpeg',
 
       });
 
@@ -935,30 +897,58 @@ app.post('/api/stream/live/:channelId', requireAuth, requirePremium, async (req,
 
 
 
-// Xtream Token Redirect — DISABLED: was redirecting client directly to IPTV (exposes credentials + triggers bans)
-// Now redirects to FFmpeg HLS system so only VPS connects to IPTV.
+// Xtream Token Redirect — mobile app follows redirect natively via ExoPlayer
+
 app.get(['/xtream-play/:token', '/xtream-play/:token/index.m3u8'], (req, res) => {
+
   try {
+
     const payload = jwt.verify(req.params.token, config.JWT_SECRET);
+
     if (payload.t !== 'xt' || !payload.sid) return res.status(403).end();
-    // Redirect to the FFmpeg HLS URL instead of IPTV directly
-    res.redirect(302, `/hls/xtream_live_${payload.sid}/stream.m3u8`);
+
+    const realUrl = `${XTREAM.primary}/live/${XTREAM.user}/${XTREAM.pass}/${payload.sid}.m3u8`;
+
+    res.redirect(302, realUrl);
+
   } catch (e) {
+
     res.status(403).json({ error: 'Invalid or expired token' });
+
   }
+
 });
 
 
 
-// Xtream Pipe — DISABLED: was using deprecated proxy. Now uses FFmpeg HLS.
+// Xtream Pipe — redirect to HLS proxy (no persistent connections, multi-channel safe)
+
 app.get('/xtream-pipe/:token', async (req, res) => {
+
   try {
+
     const payload = jwt.verify(req.params.token, config.JWT_SECRET);
+
     if (payload.t !== 'xt' || !payload.sid) return res.status(403).end();
-    res.redirect(302, `/hls/xtream_live_${payload.sid}/stream.m3u8`);
+
+    const sid = `pipe_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+    const base = encodeURIComponent(XTREAM.primary);
+
+    const hlsUrl = `/proxy/live/${payload.sid}/index.m3u8?sid=${sid}&base=${base}`;
+
+    console.log(`[Xtream-pipe] #${payload.sid} → HLS proxy`);
+
+    res.redirect(302, hlsUrl);
+
   } catch (e) {
+
+    console.error('[Xtream-pipe] error:', e.message);
+
     res.status(403).json({ error: 'Invalid or expired token' });
+
   }
+
 });
 
 
@@ -971,22 +961,24 @@ app.get('/live-pipe/:channelId', requireAuth, async (req, res) => {
 
 
 
-  // Xtream channels → redirect to FFmpeg HLS (no direct IPTV connection per viewer)
+  // Xtream channel proxy — server connects to IPTV source instead of client
+
+  // Auth only (no premium check) — free channels also use this
+
   const xtreamPipeMatch = rawId.match(/^xtream_(\d+)$/);
+
   if (xtreamPipeMatch) {
+
     const streamId = xtreamPipeMatch[1];
-    // Start FFmpeg if not already running, then redirect to HLS
-    const streamKey = `xtream_live_${streamId}`;
-    const ch = await db.prepare(`
-      SELECT c.stream_id, c.name, a.server_url, a.username, a.password
-      FROM xtream_channels c LEFT JOIN iptv_accounts a ON c.account_id = a.id
-      WHERE c.stream_id = ?
-    `).get(Number(streamId));
-    if (ch && ch.server_url) {
-      const iptvUrl = `${ch.server_url}/live/${ch.username}/${ch.password}/${ch.stream_id}.m3u8`;
-      await streamManager.requestStream(streamKey, 'live', iptvUrl, ch.name || `Xtream ${streamId}`);
-    }
-    return res.redirect(302, `/hls/${streamKey}/stream.m3u8`);
+
+    const sourceUrl = `${XTREAM.primary}/live/${XTREAM.user}/${XTREAM.pass}/${streamId}.m3u8`;
+
+    console.log(`[LivePipe] Xtream #${streamId} (proxied)`);
+
+    await liveProxy.streamToClient(`xtream_${streamId}`, sourceUrl, req, res);
+
+    return;
+
   }
 
 
@@ -2015,446 +2007,201 @@ app.get('/api/vidsrc/episodes', async (req, res) => {
 
 
 
-// ─── LuluStream: جلب المحتوى مباشرةً من LuluStream API ──────────────────────
-// ═══════════════════════════════════════════════════════════════
-// LuluStream Catalog — DATABASE MODE
-// ═══════════════════════════════════════════════════════════════
+// ─── LuluStream: رابط HLS للمحتوى المرفوع ──────────────────────────────────
+const LULU_KEY          = '258176jfw9e96irnxai2fm';
+const LULU_PROGRESS_PATH = '/root/lulu_progress.json';
+let _luluProgress = null;
+let _luluProgressTs = 0;
+const _luluCanplayCache = new Map(); // fileCode → { canplay, ts }
 
-const LULU_KEY = '268974pf854aqdw63ui5sw';
-const LULU_API = 'https://api.lulustream.com/api';
+function getLuluProgress() {
+  const now = Date.now();
+  if (!_luluProgress || now - _luluProgressTs > 60000) {
+    try { _luluProgress = JSON.parse(fs.readFileSync(LULU_PROGRESS_PATH, 'utf8')); }
+    catch { _luluProgress = { uploaded: {}, failed: {} }; }
+    _luluProgressTs = now;
+  }
+  return _luluProgress;
+}
 
-let _luluCatalog = [];
-let _luluCatalogTs = 0;
+async function checkLuluCanplay(fileCode) {
+  const cached = _luluCanplayCache.get(fileCode);
+  if (cached && Date.now() - cached.ts < 5 * 60 * 1000) return cached.canplay;
+  try {
+    const r = await fetch(
+      `https://api.lulustream.com/api/file/info?key=${LULU_KEY}&file_code=${fileCode}`,
+      { signal: AbortSignal.timeout(8000) }
+    );
+    const d = await r.json();
+    const canplay = d?.result?.[0]?.canplay === 1;
+    _luluCanplayCache.set(fileCode, { canplay, ts: Date.now() });
+    return canplay;
+  } catch {
+    return false;
+  }
+}
 
-// ─── تحويل صف DB إلى صيغة الكتالوج ──────────────────────────
-function _rowToCatalogItem(row) {
+app.get('/api/lulu/stream', async (req, res) => {
+  const { type, id, ep_id } = req.query;
+  const prog = getLuluProgress();
+  let entry = null;
+  if (type === 'movie' && id)          entry = prog.uploaded[`movie_${id}`];
+  else if (type === 'series' && ep_id) entry = prog.uploaded[`series_${ep_id}`];
+  if (!entry) return res.json({ available: false });
+
+  const fc = entry.fileCode;
+  const canplay = await checkLuluCanplay(fc);
+  if (!canplay) return res.json({ available: false, reason: 'encoding' });
+
+  res.json({
+    available : true,
+    fileCode  : fc,
+    hlsUrl    : `https://luluvdo.com/hls/${fc}/master.m3u8`,
+    embedUrl  : `https://lulustream.com/e/${fc}`,
+    title     : entry.title,
+  });
+});
+
+
+
+// ─── LuluStream: بناء قائمة الأفلام من progress.json ─────────────────────
+function buildLuluMovieItem(streamId, entry) {
   return {
-    id:           String(row.id),
-    title:        row.title || '',
-    vod_type:     row.vod_type,
-    poster:       row.poster || '',
-    backdrop:     row.backdrop || '',
-    plot:         row.plot || '',
-    year:         row.year || '',
-    rating:       row.rating || '',
-    genres:       row.genres ? row.genres.split(',').map(g => g.trim()) : [],
-    genre:        row.genres || '',
-    cast:         row.cast_list || '',
-    director:     row.director || '',
-    country:      row.country || '',
-    runtime:      row.runtime || '',
-    tmdb_id:      row.tmdb_id || null,
-    tmdb_type:    row.tmdb_type || (row.vod_type === 'movie' ? 'movie' : 'tv'),
-    imdb_id:      row.imdb_id || '',
-    file_code:    row.file_code || '',
-    embedUrl:     row.embed_url || (row.file_code ? `https://luluvdo.com/e/${row.file_code}` : ''),
-    hlsUrl:       row.hls_url  || (row.file_code ? `https://luluvdo.com/hls/${row.file_code}/master.m3u8` : ''),
-    canplay:      !!row.canplay,
-    episodeCount: row.episode_count || 0,
-    lulu_fld_id:  row.lulu_fld_id || 0,
-    ts:           Number(row.uploaded_at) || 0,
-    uploadedAt:   row.uploaded_at ? new Date(Number(row.uploaded_at)).toISOString() : null,
+    id          : streamId,
+    title       : entry.title       || '',
+    poster      : entry.poster      || '',
+    year        : entry.year        || '',
+    genre       : entry.genre       || '',
+    rating      : entry.rating      || '',
+    lang        : entry.lang        || '',
+    cat         : entry.cat         || '',
+    vod_type    : 'movie',
   };
 }
 
-// تحميل الكتالوج من قاعدة البيانات
-async function _loadLuluCatalogFromDB() {
-  try {
-    const { rows } = await db.pool.query(
-      'SELECT * FROM lulu_catalog ORDER BY uploaded_at DESC'
-    );
-    _luluCatalog  = rows.map(_rowToCatalogItem);
-    _luluCatalogTs = Date.now();
-    console.log(`[Lulu] ✅ Loaded ${_luluCatalog.length} items from DB`);
-  } catch (e) {
-    console.error('[Lulu] Failed to load catalog from DB:', e.message);
-    _luluCatalog = [];
+function buildLuluSeriesMap(prog) {
+  const showMap = {};
+  for (const [k, v] of Object.entries(prog.uploaded)) {
+    if (!k.startsWith('series_')) continue;
+    const show = v.show || v.title || k;
+    if (!showMap[show]) {
+      showMap[show] = {
+        id           : 'lulu:' + encodeURIComponent(show),
+        title        : show,
+        poster       : v.poster || '',
+        genre        : v.genre  || '',
+        rating       : v.rating || '',
+        lang         : v.lang   || '',
+        vod_type     : 'series',
+        ts           : v.ts     || 0,
+        episodeCount : 0,
+      };
+    }
+    showMap[show].episodeCount = (showMap[show].episodeCount || 0) + 1;
+    if ((v.ts || 0) > showMap[show].ts) { showMap[show].ts = v.ts; showMap[show].poster = v.poster || showMap[show].poster; }
   }
-}
-
-// إعادة تحميل الكتالوج
-async function reloadLuluCatalog() {
-  await _loadLuluCatalogFromDB();
-  return _luluCatalog;
+  return Object.values(showMap);
 }
 
 // GET /api/lulu/home
-app.get('/api/lulu/home', async (req, res) => {
-  try {
-    const sorted = [..._luluCatalog].sort((a, b) => b.ts - a.ts);
-    
-    // أحدث الأفلام والمسلسلات
-    const latestMovies = sorted.filter(i => i.vod_type === 'movie').slice(0, 24);
-    const latestSeries = sorted.filter(i => i.vod_type === 'series').slice(0, 24);
-    
-    // أعلى تقييماً
-    const topRatedMovies = [..._luluCatalog]
-      .filter(i => i.vod_type === 'movie' && i.rating)
-      .sort((a, b) => (parseFloat(b.rating) || 0) - (parseFloat(a.rating) || 0))
-      .slice(0, 12);
-    
-    const topRatedSeries = [..._luluCatalog]
-      .filter(i => i.vod_type === 'series' && i.rating)
-      .sort((a, b) => (parseFloat(b.rating) || 0) - (parseFloat(a.rating) || 0))
-      .slice(0, 12);
-    
-    // أقسام التصنيفات - إذا لم يكن هناك genres، نستخدم توزيع عشوائي
-    const genreSections = {};
-    
-    // محاولة استخدام genres إذا كانت موجودة
-    const itemsWithGenres = _luluCatalog.filter(i => {
-      if (!i.genres) return false;
-      if (typeof i.genres === 'string') return i.genres.trim().length > 0;
-      if (Array.isArray(i.genres)) return i.genres.length > 0;
-      return false;
-    });
-    
-    if (itemsWithGenres.length > 0) {
-      // استخدام genres الموجودة
-      const genres = ['Action', 'Drama', 'Comedy', 'Horror', 'Romance', 'Thriller', 'Animation', 'Crime', 'Documentary'];
-      genres.forEach(genre => {
-        const items = itemsWithGenres
-          .filter(i => {
-            const genreStr = typeof i.genres === 'string' ? i.genres : (Array.isArray(i.genres) ? i.genres.join(',') : '');
-            const genresLower = genreStr.toLowerCase();
-            const genreLower = genre.toLowerCase();
-            return genresLower.includes(genreLower);
-          })
-          .sort(() => Math.random() - 0.5)
-          .slice(0, 6);
-        
-        if (items.length > 0) {
-          genreSections[genre] = items;
-        }
-      });
-    } else {
-      // إذا لم يكن هناك genres، نوزع المحتوى عشوائياً على أقسام
-      console.log('[Lulu/Home] No genres found, using random distribution');
-      const allItems = [..._luluCatalog].sort(() => Math.random() - 0.5);
-      const chunkSize = 6;
-      const genreNames = ['Action', 'Drama', 'Comedy', 'Horror', 'Romance', 'Thriller'];
-      
-      genreNames.forEach((genre, idx) => {
-        const start = idx * chunkSize;
-        const items = allItems.slice(start, start + chunkSize);
-        if (items.length > 0) {
-          genreSections[genre] = items;
-        }
-      });
-    }
-    
-    console.log(`[Lulu/Home] Returning ${Object.keys(genreSections).length} genre sections, ${latestMovies.length} movies, ${latestSeries.length} series`);
-    
-    res.json({
-      latestMovies,
-      latestSeries,
-      topRatedMovies,
-      topRatedSeries,
-      genreSections
-    });
-  } catch (e) {
-    console.error('[Lulu/Home] Error:', e.message);
-    res.status(500).json({ error: e.message });
-  }
+app.get('/api/lulu/home', (req, res) => {
+  const prog = getLuluProgress();
+  const movies = Object.entries(prog.uploaded)
+    .filter(([k]) => k.startsWith('movie_'))
+    .sort(([, a], [, b]) => (b.ts || 0) - (a.ts || 0))
+    .slice(0, 24)
+    .map(([k, v]) => buildLuluMovieItem(k.replace('movie_', ''), v));
+  const series = buildLuluSeriesMap(prog)
+    .sort((a, b) => (b.ts || 0) - (a.ts || 0))
+    .slice(0, 24);
+  res.json({ latestMovies: movies, latestSeries: series });
 });
 
-// GET /api/lulu/list?type=movie|series&page=1&search=
-app.get('/api/lulu/list', async (req, res) => {
-  try {
-    const { type = 'movie', page = '1', search = '' } = req.query;
-    const pg = Math.max(1, parseInt(page));
-    const limit = 24;
-    const q = String(search).toLowerCase();
+// GET /api/lulu/list?type=movie|series&page=1&search=&cat=
+app.get('/api/lulu/list', (req, res) => {
+  const { type = 'movie', page = '1', search = '', cat = '' } = req.query;
+  const prog  = getLuluProgress();
+  const pg    = Math.max(1, parseInt(page));
+  const limit = 24;
+  const q     = String(search).toLowerCase();
 
-    let items = _luluCatalog.filter(i => i.vod_type === type);
+  let items = [];
+  if (type === 'movie') {
+    items = Object.entries(prog.uploaded)
+      .filter(([k]) => k.startsWith('movie_'))
+      .map(([k, v]) => buildLuluMovieItem(k.replace('movie_', ''), v));
+    if (q)   items = items.filter(i => i.title.toLowerCase().includes(q));
+    if (cat) items = items.filter(i => i.cat === cat);
+    items.sort((a, b) => 0); // preserve insertion order (newest first from sync)
+  } else {
+    items = buildLuluSeriesMap(prog).sort((a, b) => (b.ts || 0) - (a.ts || 0));
     if (q) items = items.filter(i => i.title.toLowerCase().includes(q));
-    items = [...items].sort((a, b) => b.ts - a.ts);
-
-    const total = items.length;
-    res.json({ 
-      items: items.slice((pg - 1) * limit, pg * limit), 
-      page: pg, 
-      total, 
-      hasMore: pg * limit < total 
-    });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
   }
+
+  const total = items.length;
+  res.json({ items: items.slice((pg - 1) * limit, pg * limit), page: pg, total, hasMore: pg * limit < total });
 });
 
-// GET /api/lulu/detail?id={catalog_id}
-app.get('/api/lulu/detail', async (req, res) => {
-  try {
-    const { id } = req.query;
-    if (!id) return res.status(400).json({ error: 'missing id' });
+// GET /api/lulu/detail?type=movie&id={stream_id}
+// GET /api/lulu/detail?type=series&show={encoded_show_name}
+app.get('/api/lulu/detail', (req, res) => {
+  const { type, id, show } = req.query;
+  const prog = getLuluProgress();
 
-    // ── جلب من DB مباشرة ─────────────────────────────────────────────────────
-    const { rows } = await db.pool.query(
-      'SELECT * FROM lulu_catalog WHERE id = $1', [String(id)]
-    );
-    if (!rows.length) return res.status(404).json({ error: 'not found' });
-    const item = _rowToCatalogItem(rows[0]);
+  if (type === 'movie' && id) {
+    const entry = prog.uploaded[`movie_${id}`];
+    if (!entry) return res.status(404).json({ error: 'not found' });
+    const fc = entry.fileCode;
+    return res.json({
+      id, title: entry.title, poster: entry.poster || '', backdrop: entry.poster || '',
+      year: entry.year || '', genre: entry.genre || '', rating: entry.rating || '',
+      lang: entry.lang || '', cat: entry.cat || '', vod_type: 'movie',
+      fileCode    : fc,
+      hlsUrl      : `https://luluvdo.com/hls/${fc}/master.m3u8`,
+      embedUrl    : `https://lulustream.com/e/${fc}`,
+      subtitleUrls: entry.subtitleUrls || null,
+    });
+  }
 
-    // ── جلب تفاصيل TMDB الإضافية إذا توفر tmdb_id ───────────────────────────
-    let tmdbDetail = null;
-    if (item.tmdb_id) {
-      try { tmdbDetail = await fetchTmdbFullDetail(item.tmdb_id, item.tmdb_type); } catch {}
-    }
+  if (type === 'series' && show) {
+    const showName = decodeURIComponent(String(show));
+    const epEntries = Object.entries(prog.uploaded)
+      .filter(([k, v]) => k.startsWith('series_') && (v.show || '') === showName);
+    if (!epEntries.length) return res.status(404).json({ error: 'not found' });
 
-    const meta = {
-      poster   : tmdbDetail?.poster   || item.poster   || '',
-      backdrop : tmdbDetail?.backdrop || item.backdrop || item.poster || '',
-      plot     : tmdbDetail?.plot     || item.plot     || '',
-      year     : tmdbDetail?.year     || item.year     || '',
-      rating   : tmdbDetail?.rating   || item.rating   || '',
-      genres   : tmdbDetail?.genres   || item.genres   || [],
-      genre    : tmdbDetail?.genre    || item.genre    || '',
-      cast     : tmdbDetail?.cast     || item.cast     || '',
-      director : tmdbDetail?.director || item.director || '',
-      country  : tmdbDetail?.country  || item.country  || '',
-      runtime  : tmdbDetail?.runtime  || item.runtime  || '',
-      tmdb_id  : item.tmdb_id         || null,
-      imdb_id  : tmdbDetail?.imdb_id  || item.imdb_id  || '',
-      tagline  : tmdbDetail?.tagline  || '',
-    };
-
-    if (item.vod_type === 'movie') {
-      return res.json({
-        id,
-        title    : item.title,
-        vod_type : 'movie',
-        ...meta,
-        fileCode : item.file_code,
-        embedUrl : item.embedUrl,
-        hlsUrl   : item.hlsUrl,
-        canplay  : item.canplay,
+    const first   = epEntries[0][1];
+    const seasonMap = {};
+    for (const [k, v] of epEntries) {
+      const s = String(v.season || 1);
+      if (!seasonMap[s]) seasonMap[s] = [];
+      const fc = v.fileCode;
+      seasonMap[s].push({
+        id      : k.replace('series_', ''),
+        episode : v.ep || 1,
+        season  : Number(s),
+        title   : v.title || `الحلقة ${v.ep}`,
+        fileCode: fc,
+        hlsUrl      : `https://luluvdo.com/hls/${fc}/master.m3u8`,
+        embedUrl    : `https://lulustream.com/e/${fc}`,
+        subtitleUrls: v.subtitleUrls || null,
+        ext         : 'mp4',
       });
     }
-
-    // ── مسلسل: جلب الحلقات من DB ──────────────────────────────────────────────
-    const { rows: epRows } = await db.pool.query(
-      'SELECT * FROM lulu_episodes WHERE catalog_id = $1 ORDER BY season, episode',
-      [String(id)]
-    );
-
-    const episodes = epRows.map(ep => ({
-      id       : String(ep.id),
-      episode  : ep.episode,
-      season   : ep.season,
-      title    : ep.title || `الحلقة ${ep.episode}`,
-      fileCode : ep.file_code,
-      embedUrl : ep.embed_url || `https://luluvdo.com/e/${ep.file_code}`,
-      hlsUrl   : ep.hls_url  || `https://luluvdo.com/hls/${ep.file_code}/master.m3u8`,
-      canplay  : !!ep.canplay,
-      thumbnail: ep.thumbnail || meta.poster,
-      overview : ep.overview || '',
-      airDate  : ep.air_date || '',
-    }));
-
-    // تجميع الحلقات حسب الموسم
-    const seasonsMap = {};
-    for (const ep of episodes) {
-      const s = ep.season;
-      if (!seasonsMap[s]) seasonsMap[s] = { season: s, episodes: [] };
-      seasonsMap[s].episodes.push(ep);
-    }
-    const seasons = Object.values(seasonsMap).sort((a, b) => a.season - b.season);
+    const seasons = Object.entries(seasonMap)
+      .sort(([a], [b]) => Number(a) - Number(b))
+      .map(([s, eps]) => ({ season: Number(s), episodes: eps.sort((a, b) => a.episode - b.episode) }));
 
     return res.json({
-      id,
-      title    : item.title,
-      vod_type : 'series',
-      ...meta,
-      episodeCount: episodes.length,
+      id: showName, title: showName, vod_type: 'series',
+      poster: first.poster || '', backdrop: first.poster || '',
+      genre: first.genre || '', rating: first.rating || '', lang: first.lang || '',
+      subtitleUrls: first.subtitleUrls || null,
       seasons,
-      episodes,
-    });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// GET /api/lulu/reload — reload catalog from file
-// Local (localhost) calls are allowed without auth; external calls need admin token
-app.get('/api/lulu/reload', async (req, res, next) => {
-  const isLocal = req.ip === '127.0.0.1' || req.ip === '::1' || req.ip === '::ffff:127.0.0.1';
-  if (!isLocal) {
-    // For external calls, require admin auth
-    return requireAuth(req, res, async () => {
-      if (!req.user.is_admin && req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'admin required' });
-      }
-      try {
-        await reloadLuluCatalog();
-        res.json({ success: true, count: _luluCatalog.length, timestamp: new Date(_luluCatalogTs).toISOString() });
-      } catch (e) { res.status(500).json({ error: e.message }); }
+      episodes: seasons.flatMap(s => s.episodes),
     });
   }
-  // Local call — no auth needed
-  try {
-    await reloadLuluCatalog();
-    res.json({ 
-      success: true, 
-      count: _luluCatalog.length,
-      timestamp: new Date(_luluCatalogTs).toISOString(),
-      message: `Catalog reloaded: ${_luluCatalog.length} items`
-    });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
 
-// GET /api/lulu/categories — جلب جميع التصنيفات المتاحة
-app.get('/api/lulu/categories', async (req, res) => {
-  try {
-    const genresSet = new Set();
-    _luluCatalog.forEach(item => {
-      if (item.genres) {
-        item.genres.split(',').forEach(g => genresSet.add(g.trim()));
-      }
-    });
-    const categories = Array.from(genresSet).filter(g => g).sort();
-    res.json({ categories });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// GET /api/lulu/by-genre?genre=Action&type=movie&limit=20 — جلب محتوى حسب التصنيف
-app.get('/api/lulu/by-genre', async (req, res) => {
-  try {
-    const { genre, type = 'movie', limit = 20, random = 'true' } = req.query;
-    if (!genre) return res.status(400).json({ error: 'genre required' });
-    
-    let items = _luluCatalog.filter(i => 
-      i.vod_type === type && 
-      i.genres && 
-      i.genres.toLowerCase().includes(genre.toLowerCase())
-    );
-    
-    // ترتيب عشوائي أو حسب الأحدث
-    if (random === 'true') {
-      items = items.sort(() => Math.random() - 0.5);
-    } else {
-      items = items.sort((a, b) => b.ts - a.ts);
-    }
-    
-    res.json({ items: items.slice(0, parseInt(limit)) });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// GET /api/lulu/entertainment — صفحة الترفيه (أقسام متنوعة عشوائية)
-app.get('/api/lulu/entertainment', async (req, res) => {
-  try {
-    const genres = ['Action', 'Comedy', 'Drama', 'Horror', 'Romance', 'Thriller', 'Sci-Fi', 'Adventure'];
-    const sections = {};
-    
-    genres.forEach(genre => {
-      const movies = _luluCatalog
-        .filter(i => i.vod_type === 'movie' && i.genres && i.genres.includes(genre))
-        .sort(() => Math.random() - 0.5)
-        .slice(0, 12);
-      
-      const series = _luluCatalog
-        .filter(i => i.vod_type === 'series' && i.genres && i.genres.includes(genre))
-        .sort(() => Math.random() - 0.5)
-        .slice(0, 12);
-      
-      if (movies.length > 0 || series.length > 0) {
-        sections[genre] = { movies, series };
-      }
-    });
-    
-    res.json({ sections });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// GET /api/lulu/kids — صفحة الأطفال
-app.get('/api/lulu/kids', async (req, res) => {
-  try {
-    const kidsGenres = ['Animation', 'Family', 'Kids'];
-    let kidsContent = _luluCatalog.filter(i => 
-      i.genres && kidsGenres.some(g => i.genres.includes(g))
-    );
-    
-    const movies = kidsContent
-      .filter(i => i.vod_type === 'movie')
-      .sort(() => Math.random() - 0.5)
-      .slice(0, 24);
-    
-    const series = kidsContent
-      .filter(i => i.vod_type === 'series')
-      .sort(() => Math.random() - 0.5)
-      .slice(0, 24);
-    
-    res.json({ movies, series });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// GET /api/lulu/top-rated — أعلى تقييماً
-app.get('/api/lulu/top-rated', async (req, res) => {
-  try {
-    const { type = 'movie', limit = 24 } = req.query;
-    
-    const items = _luluCatalog
-      .filter(i => i.vod_type === type && i.rating)
-      .sort((a, b) => {
-        const ratingA = parseFloat(a.rating) || 0;
-        const ratingB = parseFloat(b.rating) || 0;
-        return ratingB - ratingA;
-      })
-      .slice(0, parseInt(limit));
-    
-    res.json({ items });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ═══════════════════════════════════════════════════════════════
-// DISABLED ENDPOINTS — Xtream VOD & VidSrc (Lulu-only mode)
-// ═══════════════════════════════════════════════════════════════
-
-/**
- * POST /api/stream/vidsrc — DISABLED (Lulu-only mode)
- */
-/*
-app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => {
-  try {
-    const { file_code, id } = req.query;
-    let fc = file_code;
-
-    if (!fc && id) {
-      // جلب أول ملف من المجلد
-      const filesRes = await luluGet('/file/list', { fld_id: id, per_page: 1 });
-      const files    = filesRes?.files || [];
-      if (!files.length) return res.json({ available: false });
-      fc = files[0].file_code;
-    }
-
-    if (!fc) return res.json({ available: false });
-
-    const info = await luluGet('/file/info', { file_code: fc });
-    const f    = Array.isArray(info) ? info[0] : info;
-    const canplay = f?.canplay === 1;
-
-    res.json({
-      available : canplay,
-      fileCode  : fc,
-      hlsUrl    : `https://luluvdo.com/hls/${fc}/master.m3u8`,
-      embedUrl  : `https://luluvdo.com/e/${fc}`,
-      title     : f?.file_title || '',
-      reason    : canplay ? undefined : 'encoding',
-    });
-  } catch (e) {
-    res.status(500).json({ available: false, error: e.message });
-  }
+  res.status(400).json({ error: 'invalid params' });
 });
 
 
@@ -2601,58 +2348,90 @@ app.post('/api/stream/vidsrc', requireAuth, requirePremium, async (req, res) => 
 
 
 
-    // ═══ 2.5. VidSrc M3U8 Extractor — استخراج m3u8 مباشر من VidSrc ═══
+    // ═══ 2. Vidlink.pro — HLS مباشر (بدون iframe = بدون إعلانات) ═══
+
     try {
-      console.log(`[Stream] → VidSrc M3U8 Extractor: ${label}`);
-      const vidsrcM3u8 = await extractVidSrcM3U8({
-        tmdbId,
-        imdbId,
-        type,
-        season,
-        episode,
-      });
-      
-      if (vidsrcM3u8 && vidsrcM3u8.url) {
-        console.log(`[Stream] ✓ VidSrc M3U8: ${vidsrcM3u8.provider}`);
+
+      console.log(`[Stream] → Vidlink HLS: ${label}`);
+
+      const vidlink = await resolveVidlinkStream(tmdbId, type, season, episode);
+
+      if (vidlink && vidlink.hlsUrl) {
+
+        console.log(`[Stream] ✓ Vidlink HLS found`);
+
         await recordHistory();
+
         const arabicSubs = await arabicSubsPromise;
+
+        const allSubs = [
+
+          ...arabicSubs,
+
+          ...(vidlink.subtitles || []),
+
+        ];
+
         return res.json({
+
           success: true, streamId, ready: true,
-          hlsUrl: vidsrcM3u8.url,
-          provider: vidsrcM3u8.provider,
-          quality: vidsrcM3u8.quality,
-          subtitles: arabicSubs,
+
+          hlsUrl: vidlink.hlsUrl,
+
+          provider: 'vidlink',
+
+          subtitles: allSubs,
+
         });
+
       }
-    } catch (vme) {
-      console.log(`[Stream] VidSrc M3U8 failed: ${vme.message}`);
+
+    } catch (ve) {
+
+      console.log(`[Stream] Vidlink failed: ${ve.message}`);
+
     }
 
 
 
-    // ═══ 3. Fallback: VidSrc Embed URLs (full VidSrc mode) ═══
-    console.log(`[Stream] → VidSrc embed fallback: ${label}`);
+    // ═══ 3. Fallback: Embed URLs ═══
+
+    console.log(`[Stream] → Embed fallback: ${label}`);
 
     const [stream, arabicSubs] = await Promise.all([
+
       resolveStream(tmdbId, type, season, episode, imdbId),
+
       arabicSubsPromise,
+
     ]);
 
     if (stream && stream.embedUrl) {
+
       const proxiedUrl = `/api/embed-proxy?url=${encodeURIComponent(stream.embedUrl)}`;
-      console.log(`[Stream] ✓ VidSrc embed proxy: ${stream.provider} — ${stream.embedUrl}`);
+      console.log(`[Stream] ✓ Embed proxy: ${stream.provider} — ${stream.embedUrl}`);
 
       await recordHistory();
 
       return res.json({
+
         success: true, streamId, ready: true,
+
         embedUrl: proxiedUrl,
+
         provider: stream.provider,
+
         sources: (stream.sources || []).map(s => ({ ...s, url: `/api/embed-proxy?url=${encodeURIComponent(s.url)}` })),
+
         allEmbedUrls: (stream.allEmbedUrls || []).map(u => `/api/embed-proxy?url=${encodeURIComponent(u)}`),
+
         subtitles: arabicSubs,
+
       });
+
     }
+
+
 
     return res.status(404).json({ success: false, error: 'لا توجد مصادر بث متاحة' });
 
@@ -2674,14 +2453,6 @@ const ALLOWED_EMBED_HOSTS = [
   'vidsrc-embed.ru', 'www.vidsrc-embed.ru',
   '2embed.cc', 'www.2embed.cc',
   'vidlink.pro', 'www.vidlink.pro',
-  // VidSrc Advanced Resolver sources
-  'vidsrc.xyz', 'www.vidsrc.xyz',
-  'vidsrc.pro', 'www.vidsrc.pro',
-  'vidsrc.to', 'www.vidsrc.to',
-  'vidsrc.net', 'www.vidsrc.net',
-  // LuluStream player domains
-  'luluvdo.com', 'www.luluvdo.com',
-  'lulustream.com', 'www.lulustream.com',
 ];
 
 app.get('/api/embed-proxy', async (req, res) => {
@@ -2723,8 +2494,154 @@ app.get('/api/embed-proxy', async (req, res) => {
 
     let html = await response.text();
 
+
+
     const baseHref = `${parsedTarget.protocol}//${parsedTarget.host}/`;
-    const inject = `<base href="${baseHref}">`;
+    const inject = `<base href="${baseHref}">
+<script>
+(function(){
+  // ═══ 1. حجب window.open بالكامل ═══
+  var _noop = function(){ return {focus:function(){},blur:function(){},close:function(){},closed:true,document:{write:function(){},body:{}},location:{href:''}}; };
+  try{ Object.defineProperty(window,'open',{value:_noop,writable:false,configurable:false}); }catch(e){ window.open=_noop; }
+
+  // ═══ 2. حجب كل النقرات على روابط إعلانية ═══
+  document.addEventListener('click',function(e){
+    var el=e.target;
+    while(el&&el!==document.body){
+      if(el.tagName==='A'){
+        var href=el.getAttribute('href')||'';
+        var tgt=el.getAttribute('target')||'';
+        var rel=el.getAttribute('rel')||'';
+        // حجب أي رابط يفتح نافذة جديدة أو رابط خارجي مشبوه
+        if(tgt==='_blank'||rel.indexOf('noopener')!==-1||href.indexOf('javascript:')===0||
+           href.indexOf('//ad')!==-1||href.indexOf('click')!==-1||href.indexOf('track')!==-1){
+          e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();return false;
+        }
+      }
+      el=el.parentElement;
+    }
+  },true);
+
+  // ═══ 3. حجب mousedown/pointerdown (بعض الإعلانات تستخدمه بدل click) ═══
+  ['mousedown','pointerdown','auxclick'].forEach(function(evt){
+    document.addEventListener(evt,function(e){
+      var el=e.target;
+      while(el&&el!==document.body){
+        if(el.tagName==='A'&&(el.getAttribute('target')==='_blank')){
+          e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();return false;
+        }
+        el=el.parentElement;
+      }
+    },true);
+  });
+
+  // ═══ 4. إعادة التركيز عند سرقته ═══
+  window.addEventListener('blur',function(){setTimeout(function(){try{window.focus();}catch(e){}},100);});
+
+  // ═══ 5. حجب إنشاء iframe إعلانية ═══
+  var _origCreate = document.createElement.bind(document);
+  document.createElement = function(tag){
+    var el = _origCreate(tag);
+    if(tag.toLowerCase()==='a'){
+      setTimeout(function(){
+        if(el.target==='_blank') el.target='_self';
+        if(el.rel&&el.rel.indexOf('noopener')!==-1) el.removeAttribute('rel');
+      },0);
+    }
+    return el;
+  };
+
+  // ═══ 6. حجب شعار المصدر في المشغل — منع النقر بالكامل ═══
+  var logoSelectors=[
+    '.jw-icon-logo','.jw-logo','.jw-logo-button','[class*="logo"]','[class*="Logo"]',
+    '[class*="brand"]','[class*="Brand"]','[class*="watermark"]','[class*="Watermark"]',
+    '.plyr__logo','.vjs-logo','.vjs-watermark','[class*="provider"]',
+    '[aria-label*="logo"]','[title*="logo"]','[title*="Logo"]',
+    'a[class*="logo"]','a[class*="brand"]','a > img[class*="logo"]',
+    '[class*="source-tag"]','[class*="branding"]'
+  ].join(',');
+
+  // حجب النقر على أي شعار أو عنصر يحتوي شعار
+  ['click','mousedown','pointerdown','touchstart'].forEach(function(evt){
+    document.addEventListener(evt,function(e){
+      var el=e.target;
+      // فحص العنصر وكل أبائه
+      while(el&&el!==document.body){
+        try{
+          if(el.matches&&el.matches(logoSelectors)){
+            e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();return false;
+          }
+          // إذا كان الشعار داخل رابط — احجب الرابط أيضاً
+          if(el.tagName==='A'&&el.querySelector&&el.querySelector(logoSelectors)){
+            e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();return false;
+          }
+        }catch(x){}
+        el=el.parentElement;
+      }
+    },true);
+  });
+
+  // ═══ 7. MutationObserver — إزالة إعلانات + تعطيل شعارات ═══
+  var adSelectors='[id*="ad-"],[id*="ads-"],[id*="banner"],[class*="ad-overlay"],[class*="popup-ad"],[class*="overlay-ad"],[class*="ad-banner"],[class*="advertisement"]';
+  function cleanPage(){
+    try{
+      // إزالة عناصر إعلانية
+      document.querySelectorAll(adSelectors).forEach(function(el){
+        if(el.closest('video')||el.closest('[class*="player"]')) return;
+        el.remove();
+      });
+      document.querySelectorAll('iframe').forEach(function(f){
+        var s=f.src||'';
+        if(s.indexOf('ads')!==-1||s.indexOf('doubleclick')!==-1||s.indexOf('googlesyndication')!==-1||s.indexOf('popunder')!==-1){
+          f.remove();
+        }
+      });
+      // تعطيل الشعارات — إزالة href + pointer-events
+      document.querySelectorAll(logoSelectors).forEach(function(el){
+        el.style.pointerEvents='none';
+        el.style.cursor='default';
+        if(el.tagName==='A'){el.removeAttribute('href');el.removeAttribute('target');}
+        var parentA=el.closest('a');
+        if(parentA){parentA.removeAttribute('href');parentA.removeAttribute('target');parentA.style.pointerEvents='none';}
+        el.onclick=function(e){e.preventDefault();e.stopPropagation();return false;};
+      });
+    }catch(e){}
+  }
+  if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',cleanPage);}else{cleanPage();}
+  try{
+    new MutationObserver(function(){cleanPage();}).observe(document.documentElement,{childList:true,subtree:true});
+  }catch(e){}
+
+  // ═══ 8. حجب beforeunload (منع إعادة التوجيه) ═══
+  window.addEventListener('beforeunload',function(e){e.preventDefault();e.returnValue='';},true);
+})();
+</script>
+<style>
+/* إخفاء عناصر الإعلانات */
+[id*="ad-"],[id*="ads-"],[id*="banner"],[class*="ad-banner"],
+[class*="advertisement"],[class*="overlay-ad"],[class*="popup-ad"],
+[class*="ad-overlay"],[class*="popunder"],[class*="pop-up"],
+iframe[src*="ads"],iframe[src*="doubleclick"],
+iframe[src*="googlesyndication"],iframe[src*="popunder"] {
+  display:none!important;visibility:hidden!important;
+  pointer-events:none!important;width:0!important;height:0!important;overflow:hidden!important;
+}
+/* تعطيل شعار المصدر في المشغل */
+.jw-icon-logo,.jw-logo,.jw-logo-button,
+.plyr__logo,.vjs-logo,.vjs-watermark,
+[class*="watermark"],[class*="Watermark"],
+[class*="branding"],[class*="source-tag"],
+[class*="provider-logo"] {
+  pointer-events:none!important;
+  cursor:default!important;
+}
+.jw-icon-logo a,.jw-logo a,[class*="logo"] a,[class*="brand"] a,
+a.jw-logo,a[class*="logo"],a[class*="brand"],a[class*="watermark"] {
+  pointer-events:none!important;
+  cursor:default!important;
+}
+</style>`;
+
 
 
     if (html.includes('<head>')) {
@@ -3444,51 +3361,69 @@ app.get('/api/xtream/channels', async (req, res) => {
  */
 
 app.get('/api/xtream/stream/:channelId', async (req, res) => {
+
   try {
-    // Look up channel + its IPTV account (each channel has its own account)
-    const ch = await db.prepare(`
-      SELECT c.id, c.name, c.logo, c.category, c.stream_id, c.account_id,
-             a.server_url, a.username, a.password
-      FROM xtream_channels c
-      LEFT JOIN iptv_accounts a ON c.account_id = a.id
-      WHERE c.id = ? OR c.stream_id = ?
-    `).get(req.params.channelId, Number(req.params.channelId) || -1);
 
-    if (!ch)            return res.status(404).json({ error: 'channel not found' });
-    if (!ch.server_url) return res.status(400).json({ error: 'القناة غير مرتبطة بحساب IPTV' });
+    const ch = await db.prepare(
 
-    // Build Xtream live URL — stream-manager will rewrite .m3u8 → .ts automatically
-    const iptvUrl = `${ch.server_url}/live/${ch.username}/${ch.password}/${ch.stream_id}.m3u8`;
-    const streamKey = `xtream_live_${ch.stream_id}`;
+      'SELECT id, name, logo, category, stream_id, base_url FROM xtream_channels WHERE id = ?'
 
-    const result = await streamManager.requestStream(streamKey, 'live', iptvUrl, ch.name);
-    if (!result.success) {
-      console.error('[Xtream] start failed:', ch.name, result.error);
-      return res.status(500).json({ error: 'فشل بدء البث', details: result.error });
-    }
+    ).get(req.params.channelId);
+
+
+
+    if (!ch) return res.status(404).json({ error: 'channel not found' });
+
+
+
+    const token = jwt.sign({ sid: String(ch.stream_id), t: 'xt' }, config.JWT_SECRET, { expiresIn: '6h' });
+
+
+
+    const sid = `web_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+    const base = encodeURIComponent(ch.base_url || XTREAM.primary);
+
+    // Pre-warm manifest cache (non-blocking) so first browser request is instant
+    try {
+      xtreamProxy.getManifest(String(ch.stream_id), ch.base_url || XTREAM.primary, sid).catch(() => {});
+    } catch {}
 
     res.json({
-      success : true,
-      name    : ch.name,
-      logo    : ch.logo,
-      category: ch.category,
-      hlsUrl  : result.hlsUrl,              // /hls/xtream_live_<id>/stream.m3u8
-      ready   : result.ready,
-      waiting : result.waiting,
-      streamId: ch.stream_id,
-    });
-  } catch (e) {
-    console.error('[Xtream] stream error:', e.message);
-    res.status(500).json({ error: 'فشل جلب رابط البث' });
-  }
-});
 
-// GET /api/xtream/stream-ready/:streamId — poll readiness (first segment available)
-app.get('/api/xtream/stream-ready/:streamId', (req, res) => {
-  const key = `xtream_live_${req.params.streamId}`;
-  const ready = streamManager.isReady(key, 'live');
-  const info  = streamManager.getStreamInfo(key);
-  res.json({ ready, info });
+      success  : true,
+
+      name     : ch.name,
+
+      logo     : ch.logo,
+
+      category : ch.category,
+
+      // hlsUrl: HLS proxy — absolute URL so browser connects directly to VPS (no Next.js middleman)
+
+      // Relative URL — web-app proxies via Next.js rewrites so HTTPS site can reach HTTP cloud
+      hlsUrl   : `/proxy/live/${ch.stream_id}/index.m3u8?sid=${sid}&base=${base}`,
+
+      // directUrl: mobile/ExoPlayer follows 302 redirect directly to IPTV
+
+      directUrl: `/xtream-play/${token}/index.m3u8`,
+
+      // proxyUrl: raw TS pipe (legacy, persistent connection — avoid for multi-channel)
+
+      proxyUrl : `/xtream-pipe/${token}`,
+
+      streamId : ch.stream_id,
+
+    });
+
+  } catch (e) {
+
+    console.error('[Xtream] stream error:', e.message);
+
+    res.status(500).json({ error: 'فشل جلب رابط البث' });
+
+  }
+
 });
 
 
@@ -3537,7 +3472,11 @@ app.get('/api/xtream/viewers', requireAuth, (req, res) => {
 
   }
 
-  res.json({ success: true, viewers: {}, total: 0 });
+  const viewers = xtreamProxy.getAllViewers();
+
+  const total   = xtreamProxy.getTotalViewers();
+
+  res.json({ success: true, viewers, total });
 
 });
 
@@ -3551,8 +3490,149 @@ app.get('/api/xtream/viewers', requireAuth, (req, res) => {
 
 
 
-// Legacy /proxy/live/* routes removed.
-// Xtream live channels now flow through POST /api/stream/live/:channelId → StreamManager (FFmpeg).
+/**
+
+ * GET /proxy/live/:streamId/index.m3u8
+
+ * Proxy HLS manifest â€” rewrites segment URLs through our server
+
+ * Viewer session tracked by ?sid param
+
+ */
+
+app.get('/proxy/live/:streamId/index.m3u8', async (req, res) => {
+
+  const { streamId } = req.params;
+
+  const sessionId = req.query.sid || req.ip || 'anon';
+
+  let baseUrl = XTREAM.primary;
+
+  try { if (req.query.base) baseUrl = decodeURIComponent(req.query.base); } catch {}
+
+
+
+  try {
+
+    const manifest = await xtreamProxy.getManifest(streamId, baseUrl, sessionId);
+
+    res.set({
+
+      'Content-Type'                : 'application/vnd.apple.mpegurl',
+
+      'Cache-Control'               : 'no-cache, no-store',
+
+      'Access-Control-Allow-Origin' : '*',
+
+    });
+
+    res.send(manifest);
+
+  } catch (e) {
+
+    console.error(`[Proxy] Manifest ${streamId}: ${e.message}`);
+
+    res.status(502).json({ error: 'Ø§Ù„Ø¨Ø« ØºÙŠØ± Ù…ØªØ§Ø­ Ø­Ø§Ù„ÙŠØ§Ù‹' });
+
+  }
+
+});
+
+
+
+/**
+
+ * GET /proxy/live/:streamId/seg/:encodedPath
+
+ * Proxy TS segment â€” cached, shared across viewers
+
+ */
+
+app.get('/proxy/live/:streamId/seg/:encodedPath(*)', async (req, res) => {
+
+  const { streamId, encodedPath } = req.params;
+
+  const sessionId = req.query.sid || req.ip || 'anon';
+
+  let baseUrl = XTREAM.primary;
+
+  try { if (req.query.base) baseUrl = decodeURIComponent(req.query.base); } catch {}
+
+
+
+  try {
+
+    const { buf, contentType } = await xtreamProxy.getSegment(streamId, encodedPath, baseUrl, sessionId);
+
+    res.set({
+
+      'Content-Type'                : contentType,
+
+      'Content-Length'              : buf.length,
+
+      'Cache-Control'               : 'public, max-age=10',
+
+      'Access-Control-Allow-Origin' : '*',
+
+    });
+
+    res.send(buf);
+
+  } catch (e) {
+
+    console.error(`[Proxy] Segment ${streamId}: ${e.message}`);
+
+    res.status(502).end();
+
+  }
+
+});
+
+
+
+/**
+
+ * GET /proxy/live/:streamId/sub/:encodedUrl
+
+ * Proxy sub-manifest (quality variants)
+
+ */
+
+app.get('/proxy/live/:streamId/sub/:encodedUrl(*)', async (req, res) => {
+
+  const { streamId, encodedUrl } = req.params;
+
+  const sessionId = req.query.sid || req.ip || 'anon';
+
+
+
+  try {
+
+    const manifest = await xtreamProxy.getSubManifest(streamId, encodedUrl, sessionId);
+
+    res.set({
+
+      'Content-Type'                : 'application/vnd.apple.mpegurl',
+
+      'Cache-Control'               : 'no-cache, no-store',
+
+      'Access-Control-Allow-Origin' : '*',
+
+    });
+
+    res.send(manifest);
+
+  } catch (e) {
+
+    console.error(`[Proxy] Sub-manifest ${streamId}: ${e.message}`);
+
+    res.status(502).end();
+
+  }
+
+});
+
+
 
 
 
@@ -3578,6 +3658,10 @@ app.get('/health', (req, res) => {
 
     activeStreams: streamManager.getActiveStreams().length,
 
+    liveViewers: xtreamProxy.getTotalViewers(),
+
+    liveChannels: Object.keys(xtreamProxy.getAllViewers()).length,
+
     vodSessions: vodProxy.getActiveSessions().length,
 
     hlsSessions: hlsProxy.sessions.size,
@@ -3593,112 +3677,6 @@ app.get('/health', (req, res) => {
     },
 
   });
-
-});
-
-
-
-// ═══ TEST ENDPOINT - بدء بث بدون JWT (للاختبار فقط) ═══
-
-app.get('/test/start-stream/:channelId', async (req, res) => {
-
-  const channelId = req.params.channelId;
-
-  
-
-  try {
-
-    // الحصول على معلومات القناة
-
-    const xch = await db.prepare('SELECT id, name, logo, category, stream_id, base_url, account_id FROM xtream_channels WHERE stream_id = ? OR id = ?').get(Number(channelId), channelId);
-
-    
-
-    if (!xch) {
-
-      return res.status(404).json({ error: 'القناة غير موجودة', channelId });
-
-    }
-
-
-
-    // الحصول على بيانات الحساب
-
-    const account = await db.prepare('SELECT server_url, username, password FROM iptv_accounts WHERE id = ?').get(xch.account_id);
-
-    
-
-    if (!account) {
-
-      return res.status(500).json({ error: 'حساب IPTV غير موجود', channelId: xch.stream_id });
-
-    }
-
-
-
-    // بناء رابط IPTV المباشر
-
-    const iptvUrl = `${account.server_url}/live/${account.username}/${account.password}/${xch.stream_id}.m3u8`;
-
-    
-
-    console.log(`[TEST] Starting FFmpeg for channel ${xch.name} (${xch.stream_id})`);
-
-    
-
-    // بدء FFmpeg
-
-    const result = await streamManager.requestStream(
-
-      `xtream_live_${xch.stream_id}`,
-
-      'live',
-
-      iptvUrl,
-
-      xch.name
-
-    );
-
-
-
-    if (!result.success) {
-
-      return res.status(500).json({ error: 'فشل بدء البث', details: result.error });
-
-    }
-
-
-
-    res.json({
-
-      success: true,
-
-      message: 'تم بدء البث بنجاح',
-
-      channelId: xch.stream_id,
-
-      channelName: xch.name,
-
-      hlsUrl: `/hls/xtream_live_${xch.stream_id}/stream.m3u8`,
-
-      fullUrl: `http://62.171.153.204:8090/hls/xtream_live_${xch.stream_id}/stream.m3u8`,
-
-      ready: result.ready || false,
-
-      waiting: result.waiting || false,
-
-      instructions: 'انتظر 5-10 ثواني ثم افتح fullUrl في VLC',
-
-    });
-
-  } catch (error) {
-
-    console.error('[TEST] Error:', error);
-
-    res.status(500).json({ error: error.message });
-
-  }
 
 });
 
@@ -3992,12 +3970,15 @@ app.get('/api/admin/cloud-channels', requireAuth, async (req, res) => {
 app.delete('/api/admin/cloud-channels/:id', requireAuth, async (req, res) => {
   if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
   await db.prepare('DELETE FROM xtream_channels WHERE id = ?').run(req.params.id);
+  // Clear cached credentials
+  xtreamProxy._channelCreds.delete(req.params.id);
   res.json({ success: true });
 });
 
 app.delete('/api/admin/cloud-channels', requireAuth, async (req, res) => {
   if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
   await db.prepare('DELETE FROM xtream_channels').run();
+  xtreamProxy._channelCreds.clear();
   res.json({ success: true });
 });
 
@@ -4007,6 +3988,9 @@ app.post('/api/admin/channel-refresh/:id', requireAuth, async (req, res) => {
   if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
   try {
     const result = await refreshChannelStream(db, req.params.id);
+    // Clear proxy cache so next request fetches fresh
+    xtreamProxy._manifests.delete(result.streamId?.toString());
+    xtreamProxy._channelCreds.delete(req.params.id);
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -4042,7 +4026,7 @@ app.post('/api/admin/channel-toggle-stream/:id', requireAuth, async (req, res) =
   const isStreaming = !!streaming;
 
   // If starting stream, just confirm channel is linked to an IPTV account.
-  // Actual playback errors are logged by FFmpeg stderr via StreamManager.
+  // Actual playback errors are logged by the HLS proxy (xtream-proxy.js) at runtime.
   if (isStreaming) {
     const info = await getChannelAccount(db, channelId);
     if (!info || !info.account) {
@@ -4051,6 +4035,8 @@ app.post('/api/admin/channel-toggle-stream/:id', requireAuth, async (req, res) =
   }
 
   await db.prepare('UPDATE xtream_channels SET is_streaming = ? WHERE id = ?').run(isStreaming, channelId);
+  // Clear proxy cache
+  xtreamProxy._channelCreds.delete(channelId);
   res.json({ success: true, is_streaming: isStreaming });
 });
 
@@ -4165,35 +4151,18 @@ const server = app.listen(config.PORT, config.HOST, async () => {
 
   liveProxy.start();
 
+  xtreamProxy.setDB(db);
+
+  xtreamProxy.start();
+
+
+
   // Initialize Xtream from DB (load default account for legacy compat)
   initXtreamFromDB(db).catch(e => console.error('[Init] Xtream init error:', e.message));
 
   // Sync channels from backend PostgreSQL on startup
   syncChannelsFromBackend(true).catch(e => console.error('[Sync] Startup error:', e.message));
   setInterval(() => syncChannelsFromBackend(true).catch(() => {}), CHANNEL_SYNC_INTERVAL);
-
-  // ─── تحميل كتالوج LuluStream من قاعدة البيانات ───────────────────────────
-  await _loadLuluCatalogFromDB();
-  if (_luluCatalog && _luluCatalog.length > 0) {
-    console.log(`[Lulu] ✅ DB catalog loaded: ${_luluCatalog.length} items`);
-  } else {
-    console.log('[Lulu] ⚠️  No items in lulu_catalog table yet. Upload content via lulu-uploader.');
-  }
-
-  // ─── تحديث تلقائي للكتالوج كل 5 دقائق ───────────────────────────────────
-  const LULU_RELOAD_INTERVAL = 5 * 60 * 1000; // 5 دقائق
-  setInterval(async () => {
-    try {
-      const oldCount = _luluCatalog.length;
-      await _loadLuluCatalogFromDB();
-      const newCount = _luluCatalog.length;
-      if (newCount !== oldCount) {
-        console.log(`[Lulu] 🔄 Catalog auto-reloaded: ${oldCount} → ${newCount} items`);
-      }
-    } catch (e) {
-      console.error('[Lulu] Auto-reload error:', e.message);
-    }
-  }, LULU_RELOAD_INTERVAL);
 
 
 
@@ -4227,54 +4196,6 @@ const server = app.listen(config.PORT, config.HOST, async () => {
 
   }
 
-  // ═══ Always-On: Pre-warm ALL live Xtream channels on startup ═══
-  // Starts FFmpeg for every channel so they're instantly ready when viewers tune in.
-  setTimeout(async () => {
-    try {
-      const channels = await db.prepare(`
-        SELECT c.id, c.name, c.stream_id, c.account_id,
-               a.server_url, a.username, a.password
-        FROM xtream_channels c
-        LEFT JOIN iptv_accounts a ON c.account_id = a.id
-        WHERE c.is_streaming = true AND a.server_url IS NOT NULL
-      `).all();
-
-      if (!channels || channels.length === 0) {
-        console.log('[PreWarm] No xtream channels found to pre-warm');
-        return;
-      }
-
-      console.log(`[PreWarm] 🔥 Starting ${channels.length} always-on channels...`);
-      let ok = 0, fail = 0;
-
-      for (const ch of channels) {
-        const iptvUrl = `${ch.server_url}/live/${ch.username}/${ch.password}/${ch.stream_id}.m3u8`;
-        const streamKey = `xtream_live_${ch.stream_id}`;
-
-        try {
-          const result = await streamManager.requestStream(streamKey, 'live', iptvUrl, ch.name);
-          if (result.success) {
-            streamManager.markPermanent(streamKey);
-            ok++;
-          } else {
-            fail++;
-            console.error(`[PreWarm] ❌ ${ch.name}: ${result.error}`);
-          }
-        } catch (e) {
-          fail++;
-          console.error(`[PreWarm] ❌ ${ch.name}: ${e.message}`);
-        }
-
-        // Small stagger to avoid hammering IPTV provider all at once
-        await new Promise(r => setTimeout(r, 500));
-      }
-
-      console.log(`[PreWarm] ✅ ${ok} channels started, ${fail} failed`);
-    } catch (e) {
-      console.error('[PreWarm] Error:', e.message);
-    }
-  }, 5000); // Wait 5s after startup for DB sync to complete
-
 });
 
 
@@ -4288,6 +4209,8 @@ const shutdown = async () => {
   vodProxy.stop();
 
   hlsProxy.stop();
+
+  xtreamProxy.stop();
 
   if (db) db.close();
 

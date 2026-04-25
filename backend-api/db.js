@@ -241,6 +241,14 @@ db.init = async function () {
     CREATE INDEX IF NOT EXISTS idx_channels_xtream ON channels(xtream_id);
   `);
 
+  // ─── Migration: add is_direct_passthrough column if missing ──────
+  try {
+    await pool.query('ALTER TABLE channels ADD COLUMN IF NOT EXISTS is_direct_passthrough INTEGER DEFAULT 0');
+    console.log('[DB] Migration: is_direct_passthrough column added');
+  } catch (e) {
+    console.log('[DB] Migration: is_direct_passthrough already exists or error:', e.message);
+  }
+
   // ─── Seed: default subscription plans (with connection variants) ───
   const { rows } = await pool.query('SELECT COUNT(*) as cnt FROM subscription_plans');
   if (parseInt(rows[0].cnt) === 0) {

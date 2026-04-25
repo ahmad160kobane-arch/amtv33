@@ -28,7 +28,7 @@ router.get('/', async (req, res) => {
     const pOffset = parseInt(offset) || 0;
 
     let sql = `SELECT id, name, group_name as "group", logo_url as logo,
-               is_enabled as enabled, is_direct_passthrough, 1 as is_streaming, 0 as viewers
+               is_enabled as enabled, 1 as is_streaming, 0 as viewers
                FROM channels ${where} ORDER BY group_name, name`;
 
     if (pLimit > 0) {
@@ -72,25 +72,8 @@ router.get('/:id', async (req, res) => {
 
 // GET /api/stream/:id - Get stream URL via cloud server (requires premium)
 router.get('/stream/:id', requireAuth, requirePremium, async (req, res) => {
-  const ch = await db.prepare('SELECT id, name, logo_url, stream_url, is_direct_passthrough FROM channels WHERE id = ? AND is_enabled = 1').get(req.params.id);
+  const ch = await db.prepare('SELECT id, name, logo_url, stream_url FROM channels WHERE id = ? AND is_enabled = 1').get(req.params.id);
   if (!ch) return res.status(404).json({ error: 'القناة غير متاحة' });
-
-  // إذا كانت القناة مباشرة (Direct Passthrough)، أرجع الرابط مباشرة بدون إعادة بث
-  if (ch.is_direct_passthrough === 1) {
-    // Log to watch history
-    try {
-      await db.prepare('INSERT INTO watch_history (id, user_id, item_id, item_type, title, poster, content_type, watched_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())')
-        .run(uuidv4(), req.user.id, ch.id, 'channel', ch.name || '', ch.logo_url || '', 'channel');
-    } catch {}
-    
-    return res.json({ 
-      url: ch.stream_url, 
-      direct: true,
-      ready: true,
-      name: ch.name,
-      logo: ch.logo_url
-    });
-  }
 
   // شغّل البث عبر السيرفر السحابي (لا نكشف رابط IPTV المباشر)
   const cloud = require('../lib/cloud');

@@ -4,8 +4,6 @@ import { useSearchParams } from 'next/navigation';
 import { fetchFreeChannels, requestFreeStream, FreeChannel } from '@/constants/api';
 import { SkeletonChannelCard } from '@/components/Skeleton';
 import LivePlayer from '@/components/LivePlayer';
-import { useAuth } from '@/context/AuthContext';
-import AuthPrompt from '@/components/AuthPrompt';
 
 interface ChannelGridProps {
   loading: boolean;
@@ -97,12 +95,8 @@ function LiveContent() {
   const [streamUrl, setStreamUrl] = useState('');
   const [streamLoading, setStreamLoading] = useState(false);
   const [streamError, setStreamError] = useState('');
-  const { user } = useAuth();
-  const isPremium = user?.plan === 'premium';
-  const [showAuthPrompt, setShowAuthPrompt] = useState(false);
 
   const selectChannel = useCallback(async (ch: FreeChannel) => {
-    if (!isPremium) { setShowAuthPrompt(true); return; }
     setActiveChannel(ch);
     setStreamUrl('');
     setStreamError('');
@@ -120,7 +114,7 @@ function LiveContent() {
     } finally {
       setStreamLoading(false);
     }
-  }, [isPremium]);
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -228,7 +222,6 @@ function LiveContent() {
 
         </div>
       </div>
-      {showAuthPrompt && <AuthPrompt type="premium" onClose={() => setShowAuthPrompt(false)} />}
     </div>
   );
 }

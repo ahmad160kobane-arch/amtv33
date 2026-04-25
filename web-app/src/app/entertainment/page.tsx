@@ -1,7 +1,6 @@
 'use client';
-import React, { useEffect, useState, useCallback, Suspense } from 'react';
-import { useSearchParams } from 'next/navigation';
-import { fetchLuluList, LuluItem } from '@/constants/api';
+import React, { useEffect, useState, useCallback } from 'react';
+import { fetchVidsrcBrowse, searchVidsrc, VidsrcItem } from '@/constants/api';
 import ContentCard from '@/components/ContentCard';
 import { SkeletonGrid } from '@/components/Skeleton';
 
@@ -11,73 +10,40 @@ const TYPES = [
   { id: 'series', label: 'مسلسلات' },
 ];
 
-function EntertainmentContent() {
-  const searchParams = useSearchParams();
-  const genreParam = searchParams.get('genre');
-  
-  const [activeType, setActiveType] = useState<'movie' | 'series' | ''>('');
+export default function EntertainmentPage() {
+  const [activeType, setActiveType] = useState('');
   const [search, setSearch] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const [genre, setGenre] = useState(genreParam || '');
 
-  const [items, setItems] = useState<LuluItem[]>([]);
+  const [items, setItems] = useState<VidsrcItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
 
-  // تحديث التصنيف من URL
-  useEffect(() => {
-    if (genreParam) {
-      setGenre(genreParam);
-    }
-  }, [genreParam]);
-
   const load = useCallback(async (p = 1, reset = false) => {
     if (p === 1) setLoading(true); else setLoadingMore(true);
     try {
-      let newItems: LuluItem[] = [];
-      let moreAvailable = false;
-
-      // إذا كان هناك تصنيف محدد، استخدم API التصنيف
-      if (genre) {
-        const type = activeType || 'movie';
-        const response = await fetch(`/api/lulu/by-genre?genre=${genre}&type=${type}&limit=24&random=false`);
-        const data = await response.json();
-        newItems = data.items || [];
-        moreAvailable = false; // التصنيفات لا تدعم pagination حالياً
-      } else if (activeType === '') {
-        const [moviesData, seriesData] = await Promise.all([
-          fetchLuluList({ type: 'movie', page: p, search: searchQuery.trim() || undefined }),
-          fetchLuluList({ type: 'series', page: p, search: searchQuery.trim() || undefined }),
-        ]);
-        newItems = [...(moviesData.items || []), ...(seriesData.items || [])];
-        moreAvailable = (moviesData.hasMore ?? false) || (seriesData.hasMore ?? false);
+      if (searchQuery.trim()) {
+        const results = await searchVidsrc(searchQuery);
+        setItems(reset ? results : prev => [...prev, ...results]);
+        setHasMore(false);
       } else {
-        const data = await fetchLuluList({
-          type: activeType as 'movie' | 'series',
-          page: p,
-          search: searchQuery.trim() || undefined,
-        });
-        newItems = data.items || [];
-        moreAvailable = data.hasMore ?? newItems.length >= 20;
+        const apiType = activeType === 'series' ? 'tv' : (activeType === 'movie' ? 'movie' : undefined);
+        const data = await fetchVidsrcBrowse({ type: apiType, page: p });
+        const newItems = data.items || [];
+        setItems(prev => reset ? newItems : [...prev, ...newItems]);
+        setHasMore(data.hasMore ?? newItems.length >= 20);
       }
-
-      setItems(prev => reset ? newItems : [...prev, ...newItems]);
-      setHasMore(moreAvailable);
     } catch (e) {
       console.error('Content load error:', e);
     } finally {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [activeType, searchQuery, genre]);
+  }, [activeType, searchQuery]);
 
-  useEffect(() => { 
-    setPage(1); 
-    load(1, true); 
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeType, searchQuery, genre]);
+  useEffect(() => { setPage(1); load(1, true); }, [activeType, searchQuery]);
 
   const loadMore = () => {
     const next = page + 1;
@@ -90,14 +56,13 @@ function EntertainmentContent() {
     setSearchQuery(search);
   };
 
-  const toCard = (item: LuluItem) => ({
+  const toCard = (item: VidsrcItem) => ({
     id: item.id,
     title: item.title,
     poster: item.poster,
     vod_type: item.vod_type,
     year: item.year,
     rating: item.rating,
-    source: 'lulu' as const,
   });
 
   return (
@@ -106,9 +71,7 @@ function EntertainmentContent() {
         {/* Header - hidden on mobile (shown in bottom nav), visible on desktop */}
         <div className="hidden md:flex pt-4 pb-2 items-center gap-2">
           <svg className="w-6 h-6 text-brand-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="15" rx="2" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M17 2L12 7L7 2" /><polygon points="10,11 10,17 16,14" fill="currentColor" stroke="none" /></svg>
-          <h1 className="text-xl font-black text-light-text dark:text-dark-text">
-            {genre ? (genre === 'Action' ? '🔥 أكشن' : genre === 'Drama' ? '🎭 دراما' : genre === 'Comedy' ? '😂 كوميديا' : genre === 'Horror' ? '👻 رعب' : genre === 'Romance' ? '💕 رومانسي' : genre === 'Thriller' ? '🔪 إثارة' : genre) : 'ترفيه'}
-          </h1>
+          <h1 className="text-xl font-black text-light-text dark:text-dark-text">ترفيه</h1>
         </div>
 
         {/* Search + Type filters — compact on mobile like the app */}
@@ -137,7 +100,7 @@ function EntertainmentContent() {
           {TYPES.map(t => (
             <button
               key={t.id}
-              onClick={() => { setActiveType(t.id as '' | 'movie' | 'series'); setSearchQuery(''); setSearch(''); }}
+              onClick={() => { setActiveType(t.id); setSearchQuery(''); setSearch(''); }}
               className={`flex-shrink-0 px-2.5 md:px-3.5 py-2 md:py-2.5 rounded-[10px] md:rounded-xl text-xs md:text-sm font-bold transition ${
                 activeType === t.id
                   ? 'bg-brand-primary text-black'
@@ -162,7 +125,7 @@ function EntertainmentContent() {
           <>
             <div className="grid grid-cols-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 md:gap-3">
               {items.map((item, i) => (
-                <ContentCard key={`${item.id}_${i}`} item={toCard(item)} />
+                <ContentCard key={`${item.id}_${i}`} item={toCard(item) as any} />
               ))}
             </div>
             {hasMore && (
@@ -180,13 +143,5 @@ function EntertainmentContent() {
         )}
       </div>
     </div>
-  );
-}
-
-export default function EntertainmentPage() {
-  return (
-    <Suspense fallback={<SkeletonGrid count={24} />}>
-      <EntertainmentContent />
-    </Suspense>
   );
 }

@@ -5,11 +5,7 @@ import { fetchLuluList, LuluItem } from '@/constants/api';
 import ContentCard from '@/components/ContentCard';
 import { SkeletonGrid } from '@/components/Skeleton';
 
-const TYPES = [
-  { id: '', label: 'الكل' },
-  { id: 'movie', label: 'أفلام' }, 
-  { id: 'series', label: 'مسلسلات' },
-];
+const TYPES = [{ id: 'movie', label: 'أفلام' }, { id: 'series', label: 'مسلسلات' }];
 
 function AllContentContent() {
   const params = useSearchParams();
@@ -21,37 +17,17 @@ function AllContentContent() {
   const [hasMore, setHasMore] = useState(true);
   const [search, setSearch] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const paramType = params.get('type');
-  const [activeType, setActiveType] = useState<'movie' | 'series' | ''>(
-    (paramType as 'movie' | 'series' | '') || ''
+  const [activeType, setActiveType] = useState<'movie' | 'series'>(
+    (params.get('type') as 'movie' | 'series') || 'movie'
   );
 
   const load = useCallback(async (p = 1, reset = false) => {
     if (p === 1) setLoading(true); else setLoadingMore(true);
     try {
-      let newItems: LuluItem[] = [];
-      let moreAvailable = false;
-
-      if (activeType === '') {
-        // الكل: دمج أفلام + مسلسلات
-        const [moviesData, seriesData] = await Promise.all([
-          fetchLuluList({ type: 'movie', page: p, search: searchQuery.trim() || undefined }),
-          fetchLuluList({ type: 'series', page: p, search: searchQuery.trim() || undefined }),
-        ]);
-        newItems = [...(moviesData.items || []), ...(seriesData.items || [])];
-        moreAvailable = (moviesData.hasMore ?? false) || (seriesData.hasMore ?? false);
-      } else {
-        const data = await fetchLuluList({
-          type: activeType as 'movie' | 'series',
-          page: p,
-          search: searchQuery.trim() || undefined,
-        });
-        newItems = data.items || [];
-        moreAvailable = data.hasMore ?? newItems.length >= 20;
-      }
-
+      const data = await fetchLuluList({ type: activeType, page: p, search: searchQuery || undefined });
+      const newItems = data.items || [];
       setItems(prev => reset ? newItems : [...prev, ...newItems]);
-      setHasMore(moreAvailable);
+      setHasMore(data.hasMore);
     } catch (e) {
       console.error('Content load error:', e);
     } finally {
@@ -60,24 +36,20 @@ function AllContentContent() {
     }
   }, [activeType, searchQuery]);
 
-  useEffect(() => { 
-    setPage(1); 
-    load(1, true); 
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeType, searchQuery]);
+  useEffect(() => { setPage(1); load(1, true); }, [activeType, searchQuery]);
 
   const loadMore = () => { const next = page + 1; setPage(next); load(next); };
 
   const handleSearch = (e: React.FormEvent) => { e.preventDefault(); setSearchQuery(search); };
 
   const toCard = (item: LuluItem) => ({
-    id: item.id,
-    title: item.title,
+    id    : item.id,
+    title : item.title,
     poster: item.poster,
     vod_type: item.vod_type,
-    year: item.year,
+    year  : item.year,
     rating: item.rating,
-    source: 'lulu' as const,
+    source: 'lulu',
   });
 
   return (
@@ -103,7 +75,7 @@ function AllContentContent() {
 
           <div className="flex gap-2 overflow-x-auto no-scrollbar pb-2 mb-2">
             {TYPES.map(t => (
-              <button key={t.id} onClick={() => { setActiveType(t.id as 'movie' | 'series' | ''); setSearchQuery(''); setSearch(''); }}
+              <button key={t.id} onClick={() => { setActiveType(t.id as 'movie' | 'series'); setSearchQuery(''); setSearch(''); }}
                 className={`flex-shrink-0 px-3 py-1.5 rounded-lg text-sm font-medium transition ${activeType === t.id ? 'bg-brand-primary text-black' : 'bg-light-input dark:bg-dark-input text-light-muted dark:text-dark-muted hover:text-light-text dark:hover:text-dark-text'}`}
               >{t.label}</button>
             ))}
@@ -123,7 +95,7 @@ function AllContentContent() {
           <>
             <div className="grid grid-cols-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 md:gap-3">
               {items.map((item, i) => (
-                <ContentCard key={`${item.id}_${i}`} item={toCard(item)} />
+                <ContentCard key={`${item.id}_${i}`} item={toCard(item) as any} />
               ))}
             </div>
             {hasMore && (

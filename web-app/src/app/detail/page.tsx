@@ -1,7 +1,7 @@
 'use client';
 import React, { useEffect, useState, useCallback, useRef, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { fetchVidsrcDetail, requestVidsrcStream, fetchLuluDetail, checkFavorite, toggleFavorite, addWatchHistory, isLoggedIn, VidsrcDetail, VidsrcEpisode } from '@/constants/api';
+import { fetchVidsrcDetail, fetchLuluDetail, requestVidsrcStream, requestLuluStream, checkFavorite, toggleFavorite, addWatchHistory, isLoggedIn, VidsrcDetail, VidsrcEpisode } from '@/constants/api';
 import VodPlayer from '@/components/VodPlayer';
 
 /* ─── YouTube-style Detail Page ─────────────────────────────────── */
@@ -47,40 +47,36 @@ function DetailContent() {
     if (!contentId) return;
     try {
       if (sourceLulu) {
-        // LuluStream: جلب التفاصيل مباشرةً من lulu API (مع بيانات TMDB المُثراة)
-        const data = await fetchLuluDetail(contentId);
-        if (data) {
+        // ── جلب التفاصيل من LuluStream مباشرة ──
+        const luluType = (vodType === 'series' || vodType === 'tv') ? 'series' : 'movie';
+        const lData = await fetchLuluDetail(contentId, luluType);
+        if (lData) {
+          // تحويل LuluDetail → VidsrcDetail
+          const episodes: VidsrcEpisode[] = (lData.episodes || []).map(e => ({
+            id        : e.id,
+            episode   : e.episode,
+            season    : e.season,
+            title     : e.title,
+            luluHls      : e.hlsUrl,
+            luluEmbed    : e.embedUrl,
+            subtitleUrls : e.subtitleUrls || null,
+          }));
+          const seasonNums = Array.from(new Set(episodes.map(e => e.season))).sort((a, b) => a - b);
           setDetail({
-            title       : data.title,
-            poster      : data.poster   || '',
-            backdrop    : data.backdrop || data.poster || '',
-            vod_type    : data.vod_type,
-            tmdb_id     : data.tmdb_id  || '',
-            imdb_id     : data.imdb_id  || '',
-            description : data.plot     || '',
-            rating      : data.rating   || '',
-            year        : data.year     || '',
-            genres      : data.genres   || [],
-            cast        : data.cast     || '',
-            director    : data.director || '',
-            country     : data.country  || '',
-            runtime     : data.runtime  || '',
-            tagline     : data.tagline  || '',
-            seasons     : (data.seasons?.map(s => s.season) || []) as any,
-            episodes    : (data.episodes?.map(ep => ({
-              season   : ep.season,
-              episode  : ep.episode,
-              title    : ep.title,
-              thumbnail: ep.thumbnail || '',
-              fileCode : ep.fileCode,
-              embedUrl : ep.embedUrl,
-              hlsUrl   : ep.hlsUrl,
-            })) || []) as any,
-            // أحتفظ بـ embed و hls للأفلام
-            luluHls     : data.hlsUrl,
-            luluEmbed   : data.embedUrl,
-            luluFileCode: data.fileCode,
-          } as any);
+            id         : lData.id,
+            title      : lData.title,
+            poster     : lData.poster || paramPoster,
+            backdrop   : lData.backdrop || lData.poster || paramPoster,
+            description: [lData.lang && `🌐 ${lData.lang}`, lData.genre && `🎭 ${lData.genre}`].filter(Boolean).join('   '),
+            vod_type   : lData.vod_type,
+            year       : lData.year || '',
+            rating     : lData.rating || '',
+            seasons    : seasonNums,
+            episodes,
+            luluHls      : lData.hlsUrl,
+            luluEmbed    : lData.embedUrl,
+            subtitleUrls : lData.subtitleUrls || null,
+          } as VidsrcDetail);
         }
       } else {
         const data = await fetchVidsrcDetail(fetchType as 'movie' | 'tv', contentId);
@@ -97,11 +93,58 @@ function DetailContent() {
     } finally {
       setLoading(false);
     }
-  }, [contentId, fetchType, sourceLulu]);
+  }, [contentId, fetchType, sourceLulu, vodType, paramPoster]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
+  // ── Anti-popup: block ALL popups/new tabs/redirects globally ──
+  useEffect(() => {
+    if (!embedUrl) return;
+    // 1. Override window.open completely
+    const origOpen = window.open;
+    const fakeWin = { focus(){}, blur(){}, close(){}, closed: true, document: { write(){} }, location: { href: '' } };
+    window.open = function () { return fakeWin as any; };
 
+    // 2. Block clicks/mousedown/pointerdown on ad links
+    const blockEvent = (e: Event) => {
+      let el = e.target as HTMLElement | null;
+      while (el && el !== document.body) {
+        if (el.tagName === 'A') {
+          const a = el as HTMLAnchorElement;
+          const href = a.getAttribute('href') || '';
+          const tgt = a.getAttribute('target') || '';
+          if (tgt === '_blank' || href.startsWith('javascript:') ||
+              /\/\/(ad|click|track|pop)/.test(href)) {
+            e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+            return;
+          }
+        }
+        el = el.parentElement;
+      }
+    };
+    const evts = ['click', 'mousedown', 'pointerdown', 'auxclick', 'touchstart'] as const;
+    evts.forEach(evt => document.addEventListener(evt, blockEvent as EventListener, true));
+
+    // 3. Re-focus window when popunder steals focus
+    const refocus = () => { setTimeout(() => window.focus(), 50); };
+    window.addEventListener('blur', refocus);
+
+    // 4. Block any programmatic navigation attempts from ads
+    const blockNav = (e: BeforeUnloadEvent) => {
+      // only block if triggered by ad scripts (not user navigation)
+      if (document.activeElement?.tagName === 'IFRAME') {
+        e.preventDefault(); e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', blockNav, true);
+
+    return () => {
+      window.open = origOpen;
+      evts.forEach(evt => document.removeEventListener(evt, blockEvent as EventListener, true));
+      window.removeEventListener('blur', refocus);
+      window.removeEventListener('beforeunload', blockNav, true);
+    };
+  }, [embedUrl]);
 
   const handleFav = async () => {
     if (!loggedIn) { router.push('/account'); return; }
@@ -157,44 +200,74 @@ function DetailContent() {
     };
 
     try {
-      // ── LuluStream: رابط embed مباشر من luluvdo.com ──────────────────────────
-      // المتصفح يتصل بـ luluvdo.com CDN مباشرةً — لا يمر أي بيانات فيديو عبر السيرفر
+      // ── 1. مصدر LuluStream: استعمل embedUrl (إيفرام LuluStream) ──
       if (sourceLulu) {
-        const embedUrl = ep ? (ep as any).embedUrl : (detail as any)?.luluEmbed;
-        if (embedUrl) {
-          setEmbedSources([{ url: embedUrl, name: 'LuluStream' }]);
+        const embedU = ep ? ep.luluEmbed : detail?.luluEmbed;
+        if (embedU) {
+          setEmbedSources([{ url: embedU, name: 'LuluStream' }]);
           setEmbedSourceIdx(0);
-          setEmbedUrl(embedUrl);
+          setEmbedUrl(embedU);
           setStreamUrl('');
-        } else {
-          setStreamError('المحتوى غير متاح حالياً');
+          // ترجمات من SubDL
+          const subUrls = (ep?.subtitleUrls || detail?.subtitleUrls) as { ar?: string; ku?: string } | null | undefined;
+          if (subUrls) {
+            const subs: any[] = [];
+            if (subUrls.ar) subs.push({ url: subUrls.ar, label: '🇸🇦 عربي', language: 'ar' });
+            if (subUrls.ku) subs.push({ url: subUrls.ku, label: '🏳️ كردي', language: 'ku' });
+            setSubtitles(subs);
+          }
+          recordHistory(ep ? `${contentId}_${ep.season}_${ep.episode}` : contentId);
+          setStreamLoading(false);
+          return;
         }
+        // fallback: requestLuluStream
+        const luluOpts = ep
+          ? { type: 'series' as const, ep_id: ep.id || '' }
+          : { type: 'movie' as const, id: contentId };
+        const lulu = await requestLuluStream(luluOpts);
+        if (lulu.embedUrl) {
+          setEmbedSources([{ url: lulu.embedUrl, name: 'LuluStream' }]);
+          setEmbedSourceIdx(0);
+          setEmbedUrl(lulu.embedUrl);
+          setStreamUrl('');
+          recordHistory(ep ? `${contentId}_${ep.season}_${ep.episode}` : contentId);
+          setStreamLoading(false);
+          return;
+        }
+        setStreamError('لم يتوفر الفيديو بعد، جاري المعالجة...');
         setStreamLoading(false);
         return;
       }
 
-      // استخدام VidSrc Advanced Resolver
+      // ── 2. مصدر آخر: جرب LuluStream بالـ ID ──
+      const luluOpts2 = ep
+        ? { type: 'series' as const, ep_id: ep.id || '' }
+        : { type: 'movie' as const, id: contentId };
+      if (ep?.id || contentId) {
+        const lulu = await requestLuluStream(luluOpts2);
+        if (lulu.available && lulu.hlsUrl) {
+          setStreamUrl(lulu.hlsUrl);
+          recordHistory(ep ? `${contentId}_${ep.season}_${ep.episode}` : contentId);
+          setStreamLoading(false);
+          fetchSubtitles(detail?.tmdb_id || contentId, ep ? 'tv' : 'movie', ep?.season, ep?.episode);
+          return;
+        }
+      }
+
+      // ── 2. Fallback: vidsrc ──
       const type = ep ? 'tv' : 'movie';
       const result = await requestVidsrcStream({
         tmdbId: detail?.tmdb_id || contentId,
-        imdbId: detail?.imdb_id,
         type,
         ...(ep ? { season: ep.season, episode: ep.episode } : {}),
         title,
       });
-      
       if (result.success) {
         applyStreamResult(result);
         recordHistory(ep ? `${contentId}_${ep.season}_${ep.episode}` : contentId);
-        if (!result.subtitles?.length) {
-          fetchSubtitles(detail?.tmdb_id || contentId, type, ep?.season, ep?.episode);
-        }
+        if (!result.subtitles?.length) fetchSubtitles(detail?.tmdb_id || contentId, type, ep?.season, ep?.episode);
       } else {
-        if (result.requiresSubscription) {
-          setStreamError('هذا المحتوى يتطلب اشتراك بريميوم 💎');
-        } else {
-          setStreamError(result.error || 'فشل تحميل المحتوى');
-        }
+        setStreamError(result.error || 'فشل تحميل المحتوى');
       }
     } catch {
       setStreamError('خطأ في الاتصال');
@@ -296,7 +369,7 @@ function DetailContent() {
         {/* Embed iframe player */}
         {embedUrl && !streamUrl && !streamLoading && !streamError && (
           <div className="absolute inset-0 flex flex-col bg-black">
-            {/* Close button */}
+            {/* Close button only */}
             <button onClick={() => { setEmbedUrl(''); setStreamError(''); }}
               className="absolute top-2 right-2 z-10 w-8 h-8 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center hover:bg-black/80 transition text-white/50 hover:text-white text-lg leading-none">✕</button>
             <iframe
@@ -307,41 +380,21 @@ function DetailContent() {
               allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
               referrerPolicy="no-referrer-when-downgrade"
             />
-            {/* Source switcher + subtitle links */}
-            <div className="flex-shrink-0 px-3 py-1.5 bg-black/95 border-t border-white/10 flex items-center gap-2 overflow-x-auto no-scrollbar">
-              {embedSources.length > 1 && (
-                <>
-                  <svg className="w-3.5 h-3.5 text-white/40 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-                  </svg>
-                  {embedSources.map((src, i) => (
-                    <button key={i} onClick={() => { setEmbedSourceIdx(i); setEmbedUrl(src.url); }}
-                      className={`text-[10px] px-2.5 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 font-semibold ${
-                        i === embedSourceIdx
-                          ? 'bg-brand-primary text-black'
-                          : 'bg-white/10 text-white/60 hover:bg-white/20'
-                      }`}>
-                      {src.name}
-                    </button>
-                  ))}
-                  {subtitles.length > 0 && <div className="w-px h-4 bg-white/10 flex-shrink-0" />}
-                </>
-              )}
-              {subtitles.length > 0 && (
-                <>
-                  <svg className="w-3.5 h-3.5 text-brand-primary flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h6m-3 4h2M5 3h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z" />
-                  </svg>
-                  <span className="text-white/40 text-[10px] font-semibold flex-shrink-0">ترجمة:</span>
-                  {subtitles.map((sub: any, i: number) => (
-                    <a key={i} href={sub.url} target="_blank" rel="noopener noreferrer" download
-                      className="text-[10px] px-2.5 py-1 rounded-full bg-brand-primary/20 text-brand-primary hover:bg-brand-primary/40 transition whitespace-nowrap flex-shrink-0 font-semibold">
-                      ⬇ {sub.label || sub.language || 'العربية'}
-                    </a>
-                  ))}
-                </>
-              )}
-            </div>
+            {/* Arabic subtitle download links */}
+            {subtitles.length > 0 && (
+              <div className="flex-shrink-0 px-3 py-1.5 bg-black/95 border-t border-white/10 flex items-center gap-2 overflow-x-auto no-scrollbar">
+                <svg className="w-3.5 h-3.5 text-brand-primary flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h6m-3 4h2M5 3h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z" />
+                </svg>
+                <span className="text-white/40 text-[10px] font-semibold flex-shrink-0">ترجمة:</span>
+                {subtitles.map((sub: any, i: number) => (
+                  <a key={i} href={sub.url} target="_blank" rel="noopener noreferrer" download
+                    className="text-[10px] px-2.5 py-1 rounded-full bg-brand-primary/20 text-brand-primary hover:bg-brand-primary/40 transition whitespace-nowrap flex-shrink-0 font-semibold">
+                    ⬇ {sub.label || sub.language || 'العربية'}
+                  </a>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

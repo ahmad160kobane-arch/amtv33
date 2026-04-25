@@ -87,12 +87,10 @@ export interface VidsrcDetail {
   duration?: string;
   runtime?: string;
   trailer?: string;
-  tagline?: string;
   seasons?: number[];      // array of season numbers e.g. [1, 2, 3]
   episodes?: VidsrcEpisode[];
   luluHls?: string;
   luluEmbed?: string;
-  luluFileCode?: string;
   subtitleUrls?: { ar?: string; ku?: string } | null;
 }
 
@@ -524,47 +522,27 @@ export interface FreeStreamResult {
 
 export async function requestFreeStream(channelId: string): Promise<FreeStreamResult> {
   try {
+    console.log('[API] 🔄 Requesting stream for channel:', channelId);
     const res = await apiFetch(`/api/xtream/stream/${encodeURIComponent(channelId)}`);
-    if (!res.ok) return { success: false, error: 'فشل جلب الرابط' };
+    if (!res.ok) {
+      console.error('[API] ❌ Request failed:', res.status, res.statusText);
+      return { success: false, error: 'فشل جلب الرابط' };
+    }
     const data = await res.json();
-
+    console.log('[API] ✅ Response data:', data);
+    
     let streamUrl = data.hlsUrl || data.proxyUrl || data.directUrl || '';
-    // Keep relative path — Next.js rewrites /hls/* to VPS over HTTPS proxy.
-    // Do NOT prepend http://VPS — that causes mixed-content block on HTTPS pages.
-
-    // Wait for first HLS segment to be ready (FFmpeg startup ~3-8s).
-    // Player would 404 on .m3u8 otherwise, then stall in "loading" state.
-    if (!data.ready && data.streamId) {
-      const deadline = Date.now() + 20_000;
-      let becameReady = false;
-      let wasRunning = false;
-      while (Date.now() < deadline) {
-        await new Promise(r => setTimeout(r, 600));
-        try {
-          const r = await apiFetch(`/api/xtream/stream-ready/${data.streamId}`);
-          if (r.ok) {
-            const j = await r.json();
-            if (j.ready) { becameReady = true; break; }
-            // j.info !== null means FFmpeg process is still in the streams map
-            if (j.info) {
-              wasRunning = true;
-            } else if (wasRunning) {
-              // Stream was running but is now gone — FFmpeg failed/crashed
-              break;
-            }
-          }
-        } catch {}
-      }
-      // If stream never became ready (timeout or FFmpeg failure), report error
-      if (!becameReady) {
-        return { success: false, error: 'فشل تشغيل البث — تحقق من الاتصال أو حاول مرة أخرى' };
-      }
+    console.log('[API] 📺 Initial streamUrl:', streamUrl);
+    
+    // If streamUrl is a relative path (starts with /), convert to full VPS URL
+    // This allows HTTPS web-app to connect directly to HTTP VPS server
+    if (streamUrl.startsWith('/') && typeof window !== 'undefined') {
+      // Use VPS direct URL for better performance (no Next.js proxy)
+      streamUrl = 'http://62.171.153.204:8090' + streamUrl;
+      console.log('[API] 🔗 Converted to full URL:', streamUrl);
     }
-
-    if (!streamUrl) {
-      return { success: false, error: 'لم يتم الحصول على رابط البث' };
-    }
-
+    
+    console.log('[API] ✅ Final streamUrl:', streamUrl);
     return {
       success: true,
       name: data.name,
@@ -572,7 +550,8 @@ export async function requestFreeStream(channelId: string): Promise<FreeStreamRe
       group: data.category,
       streamUrl,
     };
-  } catch {
+  } catch (error: any) {
+    console.error('[API] ❌ Exception:', error);
     return { success: false, error: 'خطأ في الاتصال' };
   }
 }
@@ -711,82 +690,31 @@ export async function fetchAgentCodes(params?: { status?: string; limit?: number
   } catch { return { codes: [], total: 0 }; }
 }
 
-// ─── VidSrc Streaming (محدّث - يستخدم Advanced Resolver) ────────────────────────────────────
-export interface VidSrcStreamResult {
-  success: boolean;
-  streamUrl?: string;
-  embedUrl?: string;
-  hlsUrl?: string;
-  vodUrl?: string;
-  provider?: string;
-  quality?: string;
-  type?: string;
-  sources?: Array<{ url: string; name?: string; provider?: string; type?: string }>;
-  allEmbedUrls?: string[];
-  subtitles?: any[];
-  error?: string;
-  requiresSubscription?: boolean;
-}
-
+// ─── VidSrc Streaming ────────────────────────────────────
 export async function requestVidsrcStream(opts: {
-  tmdbId?: string; 
-  imdbId?: string;
-  type?: 'movie' | 'tv'; 
-  season?: number; 
-  episode?: number; 
-  title?: string;
-}): Promise<VidSrcStreamResult> {
+  tmdbId?: string; type?: 'movie' | 'tv'; season?: number; episode?: number; title?: string;
+}): Promise<{ success: boolean; hlsUrl?: string; vodUrl?: string; embedUrl?: string; subtitles?: any[]; error?: string; requiresSubscription?: boolean }> {
   try {
-    console.log('[VidSrc API] Requesting stream:', opts);
-    
     const res = await apiFetch('/api/stream/vidsrc', {
       method: 'POST',
       body: JSON.stringify(opts),
     });
-    
     const data = await res.json();
-    
-    if (!res.ok) {
-      console.error('[VidSrc API] Error:', data.error || data.message);
-      return { 
-        success: false, 
-        error: data.error || data.message, 
-        requiresSubscription: !!data.requiresSubscription 
-      };
-    }
-
-    console.log('[VidSrc API] Success:', {
-      provider: data.provider,
-      hasHlsUrl: !!data.hlsUrl,
-      hasEmbedUrl: !!data.embedUrl,
-      subtitlesCount: data.subtitles?.length || 0
-    });
-
-    return { 
-      success: true,
-      hlsUrl: data.hlsUrl || data.streamUrl,
-      vodUrl: data.hlsUrl || data.streamUrl,
-      embedUrl: data.embedUrl,
-      sources: data.sources,
-      allEmbedUrls: data.allEmbedUrls,
-      provider: data.provider,
-      subtitles: data.subtitles || []
-    };
-  } catch (err: any) { 
-    console.error('[VidSrc API] Exception:', err.message);
-    return { success: false, error: err.message }; 
-  }
+    if (!res.ok) return { success: false, error: data.error || data.message, requiresSubscription: !!data.requiresSubscription };
+    return { success: true, ...data };
+  } catch (err: any) { return { success: false, error: err.message }; }
 }
 
 // ─── LuluStream: جلب HLS للمحتوى المرفوع ────────────────
 export async function requestLuluStream(opts: {
-  file_code?: string;
+  type: 'movie' | 'series';
   id?: string;
+  ep_id?: string;
 }): Promise<{ available: boolean; hlsUrl?: string; embedUrl?: string; fileCode?: string }> {
   try {
-    const p = new URLSearchParams();
-    if (opts.file_code) p.set('file_code', opts.file_code);
-    if (opts.id)        p.set('id', opts.id);
+    const p = new URLSearchParams({ type: opts.type });
+    if (opts.id)    p.set('id', opts.id);
+    if (opts.ep_id) p.set('ep_id', opts.ep_id);
     const res = await apiFetch(`/api/lulu/stream?${p}`);
     if (!res.ok) return { available: false };
     return await res.json();
@@ -805,19 +733,6 @@ export interface LuluItem {
   cat?: string;
   vod_type: 'movie' | 'series';
   episodeCount?: number;
-  // TMDB enrichment fields
-  tmdb_id?: string;
-  tmdb_type?: string;
-  tmdb_title?: string;
-  backdrop?: string;
-  plot?: string;
-  genres?: string[];
-  cast?: string;
-  director?: string;
-  country?: string;
-  runtime?: string;
-  imdb_id?: string;
-  tagline?: string;
 }
 
 export interface LuluEpisode {
@@ -829,8 +744,7 @@ export interface LuluEpisode {
   hlsUrl: string;
   embedUrl: string;
   subtitleUrls?: { ar?: string; ku?: string } | null;
-  ext?: string;
-  thumbnail?: string;
+  ext: string;
 }
 
 export interface LuluSeason {
@@ -848,13 +762,7 @@ export interface LuluDetail extends LuluItem {
   subtitleUrls?: { ar?: string; ku?: string } | null;
 }
 
-export async function fetchLuluHome(): Promise<{ 
-  latestMovies: LuluItem[]; 
-  latestSeries: LuluItem[];
-  topRatedMovies?: LuluItem[];
-  topRatedSeries?: LuluItem[];
-  genreSections?: Record<string, LuluItem[]>;
-}> {
+export async function fetchLuluHome(): Promise<{ latestMovies: LuluItem[]; latestSeries: LuluItem[] }> {
   try {
     const res = await apiFetch('/api/lulu/home');
     if (!res.ok) throw new Error();
@@ -875,21 +783,25 @@ export async function fetchLuluList(params?: {
   } catch { return { items: [], page: 1, total: 0, hasMore: false }; }
 }
 
-export async function fetchLuluDetail(id: string): Promise<LuluDetail | null> {
+export async function fetchLuluDetail(id: string, type: 'movie' | 'series'): Promise<LuluDetail | null> {
   try {
-    const res = await apiFetch(`/api/lulu/detail?id=${encodeURIComponent(id)}`);
+    const p = new URLSearchParams({ type });
+    if (type === 'movie')  p.set('id', id);
+    else                   p.set('show', id.startsWith('lulu:') ? id.slice(5) : id);
+    const res = await apiFetch(`/api/lulu/detail?${p}`);
     if (!res.ok) return null;
     return await res.json();
   } catch { return null; }
 }
 
 // ─── Session Management (cloud-server) ──────────────────
-// Use relative URL so Next.js rewrites proxy to cloud-server (bypasses CORS + mixed content)
+const CLOUD_URL = 'http://62.171.153.204:8090';
+
 async function cloudFetch(path: string, options: RequestInit = {}): Promise<Response> {
   const token = getStorage(TOKEN_KEY);
   const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(options.headers as Record<string, string> || {}) };
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  return fetch(path, { ...options, headers });
+  return fetch(`${CLOUD_URL}${path}`, { ...options, headers });
 }
 
 export async function fetchSessionInfo(): Promise<SessionInfo | null> {

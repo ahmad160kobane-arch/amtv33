@@ -315,20 +315,16 @@ function filterChannels() {
   const q = (document.getElementById('ch-search')?.value || '').toLowerCase();
   const filtered = q ? _allChannels.filter(ch => ch.name.toLowerCase().includes(q) || (ch.group_name||ch.group||'').toLowerCase().includes(q)) : _allChannels;
   document.getElementById('channels-table').innerHTML = `<table>
-    <thead><tr><th>القناة</th><th>المجموعة</th><th>النوع</th><th>الحالة</th><th>إجراءات</th></tr></thead>
-    <tbody>${filtered.length === 0 ? '<tr><td colspan="5" class="empty-state">لا توجد قنوات</td></tr>' : filtered.slice(0, 100).map(ch => {
-      const isDirect = ch.is_direct_passthrough === 1 || ch.is_direct_passthrough === true;
-      return `<tr>
+    <thead><tr><th>القناة</th><th>المجموعة</th><th>الحالة</th><th>إجراءات</th></tr></thead>
+    <tbody>${filtered.length === 0 ? '<tr><td colspan="4" class="empty-state">لا توجد قنوات</td></tr>' : filtered.slice(0, 100).map(ch => `<tr>
       <td><div style="display:flex;align-items:center;gap:8px">${ch.logo_url||ch.logo ? `<img src="${esc(ch.logo_url||ch.logo)}" style="width:28px;height:28px;border-radius:4px;object-fit:cover" onerror="this.style.display='none'">` : ''}<strong>${esc(ch.name)}</strong></div></td>
       <td>${esc(ch.group_name||ch.group||'عام')}</td>
-      <td>${isDirect ? '<span class="badge badge-success" title="تمرير مباشر بدون إعادة بث">🚀 مباشر</span>' : '<span class="badge badge-info" title="إعادة بث عبر FFmpeg">🔄 FFmpeg</span>'}</td>
       <td>${ch.is_enabled !== 0 ? '<span class="badge badge-online">مفعلة</span>' : '<span class="badge badge-offline">معطلة</span>'}</td>
       <td><div class="btn-group">
         <button class="btn btn-sm btn-outline" onclick="editChannelModal('${ch.id}')">تعديل</button>
         <button class="btn btn-sm btn-danger" onclick="deleteChannel('${ch.id}','${esc(ch.name)}')">حذف</button>
       </div></td>
-    </tr>`;
-    }).join('')}</tbody></table>`;
+    </tr>`).join('')}</tbody></table>`;
 }
 
 function addChannelModal() {
@@ -401,58 +397,15 @@ async function addSelectedIPTVChannels() {
 }
 
 function addManualChannelModal() {
-  showModal('إضافة قناة مباشرة يدوياً', `
-    <div class="form-group"><label>اسم القناة</label><input class="form-control" id="ch-name" placeholder="مثلاً: Al Jazeera Arabic"></div>
+  showModal('إضافة قناة يدوياً', `
+    <div class="form-group"><label>اسم القناة</label><input class="form-control" id="ch-name"></div>
     <div class="form-row">
-      <div class="form-group">
-        <label>الفئة / المجموعة</label>
-        <select class="form-control" id="ch-group">
-          <option value="أخبار">📰 أخبار</option>
-          <option value="رياضة">⚽ رياضة</option>
-          <option value="أفلام">🎬 أفلام</option>
-          <option value="مسلسلات">📺 مسلسلات</option>
-          <option value="أطفال">🧸 أطفال</option>
-          <option value="موسيقى">🎵 موسيقى</option>
-          <option value="دينية">🕌 دينية</option>
-          <option value="وثائقية">📖 وثائقية</option>
-          <option value="ترفيه">🎭 ترفيه</option>
-          <option value="عام" selected>📡 عام</option>
-        </select>
-      </div>
+      <div class="form-group"><label>المجموعة</label><input class="form-control" id="ch-group" value="عام"></div>
       <div class="form-group"><label>الترتيب</label><input type="number" class="form-control" id="ch-sort" value="0"></div>
     </div>
-    <div class="form-group">
-      <label>رابط البث المباشر</label>
-      <input class="form-control" id="ch-url" dir="ltr" placeholder="https://example.com/stream.m3u8">
-      <small style="color:var(--text2);display:block;margin-top:4px">
-        💡 يمكنك استخدام روابط من: IPTV-ORG, GitHub Free IPTV, أو أي مصدر مجاني
-      </small>
-    </div>
-    <div class="form-group">
-      <label>رابط الشعار (Logo)</label>
-      <input class="form-control" id="ch-logo" dir="ltr" placeholder="https://example.com/logo.png (اختياري)">
-    </div>
-    <div class="form-group" style="background:#f8f9fa;padding:12px;border-radius:8px;border:1px solid #e0e0e0">
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:0">
-        <input type="checkbox" id="ch-direct" style="width:auto" checked>
-        <strong style="color:#2563eb">🚀 قناة مباشرة (Direct Passthrough)</strong>
-      </label>
-      <div style="margin-top:8px;padding:8px;background:white;border-radius:6px;font-size:13px;line-height:1.6">
-        <div style="color:#059669;margin-bottom:6px"><strong>✓ متى تستخدم هذا الخيار:</strong></div>
-        <ul style="margin:0;padding-right:20px;color:#374151">
-          <li>قنوات مجانية من الإنترنت (IPTV-ORG, GitHub)</li>
-          <li>روابط HLS/M3U8 مباشرة</li>
-          <li>قنوات لا تحتاج إعادة بث</li>
-          <li>توفير موارد السيرفر (بدون FFmpeg)</li>
-        </ul>
-        <div style="color:#dc2626;margin-top:8px"><strong>✗ لا تستخدمه لـ:</strong></div>
-        <ul style="margin:0;padding-right:20px;color:#374151">
-          <li>قنوات IPTV المدفوعة (استخدم "بحث IPTV" بدلاً من ذلك)</li>
-          <li>روابط تحتاج معالجة أو ترجمة</li>
-        </ul>
-      </div>
-    </div>
-  `, `<button class="btn btn-primary" onclick="saveNewChannel()">✓ إضافة القناة</button><button class="btn btn-outline" onclick="closeModal()">إلغاء</button>`);
+    <div class="form-group"><label>رابط البث</label><input class="form-control" id="ch-url" dir="ltr" placeholder="http://..."></div>
+    <div class="form-group"><label>رابط الشعار</label><input class="form-control" id="ch-logo" dir="ltr" placeholder="اختياري"></div>
+  `, `<button class="btn btn-primary" onclick="saveNewChannel()">إضافة</button><button class="btn btn-outline" onclick="closeModal()">إلغاء</button>`);
 }
 
 async function saveNewChannel() {
@@ -460,13 +413,11 @@ async function saveNewChannel() {
     const name = document.getElementById('ch-name').value.trim();
     const stream_url = document.getElementById('ch-url').value.trim();
     if (!name || !stream_url) throw new Error('الاسم ورابط البث مطلوبان');
-    const is_direct = document.getElementById('ch-direct')?.checked ? 1 : 0;
     await api('/api/admin/channels', { method: 'POST', body: JSON.stringify({
       name, stream_url,
       group_name: document.getElementById('ch-group').value || 'عام',
       logo_url: document.getElementById('ch-logo').value || '',
       sort_order: parseInt(document.getElementById('ch-sort').value) || 0,
-      is_direct_passthrough: is_direct,
     })});
     toast('تم إضافة القناة');
     closeModal();
@@ -477,53 +428,25 @@ async function saveNewChannel() {
 function editChannelModal(id) {
   const ch = _allChannels.find(x => x.id === id);
   if (!ch) return;
-  const isDirect = ch.is_direct_passthrough === 1 || ch.is_direct_passthrough === true;
-  const currentGroup = ch.group_name || ch.group || 'عام';
   showModal('تعديل القناة: ' + ch.name, `
     <div class="form-group"><label>اسم القناة</label><input class="form-control" id="ch-name" value="${esc(ch.name)}"></div>
     <div class="form-row">
-      <div class="form-group">
-        <label>الفئة / المجموعة</label>
-        <select class="form-control" id="ch-group">
-          <option value="أخبار" ${currentGroup==='أخبار'?'selected':''}>📰 أخبار</option>
-          <option value="رياضة" ${currentGroup==='رياضة'?'selected':''}>⚽ رياضة</option>
-          <option value="أفلام" ${currentGroup==='أفلام'?'selected':''}>🎬 أفلام</option>
-          <option value="مسلسلات" ${currentGroup==='مسلسلات'?'selected':''}>📺 مسلسلات</option>
-          <option value="أطفال" ${currentGroup==='أطفال'?'selected':''}>🧸 أطفال</option>
-          <option value="موسيقى" ${currentGroup==='موسيقى'?'selected':''}>🎵 موسيقى</option>
-          <option value="دينية" ${currentGroup==='دينية'?'selected':''}>🕌 دينية</option>
-          <option value="وثائقية" ${currentGroup==='وثائقية'?'selected':''}>📖 وثائقية</option>
-          <option value="ترفيه" ${currentGroup==='ترفيه'?'selected':''}>🎭 ترفيه</option>
-          <option value="عام" ${currentGroup==='عام'?'selected':''}>📡 عام</option>
-          <option value="${esc(currentGroup)}" ${!['أخبار','رياضة','أفلام','مسلسلات','أطفال','موسيقى','دينية','وثائقية','ترفيه','عام'].includes(currentGroup)?'selected':''}>${esc(currentGroup)}</option>
-        </select>
-      </div>
+      <div class="form-group"><label>المجموعة</label><input class="form-control" id="ch-group" value="${esc(ch.group_name||ch.group||'')}"></div>
       <div class="form-group"><label>الحالة</label><select class="form-control" id="ch-enabled"><option value="1" ${ch.is_enabled!==0?'selected':''}>مفعلة</option><option value="0" ${ch.is_enabled===0?'selected':''}>معطلة</option></select></div>
     </div>
     <div class="form-group"><label>رابط البث</label><input class="form-control" id="ch-url" dir="ltr" value="${esc(ch.stream_url||'')}"></div>
     <div class="form-group"><label>رابط الشعار</label><input class="form-control" id="ch-logo" dir="ltr" value="${esc(ch.logo_url||ch.logo||'')}"></div>
-    <div class="form-group" style="background:#f8f9fa;padding:12px;border-radius:8px">
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:0">
-        <input type="checkbox" id="ch-direct" style="width:auto" ${isDirect?'checked':''}>
-        <strong>🚀 قناة مباشرة (Direct Passthrough)</strong>
-      </label>
-      <small style="color:var(--text2);display:block;margin-top:6px">
-        ${isDirect ? '✓ هذه القناة تُمرر مباشرة بدون إعادة بث' : '⚠️ هذه القناة تُعاد بثها عبر FFmpeg'}
-      </small>
-    </div>
   `, `<button class="btn btn-primary" onclick="updateChannel('${id}')">حفظ</button><button class="btn btn-outline" onclick="closeModal()">إلغاء</button>`);
 }
 
 async function updateChannel(id) {
   try {
-    const is_direct = document.getElementById('ch-direct')?.checked ? 1 : 0;
     await api(`/api/admin/channels/${id}`, { method: 'PUT', body: JSON.stringify({
       name: document.getElementById('ch-name').value,
       group_name: document.getElementById('ch-group').value,
       stream_url: document.getElementById('ch-url').value,
       logo_url: document.getElementById('ch-logo').value,
       is_enabled: parseInt(document.getElementById('ch-enabled').value),
-      is_direct_passthrough: is_direct,
     })});
     toast('تم تحديث القناة');
     closeModal();

@@ -1,12 +1,12 @@
 'use client';
 import React, { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { fetchFreeChannels, fetchLuluList, FreeChannel, LuluItem } from '@/constants/api';
+import { fetchIptvMovies, fetchIptvSeries, fetchFreeChannels, IptvVodItem, FreeChannel } from '@/constants/api';
 import ContentRow from '@/components/ContentRow';
 import { SkeletonRow } from '@/components/Skeleton';
 
-function toContentItem(v: LuluItem) {
-  return { id: v.id, title: v.title, poster: v.poster, vod_type: v.vod_type, year: v.year, rating: v.rating, source: 'lulu' as const };
+function toContentItem(v: IptvVodItem) {
+  return { id: v.id, title: v.name, poster: v.poster, vod_type: v.vod_type, year: v.year, rating: v.rating };
 }
 
 export default function KidsPage() {
@@ -14,29 +14,22 @@ export default function KidsPage() {
   const [loading, setLoading] = useState(true);
   const [channels, setChannels] = useState<FreeChannel[]>([]);
   const [logoErrors, setLogoErrors] = useState<Set<string>>(new Set());
-  const [kidsMovies, setKidsMovies] = useState<LuluItem[]>([]);
-  const [kidsSeries, setKidsSeries] = useState<LuluItem[]>([]);
+  const [kidsMovies, setKidsMovies] = useState<IptvVodItem[]>([]);
+  const [kidsSeries, setKidsSeries] = useState<IptvVodItem[]>([]);
 
   const load = useCallback(async () => {
     try {
-      const [chData, kidsData] = await Promise.all([
-        fetchFreeChannels({ group: 'أطفال', limit: 20 }),
-        fetch('/api/lulu/kids').then(r => r.json()),
+      await Promise.all([
+        fetchFreeChannels({ group: 'أطفال', limit: 20 }).then(d => setChannels(d.channels || [])).catch(() => {}),
+        fetchIptvMovies({ search: 'kids', page: 1 }).then(d => setKidsMovies((d.items || []).slice(0, 16))).catch(() => {}),
+        fetchIptvSeries({ search: 'kids', page: 1 }).then(d => setKidsSeries((d.items || []).slice(0, 16))).catch(() => {}),
       ]);
-      setChannels(chData?.channels || []);
-      setKidsMovies(kidsData?.movies || []);
-      setKidsSeries(kidsData?.series || []);
-    } catch (e) {
-      console.error('Kids load error:', e);
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => { 
-    load(); 
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  useEffect(() => { load(); }, [load]);
 
   return (
     <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-20 md:pb-6">
@@ -80,8 +73,8 @@ export default function KidsPage() {
         <><SkeletonRow /><SkeletonRow /></>
       ) : (
         <>
-          {kidsMovies.length > 0 && <ContentRow title="أفلام أطفال" items={kidsMovies.map(toContentItem)} seeAllHref="/entertainment?type=movie" />}
-          {kidsSeries.length > 0 && <ContentRow title="مسلسلات أطفال" items={kidsSeries.map(toContentItem)} seeAllHref="/entertainment?type=series" />}
+          {kidsMovies.length > 0 && <ContentRow title="أفلام أطفال" items={kidsMovies.map(toContentItem)} seeAllHref="/allcontent?type=movie" />}
+          {kidsSeries.length > 0 && <ContentRow title="مسلسلات أطفال" items={kidsSeries.map(toContentItem)} seeAllHref="/allcontent?type=series" />}
         </>
       )}
     </div>
