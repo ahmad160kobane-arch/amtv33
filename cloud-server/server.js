@@ -3264,7 +3264,7 @@ app.get('/api/xtream/channels', async (req, res) => {
 
 
 
-    let where = ['is_streaming = true'];
+    let where = [];
 
     let params = [];
 
@@ -3328,7 +3328,7 @@ app.get('/api/xtream/channels', async (req, res) => {
 
     const catRows = await db.prepare(
 
-      'SELECT DISTINCT category, MIN(sort_order) as p FROM xtream_channels WHERE is_streaming = true GROUP BY category ORDER BY p'
+      'SELECT DISTINCT category, MIN(sort_order) as p FROM xtream_channels GROUP BY category ORDER BY p'
 
     ).all();
 

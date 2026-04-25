@@ -532,17 +532,8 @@ export async function requestFreeStream(channelId: string): Promise<FreeStreamRe
     console.log('[API] ✅ Response data:', data);
     
     let streamUrl = data.hlsUrl || data.proxyUrl || data.directUrl || '';
-    console.log('[API] 📺 Initial streamUrl:', streamUrl);
-    
-    // If streamUrl is a relative path (starts with /), convert to full VPS URL
-    // This allows HTTPS web-app to connect directly to HTTP VPS server
-    if (streamUrl.startsWith('/') && typeof window !== 'undefined') {
-      // Use VPS direct URL for better performance (no Next.js proxy)
-      streamUrl = 'http://62.171.153.204:8090' + streamUrl;
-      console.log('[API] 🔗 Converted to full URL:', streamUrl);
-    }
-    
-    console.log('[API] ✅ Final streamUrl:', streamUrl);
+    // Keep relative paths as-is — Next.js rewrites proxy them to cloud server
+    // Avoids mixed content block (HTTPS page → HTTP VPS)
     return {
       success: true,
       name: data.name,
