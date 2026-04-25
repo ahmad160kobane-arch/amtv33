@@ -59,7 +59,12 @@ module.exports = {
   HLS_TIME: 2,
   HLS_LIST_SIZE: 5,
   HLS_DELETE_THRESHOLD: 3,
-  MIN_SEGMENTS_READY: 1,
+  MIN_SEGMENTS_READY: 1,  // يمكن تقليله إلى 0 للبث الفوري (لكن قد يسبب buffering)
+  
+  // ─── تحسينات الأداء ────────────────────────
+  ENABLE_CHANNEL_CACHE: true,      // تفعيل cache للقنوات
+  CHANNEL_CACHE_TTL: 5 * 60 * 1000, // 5 دقائق
+  SKIP_SESSION_CLEANUP: false,      // تخطي تنظيف الجلسات عند البث (يوفر 0.5-1 ثانية)
 
   // ─── FFmpeg ───────────────────────────────
   FFMPEG_PATH: process.env.FFMPEG_PATH || (() => {

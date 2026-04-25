@@ -35,7 +35,7 @@ const LIVE_HLS_DELETE_TH  = 6;     // delete segments 6+ beyond list (extra head
 const RESTART_MAX         = 5;     // max auto-restarts on unexpected exit
 const RESTART_BACKOFF_MS  = 2000;  // base delay between restarts
 const UA                  = 'VLC/3.0.20 LibVLC/3.0.20';
-const MIN_READY_SEGMENTS  = Math.max(1, config.MIN_SEGMENTS_READY || 1);
+const MIN_READY_SEGMENTS  = Math.max(0, config.MIN_SEGMENTS_READY || 0); // تغيير من 1 إلى 0 للبث الفوري
 
 // Convert Xtream `/live/user/pass/ID.m3u8` → `.ts` (long-lived TCP endpoint).
 // This is the single most important design choice: one natural connection per

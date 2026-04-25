@@ -57,8 +57,8 @@ router.post('/channels', async (req, res) => {
 
   const id = uuidv4();
   await db.prepare(`
-    INSERT INTO channels (id, name, group_name, logo_url, stream_url, sort_order, is_direct_passthrough)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO channels (id, name, group_name, logo_url, stream_url, sort_order, is_direct_passthrough, is_enabled)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 1)
   `).run(id, name, group_name || 'عام', logo_url || '', stream_url, sort_order || 0, is_direct_passthrough || 0);
 
   res.status(201).json({ id, name, stream_url });
