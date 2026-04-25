@@ -531,8 +531,9 @@ export async function requestFreeStream(channelId: string): Promise<FreeStreamRe
     const data = await res.json();
     console.log('[API] ✅ Response data:', data);
     
-    let streamUrl = data.hlsUrl || data.proxyUrl || data.directUrl || '';
-    // Direct VPS URL — browser connects directly, zero web-app resource usage
+    // Prefer directUrl: 302 redirect → browser connects directly to IPTV (zero VPS resources)
+    // Fallback to hlsUrl (VPS proxy) only if directUrl unavailable
+    let streamUrl = data.directUrl || data.hlsUrl || data.proxyUrl || '';
     if (streamUrl.startsWith('/') && typeof window !== 'undefined') {
       streamUrl = 'http://62.171.153.204:8090' + streamUrl;
     }
