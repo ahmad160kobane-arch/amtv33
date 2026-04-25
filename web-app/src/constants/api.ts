@@ -531,9 +531,9 @@ export async function requestFreeStream(channelId: string): Promise<FreeStreamRe
     const data = await res.json();
     console.log('[API] ✅ Response data:', data);
     
-    // Prefer directUrl: 302 redirect → browser connects directly to IPTV (zero VPS resources)
-    // Fallback to hlsUrl (VPS proxy) only if directUrl unavailable
-    let streamUrl = data.directUrl || data.hlsUrl || data.proxyUrl || '';
+    // Use hlsUrl: VPS HLS proxy has CORS headers (directUrl 302 redirect fails with CORS in HLS.js)
+    // Direct VPS URL bypasses Next.js proxy → zero web-app resource consumption
+    let streamUrl = data.hlsUrl || data.directUrl || data.proxyUrl || '';
     if (streamUrl.startsWith('/') && typeof window !== 'undefined') {
       streamUrl = 'http://62.171.153.204:8090' + streamUrl;
     }
