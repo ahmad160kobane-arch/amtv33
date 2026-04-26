@@ -3,6 +3,7 @@ const https = require("https");
 const http = require("http");
 const db = require("../db");
 const pool = db.pool;
+const { requireAuth, requirePremium } = require("../middleware/auth");
 
 const router = express.Router();
 
@@ -149,8 +150,8 @@ router.get("/list", async (req, res) => {
   }
 });
 
-// GET /api/lulu/detail?type=movie|series&id=xxx
-router.get("/detail", async (req, res) => {
+// GET /api/lulu/detail?type=movie|series&id=xxx  [Premium Required]
+router.get("/detail", requireAuth, requirePremium, async (req, res) => {
   try {
     const { type, id } = req.query;
     if (!id) return res.status(400).json({ error: "id مطلوب" });
@@ -224,8 +225,8 @@ router.get("/detail", async (req, res) => {
   }
 });
 
-// GET /api/lulu/stream?type=movie|series&id=xxx&ep_id=xxx
-router.get("/stream", async (req, res) => {
+// GET /api/lulu/stream?type=movie|series&id=xxx&ep_id=xxx  [Premium Required]
+router.get("/stream", requireAuth, requirePremium, async (req, res) => {
   try {
     const { type, id, ep_id } = req.query;
 
