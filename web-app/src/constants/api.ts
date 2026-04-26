@@ -789,7 +789,7 @@ export async function fetchLuluList(params?: {
   try {
     const p = new URLSearchParams({ type: params?.type || 'movie', page: String(params?.page || 1) });
     if (params?.search) p.set('search', params.search);
-    if (params?.cat)    p.set('cat', params.cat);
+    if (params?.cat)    p.set('genre', params.cat);
     const res = await apiFetch(`/api/lulu/list?${p}`);
     if (!res.ok) throw new Error();
     return await res.json();
@@ -798,9 +798,7 @@ export async function fetchLuluList(params?: {
 
 export async function fetchLuluDetail(id: string, type: 'movie' | 'series'): Promise<LuluDetail | null> {
   try {
-    const p = new URLSearchParams({ type });
-    if (type === 'movie')  p.set('id', id);
-    else                   p.set('show', id.startsWith('lulu:') ? id.slice(5) : id);
+    const p = new URLSearchParams({ type, id: id.startsWith('lulu:') ? id.slice(5) : id });
     const res = await apiFetch(`/api/lulu/detail?${p}`);
     if (!res.ok) return null;
     return await res.json();
