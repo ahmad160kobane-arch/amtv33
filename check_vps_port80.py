@@ -1,0 +1,18 @@
+import paramiko
+ssh = paramiko.SSHClient()
+ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+ssh.connect('62.171.153.204', username='root', password='Mustafa7', timeout=15)
+def run(cmd):
+    _,o,_ = ssh.exec_command(cmd)
+    return o.read().decode()
+print('=== PM2 ===')
+print(run('pm2 status'))
+print('=== Nginx sites-enabled ===')
+print(run('ls -la /etc/nginx/sites-enabled/'))
+print('=== webapp nginx config ===')
+print(run('cat /etc/nginx/sites-enabled/webapp 2>/dev/null || echo NO_WEBAPP'))
+print('=== Port 80/3001 listeners ===')
+print(run('ss -tlnp | grep -E ":80|:3001"'))
+print('=== Admin dashboard port ===')
+print(run('pm2 show admin-dashboard 2>/dev/null | grep port || cat /home/admin-dashboard/server.js 2>/dev/null | grep -i "listen\|PORT" | head -5'))
+ssh.close()

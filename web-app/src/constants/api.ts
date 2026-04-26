@@ -5,6 +5,12 @@
 // Use relative URL so Next.js rewrites proxy to the backend (bypasses CORS)
 const API_BASE_URL = "";
 
+// Direct cloud server URL — used for HLS streaming (bypasses Next.js proxy)
+// This reduces load on the web app server by letting the browser connect directly
+const CLOUD_URL = "http://62.171.153.204:8090";
+
+export function getCloudUrl() { return CLOUD_URL; }
+
 // ─── Simple in-memory cache ───────────────────────────
 const _cache = new Map<string, { data: any; ts: number }>();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
@@ -194,7 +200,27 @@ async function apiFetch(
     ...((options.headers as Record<string, string>) || {}),
   };
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  return fetch(`${API_BASE_URL}${path}`, { ...options, headers });
+  const res = await fetch(`${API_BASE_URL}${path}`, { ...options, headers });
+
+  // ─── Handle session invalidation (another device logged in) ───
+  if (res.status === 401) {
+    try {
+      const cloned = res.clone();
+      const data = await cloned.json();
+      if (
+        data?.error === 'session_invalidated' ||
+        data?.code === 'SESSION_INVALIDATED'
+      ) {
+        removeStorage(TOKEN_KEY);
+        removeStorage(USER_KEY);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('auth:session_invalidated'));
+        }
+      }
+    } catch {}
+  }
+
+  return res;
 }
 
 // ─── Auth ─────────────────────────────────────────────────
@@ -251,6 +277,10 @@ export async function register(
 }
 
 export async function logout(): Promise<void> {
+  // Invalidate session on server (increments login_version → other devices get kicked)
+  try {
+    await apiFetch("/api/auth/logout", { method: "POST" });
+  } catch {}
   removeStorage(TOKEN_KEY);
   removeStorage(USER_KEY);
 }
@@ -258,6 +288,12 @@ export async function logout(): Promise<void> {
 export async function fetchProfile(): Promise<UserProfile | null> {
   try {
     const res = await apiFetch("/api/auth/profile");
+    if (res.status === 401) {
+      // Token invalid or session invalidated — clear storage
+      removeStorage(TOKEN_KEY);
+      removeStorage(USER_KEY);
+      return null;
+    }
     if (!res.ok) return null;
     const data = await res.json();
     setStorage(USER_KEY, JSON.stringify(data));
@@ -653,6 +689,12 @@ export async function requestFreeStream(
     let streamUrl = data.hlsUrl || "";
     if (!streamUrl) return { success: false, error: "رابط البث غير متوفر" };
 
+    // ─── Use direct cloud URL (no proxy through Next.js) ───────────────
+    // This reduces load on web app server — browser connects directly to VPS
+    if (streamUrl.startsWith("/")) {
+      streamUrl = CLOUD_URL + streamUrl;
+    }
+
     // FFmpeg+HLS: stream may not be ready yet — poll until segments exist
     if (data.ready === false) {
       console.log("[API] ⏳ Stream not ready, waiting for FFmpeg...");
@@ -668,7 +710,8 @@ export async function requestFreeStream(
           if (check.ok) {
             const d = await check.json();
             if (d.ready) {
-              streamUrl = d.hlsUrl || streamUrl;
+              const rawUrl = d.hlsUrl || streamUrl;
+              streamUrl = rawUrl.startsWith("/") ? CLOUD_URL + rawUrl : rawUrl;
               console.log("[API] ✅ Stream ready!");
               break;
             }

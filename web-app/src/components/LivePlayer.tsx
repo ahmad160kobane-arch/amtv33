@@ -137,6 +137,14 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
               lowLatencyMode: false,
               startLevel: -1,
               debug: true, // Enable debug for troubleshooting
+              // ═══ Auth: inject Authorization header for every XHR (manifest + segments) ═══
+              // Needed for direct cloud server access without Next.js proxy
+              xhrSetup: (xhr: XMLHttpRequest, url: string) => {
+                const token = typeof localStorage !== 'undefined'
+                  ? localStorage.getItem('ma_auth_token')
+                  : null;
+                if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+              },
               // ═══ Fast startup — start playing with minimal buffered data ═══
               startFragPrefetch: true,             // prefetch first frag while parsing manifest
               maxStarvationDelay: 2,               // start playback after 2s of buffer (faster)

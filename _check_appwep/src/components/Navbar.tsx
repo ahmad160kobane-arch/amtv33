@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useTheme } from '@/context/ThemeContext';
 import { useAuth } from '@/context/AuthContext';
+import Logo from './Logo';
 
 function IconHome({ active }: { active: boolean }) {
   return active ? (
@@ -147,9 +148,8 @@ export default function Navbar() {
       }`}>
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between gap-4">
           {/* Logo */}
-          <Link href="/" className="flex items-center gap-1.5 flex-shrink-0">
-            <span className="text-brand-primary text-2xl font-black tracking-wide">MA</span>
-            <span className="text-xs text-light-muted dark:text-dark-muted mt-1">streaming</span>
+          <Link href="/" className="flex items-center flex-shrink-0">
+            <Logo />
           </Link>
 
           {/* Desktop nav links */}

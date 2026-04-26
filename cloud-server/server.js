@@ -1,4 +1,4 @@
-/**
+﻿/**
 
  * Ø§Ù„Ø³ÙŠØ±ÙØ± Ø§Ù„Ø³Ø­Ø§Ø¨ÙŠ v3
 
@@ -119,7 +119,12 @@ const upstreamHttpsAgent = new https.Agent({
 
 // â”€â”€â”€ Middleware â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-app.use(cors());
+app.use(cors({
+  origin: true,
+  credentials: true,
+  allowedHeaders: ['Authorization', 'Content-Type', 'Range', 'Accept'],
+  exposedHeaders: ['Content-Range', 'Content-Length', 'Accept-Ranges'],
+}));
 
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
@@ -219,10 +224,54 @@ app.use((req, res, next) => {
 async function _getUserById(userId) {
   return db
     .prepare(
-      "SELECT id, username, plan, expires_at, max_connections, role, is_admin, is_blocked FROM users WHERE id = ?",
+      "SELECT id, username, plan, expires_at, max_connections, role, is_admin, is_blocked, login_version FROM users WHERE id = ?",
     )
     .get(userId);
 }
+
+// ─── Login version cache (5s TTL) for single-session enforcement ───
+const _lvCache2 = new Map();
+const LV_CACHE_TTL2 = 5000;
+
+async function _getLoginVersion(userId) {
+  const cached = _lvCache2.get(userId);
+  if (cached && Date.now() - cached.ts < LV_CACHE_TTL2) return cached.lv;
+  const row = await db.prepare('SELECT login_version FROM users WHERE id = ?').get(userId);
+  const lv = row ? (row.login_version || 0) : 0;
+  _lvCache2.set(userId, { lv, ts: Date.now() });
+  return lv;
+}
+
+// ─── Per-user stream rate limiting (in-memory) ───────────────────
+// Prevents abuse: someone sharing their URL to proxy streams through our server
+const _streamRates = new Map();
+const RATE_WINDOW_MS  = 60 * 1000; // 1 minute window
+const RATE_M3U8_MAX   = 120;       // max manifest requests per minute per user
+const RATE_SEG_MAX    = 800;       // max segment requests per minute per user
+
+function _checkRateLimit(userId, type) {
+  const key = `${userId}:${type}`;
+  const now = Date.now();
+  const max = type === 'm3u8' ? RATE_M3U8_MAX : RATE_SEG_MAX;
+  const entry = _streamRates.get(key) || { count: 0, windowStart: now };
+  if (now - entry.windowStart > RATE_WINDOW_MS) {
+    _streamRates.set(key, { count: 1, windowStart: now });
+    return true;
+  }
+  if (entry.count >= max) return false;
+  entry.count++;
+  _streamRates.set(key, entry);
+  return true;
+}
+
+// Cleanup rate limit map every 5 minutes to prevent memory leak
+setInterval(() => {
+  const cutoff = Date.now() - RATE_WINDOW_MS * 2;
+  for (const [key, entry] of _streamRates) {
+    if (entry.windowStart < cutoff) _streamRates.delete(key);
+  }
+  if (_streamRates.size > 10000) _streamRates.clear(); // safety valve
+}, 5 * 60 * 1000);
 
 // --- Middleware: JWT auth (direct PG) ---
 
@@ -250,6 +299,18 @@ async function requireAuth(req, res, next) {
       if (user.is_blocked)
         return res.status(403).json({ error: "الحساب محظور" });
 
+      // ─── Single-session enforcement ───
+      const dbLv = user.login_version || 0;
+      const jwtLv = decoded.lv ?? 0;
+      if (dbLv !== jwtLv) {
+        _lvCache2.delete(decoded.userId);
+        return res.status(401).json({
+          error: 'session_invalidated',
+          code: 'SESSION_INVALIDATED',
+          message: 'تم تسجيل الدخول من جهاز آخر. يرجى تسجيل الدخول مجدداً.',
+        });
+      }
+
       req.user = user;
 
       return next();
@@ -268,6 +329,7 @@ async function requireAuth(req, res, next) {
     role: "user",
     is_admin: 0,
     is_blocked: 0,
+    login_version: 0,
   };
 
   next();
@@ -776,10 +838,18 @@ app.post(
           { expiresIn: "6h" },
         );
 
+        // Generate short-lived stream token for direct access (without auth header)
+        const stToken = jwt.sign(
+          { userId: req.user.id, streamId: String(xch.stream_id), t: 'stream' },
+          config.JWT_SECRET,
+          { expiresIn: '8h' },
+        );
+        const hlsUrlWithToken = hlsUrl + `&st=${stToken}`;
+
         return res.json({
           success: true,
 
-          hlsUrl,
+          hlsUrl: hlsUrlWithToken,
 
           directUrl: `/xtream-play/${token}/index.m3u8`,
 
@@ -2837,7 +2907,12 @@ app.get("/vod/proxy/:filename", (req, res) => {
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-app.get("/hls/:streamId/:file", (req, res) => {
+app.get("/hls/:streamId/:file", async (req, res) => {
+  // ─── Auth check ───
+  const userId = await _validateStreamAuth(req);
+  if (!userId) return res.status(401).end();
+  if (!_checkRateLimit(userId, 'seg')) return res.status(429).end();
+
   serveHlsFile(
     path.join(config.HLS_DIR, req.params.streamId, req.params.file),
     req.params.file,
@@ -3114,10 +3189,47 @@ app.get("/api/xtream/viewers", requireAuth, (req, res) => {
 
  */
 
+
+// ─── Stream Auth Helper ── validates Bearer token OR ?st= stream token ────
+// Prevents unauthenticated access to /proxy/live/* and /hls/* endpoints
+async function _validateStreamAuth(req) {
+  // 1. Try Authorization header (HLS.js sends this via xhrSetup in browser)
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    try {
+      const decoded = jwt.verify(authHeader.slice(7), config.JWT_SECRET);
+      if (decoded.userId) {
+        const jwtLv = decoded.lv ?? 0;
+        const dbLv = await _getLoginVersion(decoded.userId);
+        if (jwtLv !== dbLv) return null; // session was invalidated (new login from another device)
+        return decoded.userId;
+      }
+    } catch {}
+  }
+  // 2. Try ?st= stream token (for native players / mobile where custom headers are difficult)
+  if (req.query.st) {
+    try {
+      const decoded = jwt.verify(req.query.st, config.JWT_SECRET);
+      if (decoded.userId && decoded.t === 'stream') return decoded.userId;
+    } catch {}
+  }
+  return null;
+}
+
 app.get("/proxy/live/:streamId/index.m3u8", async (req, res) => {
   const { streamId } = req.params;
 
-  const sessionId = req.query.sid || req.ip || "anon";
+  // ─── Auth check ───
+  const userId = await _validateStreamAuth(req);
+  if (!userId) {
+    return res.status(401).json({ error: 'يجب تسجيل الدخول لمشاهدة البث' });
+  }
+  // ─── Rate limit (manifest requests) ───
+  if (!_checkRateLimit(userId, 'm3u8')) {
+    return res.status(429).json({ error: 'تجاوزت حد الطلبات - يرجى الانتظار لحظة' });
+  }
+
+  const sessionId = req.query.sid || userId || req.ip || "anon";
 
   let baseUrl = XTREAM.primary;
 
@@ -3159,7 +3271,13 @@ app.get("/proxy/live/:streamId/index.m3u8", async (req, res) => {
 app.get("/proxy/live/:streamId/seg/:encodedPath(*)", async (req, res) => {
   const { streamId, encodedPath } = req.params;
 
-  const sessionId = req.query.sid || req.ip || "anon";
+  // ─── Auth check ───
+  const userId = await _validateStreamAuth(req);
+  if (!userId) return res.status(401).end();
+  // ─── Rate limit (segment requests) ───
+  if (!_checkRateLimit(userId, 'seg')) return res.status(429).end();
+
+  const sessionId = req.query.sid || userId || req.ip || "anon";
 
   let baseUrl = XTREAM.primary;
 
@@ -3882,3 +4000,4 @@ db.init()
 
     process.exit(1);
   });
+
