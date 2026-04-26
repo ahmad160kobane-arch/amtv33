@@ -310,6 +310,16 @@ db.init = async function () {
     );
   }
 
+  // ─── Migration: add login_version for single-session enforcement ──
+  try {
+    await pool.query(
+      "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_version BIGINT DEFAULT 0",
+    );
+    console.log("[DB] Migration: login_version column added");
+  } catch (e) {
+    /* column already exists */
+  }
+
   // ─── Seed: default subscription plans (with connection variants) ───
   const { rows } = await pool.query(
     "SELECT COUNT(*) as cnt FROM subscription_plans",

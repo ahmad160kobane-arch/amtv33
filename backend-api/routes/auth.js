@@ -27,11 +27,11 @@ router.post('/register', async (req, res) => {
     const password_hash = bcrypt.hashSync(password, 10);
 
     await db.prepare(`
-      INSERT INTO users (id, username, email, password_hash, display_name, plan)
-      VALUES (?, ?, ?, ?, ?, 'free')
+      INSERT INTO users (id, username, email, password_hash, display_name, plan, login_version)
+      VALUES (?, ?, ?, ?, ?, 'free', 0)
     `).run(id, username.trim(), email.trim().toLowerCase(), password_hash, display_name || username);
 
-    const token = generateToken(id);
+    const token = generateToken(id, 0);
 
     res.status(201).json({
       token,
@@ -66,7 +66,14 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'بيانات الدخول غير صحيحة' });
     }
 
-    const token = generateToken(user.id);
+    // ─── Single-session enforcement: increment login_version ───────
+    // All existing sessions (JWTs) with old version become invalid immediately
+    const updated = await db.prepare(
+      'UPDATE users SET login_version = COALESCE(login_version, 0) + 1 WHERE id = ? RETURNING login_version'
+    ).get(user.id);
+    const newLoginVersion = updated ? updated.login_version : 1;
+
+    const token = generateToken(user.id, newLoginVersion);
 
     res.json({
       token,
@@ -270,6 +277,24 @@ router.put('/password', requireAuth, async (req, res) => {
     .run(bcrypt.hashSync(new_password, 10), req.user.id);
 
   res.json({ success: true });
+});
+
+// POST /api/auth/logout — invalidates all existing sessions for this user
+router.post('/logout', requireAuth, async (req, res) => {
+  try {
+    // Increment login_version → all existing JWTs (other devices) become invalid
+    await db.prepare(
+      'UPDATE users SET login_version = COALESCE(login_version, 0) + 1 WHERE id = ?'
+    ).run(req.user.id);
+
+    // Also release all stream sessions
+    await db.prepare('DELETE FROM active_sessions WHERE user_id = ?').run(req.user.id);
+
+    res.json({ success: true, message: 'تم تسجيل الخروج بنجاح' });
+  } catch (err) {
+    console.error('Logout error:', err);
+    res.status(500).json({ error: 'خطأ في الخادم' });
+  }
 });
 
 module.exports = router;
