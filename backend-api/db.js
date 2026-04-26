@@ -1,14 +1,17 @@
-const { Pool, types } = require('pg');
+const { Pool, types } = require("pg");
 
 // Parse BIGINT (type 20) as JS Number instead of string
-types.setTypeParser(20, val => parseInt(val, 10));
+types.setTypeParser(20, (val) => parseInt(val, 10));
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  ssl:
+    process.env.NODE_ENV === "production"
+      ? { rejectUnauthorized: false }
+      : false,
 });
 
-pool.on('error', (err) => console.error('[DB] Pool error:', err.message));
+pool.on("error", (err) => console.error("[DB] Pool error:", err.message));
 
 // ─── SQLite-compatible async wrapper ─────────────────────
 function _convert(sql) {
@@ -35,28 +38,38 @@ const db = {
       },
     };
   },
-  async exec(sql) { await pool.query(sql); },
+  async exec(sql) {
+    await pool.query(sql);
+  },
   pragma() {},
-  async close() { await pool.end(); },
+  async close() {
+    await pool.end();
+  },
 
   // PostgreSQL transaction helper (replaces SQLite db.transaction)
   async runTransaction(fn) {
     const client = await pool.connect();
     try {
-      await client.query('BEGIN');
+      await client.query("BEGIN");
       const prepare = (sql) => {
         const pgSql = _convert(sql);
         return {
-          async get(...p) { return (await client.query(pgSql, p)).rows[0] || undefined; },
-          async all(...p) { return (await client.query(pgSql, p)).rows; },
-          async run(...p) { return { changes: (await client.query(pgSql, p)).rowCount }; },
+          async get(...p) {
+            return (await client.query(pgSql, p)).rows[0] || undefined;
+          },
+          async all(...p) {
+            return (await client.query(pgSql, p)).rows;
+          },
+          async run(...p) {
+            return { changes: (await client.query(pgSql, p)).rowCount };
+          },
         };
       };
       const result = await fn(prepare);
-      await client.query('COMMIT');
+      await client.query("COMMIT");
       return result;
     } catch (e) {
-      await client.query('ROLLBACK');
+      await client.query("ROLLBACK");
       throw e;
     } finally {
       client.release();
@@ -226,6 +239,49 @@ db.init = async function () {
       base_url   TEXT DEFAULT ''
     );
 
+    CREATE TABLE IF NOT EXISTS lulu_catalog (
+      id            TEXT PRIMARY KEY,
+      title         TEXT NOT NULL DEFAULT '',
+      vod_type      TEXT NOT NULL DEFAULT 'movie',
+      poster        TEXT DEFAULT '',
+      backdrop      TEXT DEFAULT '',
+      plot          TEXT DEFAULT '',
+      year          TEXT DEFAULT '',
+      rating        TEXT DEFAULT '',
+      genres        TEXT DEFAULT '',
+      cast_list     TEXT DEFAULT '',
+      director      TEXT DEFAULT '',
+      country       TEXT DEFAULT '',
+      runtime       TEXT DEFAULT '',
+      lang          TEXT DEFAULT '',
+      file_code     TEXT DEFAULT '',
+      hls_url       TEXT DEFAULT '',
+      embed_url     TEXT DEFAULT '',
+      canplay       BOOLEAN DEFAULT false,
+      episode_count INTEGER DEFAULT 0,
+      uploaded_at   TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS lulu_episodes (
+      id          TEXT PRIMARY KEY,
+      catalog_id  TEXT NOT NULL REFERENCES lulu_catalog(id) ON DELETE CASCADE,
+      season      INTEGER DEFAULT 1,
+      episode     INTEGER DEFAULT 1,
+      title       TEXT DEFAULT '',
+      overview    TEXT DEFAULT '',
+      thumbnail   TEXT DEFAULT '',
+      air_date    TEXT DEFAULT '',
+      file_code   TEXT DEFAULT '',
+      hls_url     TEXT DEFAULT '',
+      embed_url   TEXT DEFAULT '',
+      canplay     BOOLEAN DEFAULT false
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_lulu_catalog_type    ON lulu_catalog(vod_type);
+    CREATE INDEX IF NOT EXISTS idx_lulu_catalog_canplay ON lulu_catalog(canplay);
+    CREATE INDEX IF NOT EXISTS idx_lulu_episodes_cat    ON lulu_episodes(catalog_id);
+    CREATE INDEX IF NOT EXISTS idx_lulu_episodes_canplay ON lulu_episodes(canplay);
+
     CREATE INDEX IF NOT EXISTS idx_vod_type ON vod(vod_type);
     CREATE INDEX IF NOT EXISTS idx_episodes_vod ON episodes(vod_id);
     CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id);
@@ -243,14 +299,21 @@ db.init = async function () {
 
   // ─── Migration: add is_direct_passthrough column if missing ──────
   try {
-    await pool.query('ALTER TABLE channels ADD COLUMN IF NOT EXISTS is_direct_passthrough INTEGER DEFAULT 0');
-    console.log('[DB] Migration: is_direct_passthrough column added');
+    await pool.query(
+      "ALTER TABLE channels ADD COLUMN IF NOT EXISTS is_direct_passthrough INTEGER DEFAULT 0",
+    );
+    console.log("[DB] Migration: is_direct_passthrough column added");
   } catch (e) {
-    console.log('[DB] Migration: is_direct_passthrough already exists or error:', e.message);
+    console.log(
+      "[DB] Migration: is_direct_passthrough already exists or error:",
+      e.message,
+    );
   }
 
   // ─── Seed: default subscription plans (with connection variants) ───
-  const { rows } = await pool.query('SELECT COUNT(*) as cnt FROM subscription_plans');
+  const { rows } = await pool.query(
+    "SELECT COUNT(*) as cnt FROM subscription_plans",
+  );
   if (parseInt(rows[0].cnt) === 0) {
     await pool.query(`
       INSERT INTO subscription_plans (id, name, duration_days, max_connections, price_usd) VALUES
@@ -268,28 +331,38 @@ db.init = async function () {
 
   // ─── Migration: add max_connections columns if missing ──────
   try {
-    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS max_connections INTEGER DEFAULT 1');
-    await pool.query('ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS max_connections INTEGER DEFAULT 1');
-    await pool.query('ALTER TABLE activation_codes ADD COLUMN IF NOT EXISTS max_connections INTEGER DEFAULT 1');
-  } catch (e) { /* columns already exist */ }
+    await pool.query(
+      "ALTER TABLE users ADD COLUMN IF NOT EXISTS max_connections INTEGER DEFAULT 1",
+    );
+    await pool.query(
+      "ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS max_connections INTEGER DEFAULT 1",
+    );
+    await pool.query(
+      "ALTER TABLE activation_codes ADD COLUMN IF NOT EXISTS max_connections INTEGER DEFAULT 1",
+    );
+  } catch (e) {
+    /* columns already exist */
+  }
 
   // ─── Seed: default admin user ──────────────────────────
-  const { rows: adminRows } = await pool.query("SELECT COUNT(*) as cnt FROM users WHERE is_admin = 1");
+  const { rows: adminRows } = await pool.query(
+    "SELECT COUNT(*) as cnt FROM users WHERE is_admin = 1",
+  );
   if (parseInt(adminRows[0].cnt) === 0) {
-    const bcrypt = require('bcryptjs');
-    const { v4: uuidv4 } = require('uuid');
+    const bcrypt = require("bcryptjs");
+    const { v4: uuidv4 } = require("uuid");
     const adminId = uuidv4();
-    const adminHash = bcrypt.hashSync('M@str3am!2026$Adm', 10);
+    const adminHash = bcrypt.hashSync("M@str3am!2026$Adm", 10);
     await pool.query(
       `INSERT INTO users (id, username, email, password_hash, display_name, plan, is_admin, role)
        VALUES ($1, 'admin', 'admin@ma-streaming.com', $2, 'المشرف', 'premium', 1, 'admin')
        ON CONFLICT (username) DO NOTHING`,
-      [adminId, adminHash]
+      [adminId, adminHash],
     );
-    console.log('[DB] Admin user created');
+    console.log("[DB] Admin user created");
   }
 
-  console.log('[DB] PostgreSQL tables ready');
+  console.log("[DB] PostgreSQL tables ready");
 };
 
 module.exports = db;
