@@ -1,20 +1,20 @@
 // ============================================================
 // API Service - MA Streaming Backend
 // ============================================================
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 // const API_BASE_URL = 'http://192.168.0.116:3000'; // Your local network IP
 // const API_BASE_URL = 'http://10.0.2.2:3000'; // Android emulator only
 // const API_BASE_URL = 'http://localhost:3000'; // iOS simulator only
-const API_BASE_URL = 'https://amtv33-production.up.railway.app'; // Production
+const API_BASE_URL = "https://amtv33-production.up.railway.app"; // Production
 
 // السيرفر السحابي — التطبيق يتصل به مباشرة للبث
 // const CLOUD_SERVER_URL = 'http://192.168.0.116:8090';
-const CLOUD_SERVER_URL = 'http://62.171.153.204:8090'; // Production VPS
+const CLOUD_SERVER_URL = "http://62.171.153.204:8090"; // Production VPS
 // const CLOUD_SERVER_URL = 'http://10.0.2.2:8090'; // Android emulator only
 
-const TOKEN_KEY = '@ma_auth_token';
-const USER_KEY = '@ma_user';
+const TOKEN_KEY = "@ma_auth_token";
+const USER_KEY = "@ma_user";
 
 // ─── Types ───────────────────────────────────────────────
 export interface Channel {
@@ -30,7 +30,7 @@ export interface Channel {
 export interface VodItem {
   id: string;
   title: string;
-  vod_type: 'movie' | 'series';
+  vod_type: "movie" | "series";
   category: string;
   poster: string;
   year: string;
@@ -71,7 +71,7 @@ export interface UserProfile {
   plan: string;
   expires_at?: string;
   is_admin: boolean;
-  role?: 'user' | 'agent' | 'admin';
+  role?: "user" | "agent" | "admin";
   balance?: number;
   stats?: { favorites: number; watched: number };
 }
@@ -83,7 +83,7 @@ export interface AuthResult {
 
 // ─── Subscription ─────────────────────────────────────────
 export interface SubscriptionInfo {
-  plan: 'free' | 'premium';
+  plan: "free" | "premium";
   expires_at: string | null;
   isPremium: boolean;
   daysLeft: number | null;
@@ -109,7 +109,7 @@ export interface SubscriptionPlan {
 export interface ActivationCode {
   id: string;
   code: string;
-  status: 'unused' | 'used' | 'expired' | 'cancelled';
+  status: "unused" | "used" | "expired" | "cancelled";
   created_at: string;
   activated_at: string | null;
   plan_name: string;
@@ -119,19 +119,21 @@ export interface ActivationCode {
 
 export async function fetchSubscription(): Promise<SubscriptionInfo | null> {
   try {
-    const res = await apiFetch('/api/auth/subscription');
+    const res = await apiFetch("/api/auth/subscription");
     if (!res.ok) return null;
     return await res.json();
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 export async function activateCode(code: string): Promise<ActivateCodeResult> {
-  const res = await apiFetch('/api/auth/activate-code', {
-    method: 'POST',
+  const res = await apiFetch("/api/auth/activate-code", {
+    method: "POST",
     body: JSON.stringify({ code }),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'فشل تفعيل الكود');
+  if (!res.ok) throw new Error(data.error || "فشل تفعيل الكود");
   return data;
 }
 
@@ -143,58 +145,78 @@ export interface AgentInfo {
 
 export async function fetchAgentInfo(): Promise<AgentInfo | null> {
   try {
-    const res = await apiFetch('/api/agent/info');
+    const res = await apiFetch("/api/agent/info");
     if (!res.ok) return null;
     return await res.json();
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 export async function fetchAgentPlans(): Promise<SubscriptionPlan[]> {
   try {
-    const res = await apiFetch('/api/agent/plans');
+    const res = await apiFetch("/api/agent/plans");
     if (!res.ok) return [];
     const data = await res.json();
     return data.plans || [];
-  } catch { return []; }
+  } catch {
+    return [];
+  }
 }
 
-export async function createActivationCodes(plan_id: string, quantity = 1): Promise<{ codes: { id: string; code: string }[]; cost: number; remaining_balance: number; plan: { name: string } }> {
-  const res = await apiFetch('/api/agent/create-code', {
-    method: 'POST',
+export async function createActivationCodes(
+  plan_id: string,
+  quantity = 1,
+): Promise<{
+  codes: { id: string; code: string }[];
+  cost: number;
+  remaining_balance: number;
+  plan: { name: string };
+}> {
+  const res = await apiFetch("/api/agent/create-code", {
+    method: "POST",
     body: JSON.stringify({ plan_id, quantity }),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'فشل إنشاء الكود');
+  if (!res.ok) throw new Error(data.error || "فشل إنشاء الكود");
   return data;
 }
 
-export async function fetchAgentCodes(params?: { status?: string; limit?: number; offset?: number }): Promise<{ codes: ActivationCode[]; total: number }> {
+export async function fetchAgentCodes(params?: {
+  status?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<{ codes: ActivationCode[]; total: number }> {
   try {
     const q = new URLSearchParams();
-    if (params?.status) q.set('status', params.status);
-    if (params?.limit) q.set('limit', String(params.limit));
-    if (params?.offset) q.set('offset', String(params.offset));
+    if (params?.status) q.set("status", params.status);
+    if (params?.limit) q.set("limit", String(params.limit));
+    if (params?.offset) q.set("offset", String(params.offset));
     const qs = q.toString();
-    const res = await apiFetch(`/api/agent/codes${qs ? '?' + qs : ''}`);
+    const res = await apiFetch(`/api/agent/codes${qs ? "?" + qs : ""}`);
     if (!res.ok) return { codes: [], total: 0 };
     return await res.json();
-  } catch { return { codes: [], total: 0 }; }
+  } catch {
+    return { codes: [], total: 0 };
+  }
 }
 
-export async function cancelActivationCode(code_id: string): Promise<{ success: boolean; refunded: number; balance: number }> {
-  const res = await apiFetch('/api/agent/cancel-code', {
-    method: 'POST',
+export async function cancelActivationCode(
+  code_id: string,
+): Promise<{ success: boolean; refunded: number; balance: number }> {
+  const res = await apiFetch("/api/agent/cancel-code", {
+    method: "POST",
     body: JSON.stringify({ code_id }),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'فشل إلغاء الكود');
+  if (!res.ok) throw new Error(data.error || "فشل إلغاء الكود");
   return data;
 }
 
 export interface AgentTransaction {
   id: string;
   agent_id: string;
-  type: 'credit' | 'debit';
+  type: "credit" | "debit";
   amount: number;
   balance_after: number;
   description: string;
@@ -202,15 +224,20 @@ export interface AgentTransaction {
   created_at: string;
 }
 
-export async function fetchAgentTransactions(params?: { limit?: number; offset?: number }): Promise<{ transactions: AgentTransaction[]; total: number }> {
+export async function fetchAgentTransactions(params?: {
+  limit?: number;
+  offset?: number;
+}): Promise<{ transactions: AgentTransaction[]; total: number }> {
   try {
     const q = new URLSearchParams();
-    if (params?.limit) q.set('limit', String(params.limit));
-    if (params?.offset) q.set('offset', String(params.offset));
+    if (params?.limit) q.set("limit", String(params.limit));
+    if (params?.offset) q.set("offset", String(params.offset));
     const res = await apiFetch(`/api/agent/transactions?${q.toString()}`);
     if (!res.ok) return { transactions: [], total: 0 };
     return await res.json();
-  } catch { return { transactions: [], total: 0 }; }
+  } catch {
+    return { transactions: [], total: 0 };
+  }
 }
 
 // ─── Token Management ────────────────────────────────────
@@ -220,7 +247,7 @@ let _tokenPromise: Promise<string | null> | null = null;
 export async function getToken(): Promise<string | null> {
   if (_cachedToken) return _cachedToken;
   if (_tokenPromise) return _tokenPromise;
-  _tokenPromise = AsyncStorage.getItem(TOKEN_KEY).then(t => {
+  _tokenPromise = AsyncStorage.getItem(TOKEN_KEY).then((t) => {
     _cachedToken = t;
     _tokenPromise = null;
     return t;
@@ -246,41 +273,54 @@ export async function getSavedUser(): Promise<UserProfile | null> {
   try {
     const json = await AsyncStorage.getItem(USER_KEY);
     return json ? JSON.parse(json) : null;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 // ─── API Helper ──────────────────────────────────────────
-export async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
+export async function apiFetch(
+  path: string,
+  options: RequestInit = {},
+): Promise<Response> {
   const token = await getToken();
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...(options.headers as Record<string, string> || {}),
+    "Content-Type": "application/json",
+    ...((options.headers as Record<string, string>) || {}),
   };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  if (token) headers["Authorization"] = `Bearer ${token}`;
 
   return fetch(`${API_BASE_URL}${path}`, { ...options, headers });
 }
 
 // ─── Auth ────────────────────────────────────────────────
-export async function login(login: string, password: string): Promise<AuthResult> {
-  const res = await apiFetch('/api/auth/login', {
-    method: 'POST',
+export async function login(
+  login: string,
+  password: string,
+): Promise<AuthResult> {
+  const res = await apiFetch("/api/auth/login", {
+    method: "POST",
     body: JSON.stringify({ login, password }),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'فشل تسجيل الدخول');
+  if (!res.ok) throw new Error(data.error || "فشل تسجيل الدخول");
   await setToken(data.token);
   await saveUser(data.user);
   return data;
 }
 
-export async function register(username: string, email: string, password: string, display_name?: string): Promise<AuthResult> {
-  const res = await apiFetch('/api/auth/register', {
-    method: 'POST',
+export async function register(
+  username: string,
+  email: string,
+  password: string,
+  display_name?: string,
+): Promise<AuthResult> {
+  const res = await apiFetch("/api/auth/register", {
+    method: "POST",
     body: JSON.stringify({ username, email, password, display_name }),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'فشل إنشاء الحساب');
+  if (!res.ok) throw new Error(data.error || "فشل إنشاء الحساب");
   await setToken(data.token);
   await saveUser(data.user);
   return data;
@@ -298,12 +338,14 @@ export async function isLoggedIn(): Promise<boolean> {
 // ─── Profile ─────────────────────────────────────────────
 export async function fetchProfile(): Promise<UserProfile | null> {
   try {
-    const res = await apiFetch('/api/auth/profile');
+    const res = await apiFetch("/api/auth/profile");
     if (!res.ok) return null;
     const user = await res.json();
     await saveUser(user);
     return user;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 export interface WatchHistoryItem {
@@ -316,15 +358,20 @@ export interface WatchHistoryItem {
   watched_at: string;
 }
 
-export async function fetchWatchHistory(params?: { limit?: number; offset?: number }): Promise<{ items: WatchHistoryItem[]; total: number }> {
+export async function fetchWatchHistory(params?: {
+  limit?: number;
+  offset?: number;
+}): Promise<{ items: WatchHistoryItem[]; total: number }> {
   try {
     const q = new URLSearchParams();
-    if (params?.limit) q.set('limit', String(params.limit));
-    if (params?.offset) q.set('offset', String(params.offset));
+    if (params?.limit) q.set("limit", String(params.limit));
+    if (params?.offset) q.set("offset", String(params.offset));
     const res = await apiFetch(`/api/auth/history?${q.toString()}`);
     if (!res.ok) return { items: [], total: 0 };
     return await res.json();
-  } catch { return { items: [], total: 0 }; }
+  } catch {
+    return { items: [], total: 0 };
+  }
 }
 
 export async function addWatchHistory(opts: {
@@ -335,35 +382,48 @@ export async function addWatchHistory(opts: {
   content_type?: string;
 }): Promise<void> {
   try {
-    await apiFetch('/api/auth/history', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    await apiFetch("/api/auth/history", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(opts),
     });
   } catch {}
 }
 
 // ─── Channels ────────────────────────────────────────────
-export async function fetchChannels(params?: { group?: string; search?: string; limit?: number; offset?: number }): Promise<PaginatedResult<Channel>> {
+export async function fetchChannels(params?: {
+  group?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<PaginatedResult<Channel>> {
   try {
     const q = new URLSearchParams();
-    if (params?.group) q.set('group', params.group);
-    if (params?.search) q.set('search', params.search);
-    if (params?.limit) q.set('limit', String(params.limit));
-    if (params?.offset) q.set('offset', String(params.offset));
+    if (params?.group) q.set("group", params.group);
+    if (params?.search) q.set("search", params.search);
+    if (params?.limit) q.set("limit", String(params.limit));
+    if (params?.offset) q.set("offset", String(params.offset));
     const qs = q.toString();
-    const res = await apiFetch(`/api/channels${qs ? '?' + qs : ''}`);
+    const res = await apiFetch(`/api/channels${qs ? "?" + qs : ""}`);
     const data = await res.json();
-    return { items: data.channels || [], total: data.total || 0, hasMore: data.hasMore || false };
-  } catch { return { items: [], total: 0, hasMore: false }; }
+    return {
+      items: data.channels || [],
+      total: data.total || 0,
+      hasMore: data.hasMore || false,
+    };
+  } catch {
+    return { items: [], total: 0, hasMore: false };
+  }
 }
 
 export async function fetchChannelGroups(): Promise<string[]> {
   try {
-    const res = await apiFetch('/api/channels/groups');
+    const res = await apiFetch("/api/channels/groups");
     const data = await res.json();
     return data.groups || [];
-  } catch { return []; }
+  } catch {
+    return [];
+  }
 }
 
 // ─── Pagination Types ───────────────────────────────────
@@ -374,25 +434,37 @@ export interface PaginatedResult<T> {
 }
 
 // ─── Favorites ──────────────────────────────────────────
-export async function checkFavorite(itemId: string, itemType: 'vod' | 'channel'): Promise<boolean> {
+export async function checkFavorite(
+  itemId: string,
+  itemType: "vod" | "channel",
+): Promise<boolean> {
   try {
-    const res = await apiFetch('/api/vod/favorites/list');
+    const res = await apiFetch("/api/vod/favorites/list");
     if (!res.ok) return false;
     const data = await res.json();
-    if (itemType === 'vod') return (data.vod || []).some((v: any) => v.id === itemId);
+    if (itemType === "vod")
+      return (data.vod || []).some((v: any) => v.id === itemId);
     return (data.channels || []).some((c: any) => c.id === itemId);
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
-export async function toggleFavorite(itemId: string, itemType: 'vod' | 'channel', meta?: { title?: string; poster?: string; content_type?: string }): Promise<boolean> {
+export async function toggleFavorite(
+  itemId: string,
+  itemType: "vod" | "channel",
+  meta?: { title?: string; poster?: string; content_type?: string },
+): Promise<boolean> {
   try {
-    const res = await apiFetch('/api/vod/favorite', {
-      method: 'POST',
+    const res = await apiFetch("/api/vod/favorite", {
+      method: "POST",
       body: JSON.stringify({ item_id: itemId, item_type: itemType, ...meta }),
     });
     const data = await res.json();
     return data.favorited ?? false;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 // ─── Ratings ────────────────────────────────────────────
@@ -407,16 +479,21 @@ export async function fetchRating(vodId: string): Promise<RatingInfo> {
     const res = await apiFetch(`/api/vod/${vodId}/rating`);
     if (!res.ok) return { average: 0, count: 0, userScore: 0 };
     return await res.json();
-  } catch { return { average: 0, count: 0, userScore: 0 }; }
+  } catch {
+    return { average: 0, count: 0, userScore: 0 };
+  }
 }
 
-export async function submitRating(vodId: string, score: number): Promise<RatingInfo> {
-  const res = await apiFetch('/api/vod/rate', {
-    method: 'POST',
+export async function submitRating(
+  vodId: string,
+  score: number,
+): Promise<RatingInfo> {
+  const res = await apiFetch("/api/vod/rate", {
+    method: "POST",
     body: JSON.stringify({ vod_id: vodId, score }),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'فشل التقييم');
+  if (!res.ok) throw new Error(data.error || "فشل التقييم");
   return data;
 }
 
@@ -426,10 +503,15 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 function getCached<T>(key: string): T | null {
   const e = _cache.get(key);
   if (!e) return null;
-  if (Date.now() - e.ts > CACHE_TTL_MS) { _cache.delete(key); return null; }
+  if (Date.now() - e.ts > CACHE_TTL_MS) {
+    _cache.delete(key);
+    return null;
+  }
   return e.data as T;
 }
-function setCached(key: string, data: any) { _cache.set(key, { data, ts: Date.now() }); }
+function setCached(key: string, data: any) {
+  _cache.set(key, { data, ts: Date.now() });
+}
 
 // ─── VidSrc Content API (أفلام ومسلسلات من vidsrc عبر السيرفر السحابي) ─────
 
@@ -445,7 +527,7 @@ export interface VidsrcItem {
   genres: string[];
   description?: string;
   quality: string;
-  vod_type: 'movie' | 'series';
+  vod_type: "movie" | "series";
   embed_url?: string;
   time_added?: string;
 }
@@ -487,15 +569,21 @@ export interface VidsrcBrowseResult {
 }
 
 export async function fetchVidsrcHome(): Promise<VidsrcHomeData> {
-  const cached = getCached<VidsrcHomeData>('vidsrc_home');
+  const cached = getCached<VidsrcHomeData>("vidsrc_home");
   if (cached) return cached;
   try {
-    const res = await cloudFetch('/api/vidsrc/home');
+    const res = await cloudFetch("/api/vidsrc/home");
     const data = await res.json();
-    setCached('vidsrc_home', data);
+    setCached("vidsrc_home", data);
     return data;
   } catch {
-    return { latestMovies: [], latestTvShows: [], trending: [], popularMovies: [], popularTvShows: [] };
+    return {
+      latestMovies: [],
+      latestTvShows: [],
+      trending: [],
+      popularMovies: [],
+      popularTvShows: [],
+    };
   }
 }
 
@@ -506,16 +594,16 @@ export async function fetchVidsrcBrowse(params?: {
   limit?: number;
 }): Promise<VidsrcBrowseResult> {
   const q = new URLSearchParams();
-  if (params?.type) q.set('type', params.type);
-  if (params?.page) q.set('page', String(params.page));
-  if (params?.category) q.set('category', params.category);
-  if (params?.limit) q.set('limit', String(params.limit));
+  if (params?.type) q.set("type", params.type);
+  if (params?.page) q.set("page", String(params.page));
+  if (params?.category) q.set("category", params.category);
+  if (params?.limit) q.set("limit", String(params.limit));
   const qs = q.toString();
   const cacheKey = `vidsrc_browse_${qs}`;
   const cached = getCached<VidsrcBrowseResult>(cacheKey);
   if (cached) return cached;
   try {
-    const res = await cloudFetch(`/api/vidsrc/browse${qs ? '?' + qs : ''}`);
+    const res = await cloudFetch(`/api/vidsrc/browse${qs ? "?" + qs : ""}`);
     const data = await res.json();
     setCached(cacheKey, data);
     return data;
@@ -530,7 +618,9 @@ export async function searchVidsrc(query: string): Promise<VidsrcItem[]> {
   const cached = getCached<VidsrcItem[]>(cacheKey);
   if (cached) return cached;
   try {
-    const res = await cloudFetch(`/api/vidsrc/search?query=${encodeURIComponent(query.trim())}`);
+    const res = await cloudFetch(
+      `/api/vidsrc/search?query=${encodeURIComponent(query.trim())}`,
+    );
     const data = await res.json();
     const items = data.results || data.items || [];
     setCached(cacheKey, items);
@@ -540,7 +630,10 @@ export async function searchVidsrc(query: string): Promise<VidsrcItem[]> {
   }
 }
 
-export async function fetchVidsrcDetail(type: 'movie' | 'tv', id: string): Promise<VidsrcDetail | null> {
+export async function fetchVidsrcDetail(
+  type: "movie" | "tv",
+  id: string,
+): Promise<VidsrcDetail | null> {
   try {
     const res = await cloudFetch(`/api/vidsrc/detail/${type}/${id}`);
     if (!res.ok) return null;
@@ -550,7 +643,10 @@ export async function fetchVidsrcDetail(type: 'movie' | 'tv', id: string): Promi
   }
 }
 
-export async function fetchVidsrcSearch(query: string, page = 1): Promise<VidsrcBrowseResult> {
+export async function fetchVidsrcSearch(
+  query: string,
+  page = 1,
+): Promise<VidsrcBrowseResult> {
   try {
     const q = new URLSearchParams({ q: query, page: String(page) });
     const res = await cloudFetch(`/api/vidsrc/search?${q.toString()}`);
@@ -560,7 +656,9 @@ export async function fetchVidsrcSearch(query: string, page = 1): Promise<Vidsrc
   }
 }
 
-export async function fetchVidsrcLatestEpisodes(page = 1): Promise<VidsrcItem[]> {
+export async function fetchVidsrcLatestEpisodes(
+  page = 1,
+): Promise<VidsrcItem[]> {
   try {
     const res = await cloudFetch(`/api/vidsrc/episodes?page=${page}`);
     const data = await res.json();
@@ -573,41 +671,54 @@ export async function fetchVidsrcLatestEpisodes(page = 1): Promise<VidsrcItem[]>
 /**
  * بث من Consumet باستخدام TMDB ID
  */
-export async function requestVidsrcStream(
-  opts: { tmdbId?: string; type?: 'movie' | 'tv'; season?: number; episode?: number; title?: string; releaseYear?: number }
-): Promise<StreamResult> {
+export async function requestVidsrcStream(opts: {
+  tmdbId?: string;
+  type?: "movie" | "tv";
+  season?: number;
+  episode?: number;
+  title?: string;
+  releaseYear?: number;
+}): Promise<StreamResult> {
   try {
-    const res = await cloudFetch('/api/stream/vidsrc', {
-      method: 'POST',
+    const res = await cloudFetch("/api/stream/vidsrc", {
+      method: "POST",
       body: JSON.stringify(opts),
     });
     const data = await res.json();
     if (!res.ok) {
-      return { success: false, error: data.message || data.error, requiresSubscription: !!data.requiresSubscription, expired: !!data.expired };
+      return {
+        success: false,
+        error: data.message || data.error,
+        requiresSubscription: !!data.requiresSubscription,
+        expired: !!data.expired,
+      };
     }
-    if (data.hlsUrl && !data.hlsUrl.startsWith('http')) {
+    if (data.hlsUrl && !data.hlsUrl.startsWith("http")) {
       data.hlsUrl = `${CLOUD_SERVER_URL}${data.hlsUrl}`;
     }
-    if (data.vodUrl && !data.vodUrl.startsWith('http')) {
+    if (data.vodUrl && !data.vodUrl.startsWith("http")) {
       data.vodUrl = `${CLOUD_SERVER_URL}${data.vodUrl}`;
     }
     if (data.subtitles) {
       data.subtitles = data.subtitles.map((s: any) => ({
         ...s,
-        url: s.url.startsWith('http') ? s.url : `${CLOUD_SERVER_URL}${s.url}`,
+        url: s.url.startsWith("http") ? s.url : `${CLOUD_SERVER_URL}${s.url}`,
       }));
     }
     // resolve quality URLs
     if (data.qualities) {
       for (const q of Object.keys(data.qualities)) {
-        if (data.qualities[q].url && !data.qualities[q].url.startsWith('http')) {
+        if (
+          data.qualities[q].url &&
+          !data.qualities[q].url.startsWith("http")
+        ) {
           data.qualities[q].url = `${CLOUD_SERVER_URL}${data.qualities[q].url}`;
         }
       }
     }
     return data;
   } catch (err: any) {
-    return { success: false, error: err.message || 'خطأ في الاتصال بالسيرفر' };
+    return { success: false, error: err.message || "خطأ في الاتصال بالسيرفر" };
   }
 }
 
@@ -628,7 +739,12 @@ export interface StreamResult {
   contentLength?: number;
   acceptRanges?: boolean;
   streamId?: string;
-  subtitles?: { language: string; label?: string; url: string; type?: string }[];
+  subtitles?: {
+    language: string;
+    label?: string;
+    url: string;
+    type?: string;
+  }[];
   qualities?: Record<string, { url: string; type: string }>;
   headers?: Record<string, string>;
   error?: string;
@@ -637,10 +753,16 @@ export interface StreamResult {
 }
 
 /** Helper: طلب مع JWT للسيرفر السحابي */
-async function cloudFetch(endpoint: string, options: RequestInit = {}): Promise<Response> {
+async function cloudFetch(
+  endpoint: string,
+  options: RequestInit = {},
+): Promise<Response> {
   const token = await getToken();
-  const headers: any = { 'Content-Type': 'application/json', ...options.headers };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const headers: any = {
+    "Content-Type": "application/json",
+    ...options.headers,
+  };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
   return fetch(`${CLOUD_SERVER_URL}${endpoint}`, { ...options, headers });
 }
 
@@ -648,22 +770,31 @@ async function cloudFetch(endpoint: string, options: RequestInit = {}): Promise<
  * طلب بث قناة مباشرة — التطبيق يتصل مباشرة بالسيرفر السحابي
  * السيرفر يتحقق من JWT ويجلب رابط البث من DB ويشغل FFmpeg
  */
-export async function requestLiveStream(channelId: string): Promise<StreamResult> {
+export async function requestLiveStream(
+  channelId: string,
+): Promise<StreamResult> {
   try {
-    const res = await cloudFetch(`/api/stream/live/${channelId}`, { method: 'POST' });
+    const res = await cloudFetch(`/api/stream/live/${channelId}`, {
+      method: "POST",
+    });
     const data = await res.json();
     if (!res.ok) {
-      return { success: false, error: data.message || data.error, requiresSubscription: !!data.requiresSubscription, expired: !!data.expired };
+      return {
+        success: false,
+        error: data.message || data.error,
+        requiresSubscription: !!data.requiresSubscription,
+        expired: !!data.expired,
+      };
     }
-    if (data.hlsUrl && !data.hlsUrl.startsWith('http')) {
+    if (data.hlsUrl && !data.hlsUrl.startsWith("http")) {
       data.hlsUrl = `${CLOUD_SERVER_URL}${data.hlsUrl}`;
     }
-    if (data.vodUrl && !data.vodUrl.startsWith('http')) {
+    if (data.vodUrl && !data.vodUrl.startsWith("http")) {
       data.vodUrl = `${CLOUD_SERVER_URL}${data.vodUrl}`;
     }
     return data;
   } catch (err: any) {
-    return { success: false, error: err.message || 'خطأ في الاتصال بالسيرفر' };
+    return { success: false, error: err.message || "خطأ في الاتصال بالسيرفر" };
   }
 }
 
@@ -672,35 +803,46 @@ export async function requestLiveStream(channelId: string): Promise<StreamResult
  */
 export async function requestVodStream(vodId: string): Promise<StreamResult> {
   try {
-    const res = await cloudFetch(`/api/stream/vod/${encodeURIComponent(vodId)}`, { method: 'POST' });
+    const res = await cloudFetch(
+      `/api/stream/vod/${encodeURIComponent(vodId)}`,
+      { method: "POST" },
+    );
     const data = await res.json();
     if (!res.ok) {
-      return { success: false, error: data.message || data.error, requiresSubscription: !!data.requiresSubscription, expired: !!data.expired };
+      return {
+        success: false,
+        error: data.message || data.error,
+        requiresSubscription: !!data.requiresSubscription,
+        expired: !!data.expired,
+      };
     }
-    if (data.hlsUrl && !data.hlsUrl.startsWith('http')) {
+    if (data.hlsUrl && !data.hlsUrl.startsWith("http")) {
       data.hlsUrl = `${CLOUD_SERVER_URL}${data.hlsUrl}`;
     }
-    if (data.vodUrl && !data.vodUrl.startsWith('http')) {
+    if (data.vodUrl && !data.vodUrl.startsWith("http")) {
       data.vodUrl = `${CLOUD_SERVER_URL}${data.vodUrl}`;
     }
     // تحويل روابط الترجمات لروابط كاملة
     if (data.subtitles) {
       data.subtitles = data.subtitles.map((s: any) => ({
         ...s,
-        url: s.url.startsWith('http') ? s.url : `${CLOUD_SERVER_URL}${s.url}`,
+        url: s.url.startsWith("http") ? s.url : `${CLOUD_SERVER_URL}${s.url}`,
       }));
     }
     // resolve quality URLs
     if (data.qualities) {
       for (const q of Object.keys(data.qualities)) {
-        if (data.qualities[q].url && !data.qualities[q].url.startsWith('http')) {
+        if (
+          data.qualities[q].url &&
+          !data.qualities[q].url.startsWith("http")
+        ) {
           data.qualities[q].url = `${CLOUD_SERVER_URL}${data.qualities[q].url}`;
         }
       }
     }
     return data;
   } catch (err: any) {
-    return { success: false, error: err.message || 'خطأ في الاتصال بالسيرفر' };
+    return { success: false, error: err.message || "خطأ في الاتصال بالسيرفر" };
   }
 }
 
@@ -709,7 +851,7 @@ export async function requestVodStream(vodId: string): Promise<StreamResult> {
  */
 export async function releaseStream(streamId: string): Promise<void> {
   try {
-    await cloudFetch(`/api/stream/release/${streamId}`, { method: 'POST' });
+    await cloudFetch(`/api/stream/release/${streamId}`, { method: "POST" });
   } catch {}
 }
 
@@ -721,33 +863,44 @@ export async function isStreamReady(streamId: string): Promise<boolean> {
     const res = await cloudFetch(`/api/stream/ready/${streamId}`);
     const data = await res.json();
     return data.ready || false;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 /**
  * جلب معلومات البث (المدة) — يُستدعى بشكل دوري حتى تتوفر المدة
  */
-export async function fetchStreamInfo(streamId: string): Promise<{ duration?: number; completed?: boolean } | null> {
+export async function fetchStreamInfo(
+  streamId: string,
+): Promise<{ duration?: number; completed?: boolean } | null> {
   try {
     const res = await cloudFetch(`/api/stream/info/${streamId}`);
     if (!res.ok) return null;
     return await res.json();
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 /**
  * Seeking في VOD — إعادة بدء FFmpeg من موضع جديد
  * يُستخدم عندما المستخدم يقفز لموضع لم يتم تحميله بعد
  */
-export async function seekVodStream(streamId: string, positionSec: number): Promise<{ success: boolean }> {
+export async function seekVodStream(
+  streamId: string,
+  positionSec: number,
+): Promise<{ success: boolean }> {
   try {
     const res = await cloudFetch(`/api/stream/seek/${streamId}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ position: positionSec }),
     });
     return await res.json();
-  } catch { return { success: false }; }
+  } catch {
+    return { success: false };
+  }
 }
 
 /**
@@ -755,16 +908,34 @@ export async function seekVodStream(streamId: string, positionSec: number): Prom
  */
 export async function fetchMediaInfo(streamId: string): Promise<{
   duration: number;
-  videoInfo: { width: number; height: number; codec: string; bitrate: number } | null;
-  subtitleTracks: { index: number; codec: string; language: string; title: string }[];
-  audioTracks: { index: number; codec: string; language: string; title: string; channels: number }[];
+  videoInfo: {
+    width: number;
+    height: number;
+    codec: string;
+    bitrate: number;
+  } | null;
+  subtitleTracks: {
+    index: number;
+    codec: string;
+    language: string;
+    title: string;
+  }[];
+  audioTracks: {
+    index: number;
+    codec: string;
+    language: string;
+    title: string;
+    channels: number;
+  }[];
   probing?: boolean;
 } | null> {
   try {
     const res = await cloudFetch(`/api/stream/media-info/${streamId}`);
     if (!res.ok) return null;
     return await res.json();
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -788,21 +959,24 @@ export interface Subtitle {
 export async function fetchSubtitles(params: {
   tmdbId?: string;
   imdbId?: string;
-  type?: 'movie' | 'tv';
+  type?: "movie" | "tv";
   season?: number;
   episode?: number;
 }): Promise<Subtitle[]> {
   try {
     const query = new URLSearchParams();
-    if (params.tmdbId) query.set('tmdbId', params.tmdbId);
-    if (params.imdbId) query.set('imdbId', params.imdbId);
-    if (params.type) query.set('type', params.type);
-    if (params.season) query.set('season', String(params.season));
-    if (params.episode) query.set('episode', String(params.episode));
+    if (params.tmdbId) query.set("tmdbId", params.tmdbId);
+    if (params.imdbId) query.set("imdbId", params.imdbId);
+    if (params.type) query.set("type", params.type);
+    if (params.season) query.set("season", String(params.season));
+    if (params.episode) query.set("episode", String(params.episode));
 
-    const res = await fetch(`${CLOUD_SERVER_URL}/api/subtitles?${query.toString()}`, {
-      headers: { 'Accept': 'application/json' },
-    });
+    const res = await fetch(
+      `${CLOUD_SERVER_URL}/api/subtitles?${query.toString()}`,
+      {
+        headers: { Accept: "application/json" },
+      },
+    );
     if (!res.ok) return [];
     const data = await res.json();
     return data.subtitles || [];
@@ -814,14 +988,17 @@ export async function fetchSubtitles(params: {
 /**
  * إنشاء جلسة HLS Proxy من رابط مستخرج بالتطبيق (WebView)
  */
-export async function proxyHls(url: string, referer: string): Promise<{ success: boolean; hlsUrl?: string }> {
+export async function proxyHls(
+  url: string,
+  referer: string,
+): Promise<{ success: boolean; hlsUrl?: string }> {
   try {
-    const res = await cloudFetch('/api/stream/proxy-hls', {
-      method: 'POST',
+    const res = await cloudFetch("/api/stream/proxy-hls", {
+      method: "POST",
       body: JSON.stringify({ url, referer }),
     });
     const data = await res.json();
-    if (data.hlsUrl && !data.hlsUrl.startsWith('http')) {
+    if (data.hlsUrl && !data.hlsUrl.startsWith("http")) {
       data.hlsUrl = `${CLOUD_SERVER_URL}${data.hlsUrl}`;
     }
     return data;
@@ -875,21 +1052,26 @@ export async function fetchFreeChannels(params?: {
 }): Promise<FreeChannelsResult> {
   try {
     const q = new URLSearchParams();
-    if (params?.group)  q.set('category', params.group);
-    if (params?.search) q.set('search', params.search);
-    if (params?.limit)  q.set('limit', String(params.limit));
-    if (params?.offset) q.set('offset', String(params.offset));
+    if (params?.group) q.set("category", params.group);
+    if (params?.search) q.set("search", params.search);
+    if (params?.limit) q.set("limit", String(params.limit));
+    if (params?.offset) q.set("offset", String(params.offset));
     const qs = q.toString();
     const cacheKey = `free_channels_${qs}`;
     const cached = getCached<FreeChannelsResult>(cacheKey);
     if (cached) return cached;
-    const res = await fetch(`${CLOUD_SERVER_URL}/api/xtream/channels${qs ? '?' + qs : ''}`);
-    if (!res.ok) throw new Error('Failed to fetch');
+    const res = await fetch(
+      `${CLOUD_SERVER_URL}/api/xtream/channels${qs ? "?" + qs : ""}`,
+    );
+    if (!res.ok) throw new Error("Failed to fetch");
     const data = await res.json();
     const result: FreeChannelsResult = {
       success: true,
       channels: (data.channels || []).map((c: any) => ({
-        id: c.id, name: c.name, logo: c.logo, group: c.category,
+        id: c.id,
+        name: c.name,
+        logo: c.logo,
+        group: c.category,
       })),
       total: data.total || 0,
       hasMore: data.hasMore || false,
@@ -898,7 +1080,13 @@ export async function fetchFreeChannels(params?: {
     setCached(cacheKey, result);
     return result;
   } catch {
-    return { success: false, channels: [], total: 0, hasMore: false, categories: [] };
+    return {
+      success: false,
+      channels: [],
+      total: 0,
+      hasMore: false,
+      categories: [],
+    };
   }
 }
 
@@ -919,19 +1107,23 @@ export async function fetchFreeCategories(): Promise<string[]> {
 /**
  * جلب رابط البث للقناة المجانية — يُرجع الرابط مباشرة
  */
-export async function requestFreeStream(channelId: string): Promise<FreeStreamResult> {
+export async function requestFreeStream(
+  channelId: string,
+): Promise<FreeStreamResult> {
   try {
-    const res = await cloudFetch(`/api/xtream/stream/${encodeURIComponent(channelId)}`);
+    const res = await cloudFetch(
+      `/api/xtream/stream/${encodeURIComponent(channelId)}`,
+    );
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      return { success: false, error: data.error || 'القناة غير متاحة' };
+      return { success: false, error: data.error || "القناة غير متاحة" };
     }
     const data = await res.json();
     // Prefer hlsUrl (HLS proxy) — shares one IPTV connection for all users
     // Fallback: directUrl (302 redirect to IPTV) or proxyUrl (legacy TS pipe)
-    let streamUrl = data.hlsUrl || data.directUrl || data.proxyUrl || '';
+    let streamUrl = data.hlsUrl || data.directUrl || data.proxyUrl || "";
     // Prepend server base URL for relative proxy paths
-    if (streamUrl && !streamUrl.startsWith('http')) {
+    if (streamUrl && !streamUrl.startsWith("http")) {
       streamUrl = `${CLOUD_SERVER_URL}${streamUrl}`;
     }
     return {
@@ -942,16 +1134,19 @@ export async function requestFreeStream(channelId: string): Promise<FreeStreamRe
       streamUrl,
     };
   } catch (err: any) {
-    return { success: false, error: err.message || 'خطأ في الاتصال' };
+    return { success: false, error: err.message || "خطأ في الاتصال" };
   }
 }
 
 /**
  * تحديث قائمة القنوات المجانية
  */
-export async function refreshFreeChannels(): Promise<{ success: boolean; message?: string }> {
+export async function refreshFreeChannels(): Promise<{
+  success: boolean;
+  message?: string;
+}> {
   try {
-    const res = await cloudFetch('/api/xtream/refresh');
+    const res = await cloudFetch("/api/xtream/refresh");
     return await res.json();
   } catch {
     return { success: false };
@@ -990,17 +1185,37 @@ export interface PremiumStreamResult {
 
 export async function fetchPremiumChannels(): Promise<PremiumChannelsResult> {
   try {
-    const res = await fetch(`${CLOUD_SERVER_URL}/api/xtream/channels?category=beIN Sports&limit=50`);
+    const res = await fetch(
+      `${CLOUD_SERVER_URL}/api/xtream/channels?category=beIN Sports&limit=50`,
+    );
     const data = await res.json();
-    if (!res.ok) return { success: false, channels: [], total: 0, categories: [], error: data.error };
+    if (!res.ok)
+      return {
+        success: false,
+        channels: [],
+        total: 0,
+        categories: [],
+        error: data.error,
+      };
     return {
       success: true,
-      channels: (data.channels || []).map((c: any) => ({ id: c.id, name: c.name, logo: c.logo, group: c.category })),
+      channels: (data.channels || []).map((c: any) => ({
+        id: c.id,
+        name: c.name,
+        logo: c.logo,
+        group: c.category,
+      })),
       total: data.total || 0,
       categories: data.categories || [],
     };
   } catch {
-    return { success: false, channels: [], total: 0, categories: [], error: 'خطأ في الاتصال' };
+    return {
+      success: false,
+      channels: [],
+      total: 0,
+      categories: [],
+      error: "خطأ في الاتصال",
+    };
   }
 }
 
@@ -1015,7 +1230,7 @@ export interface IptvVodItem {
   genre?: string;
   category_id?: string;
   ext?: string;
-  vod_type: 'movie' | 'series';
+  vod_type: "movie" | "series";
 }
 
 export interface IptvVodDetail extends IptvVodItem {
@@ -1075,15 +1290,20 @@ export interface IptvHomeData {
 }
 
 export async function fetchIptvHome(): Promise<IptvHomeData> {
-  const cached = getCached<IptvHomeData>('iptv_home');
+  const cached = getCached<IptvHomeData>("iptv_home");
   if (cached) return cached;
   try {
-    const res = await cloudFetch('/api/xtream/vod/home');
+    const res = await cloudFetch("/api/xtream/vod/home");
     const data = await res.json();
-    setCached('iptv_home', data);
+    setCached("iptv_home", data);
     return data;
   } catch {
-    return { latestMovies: [], latestSeries: [], vodCategories: [], seriesCategories: [] };
+    return {
+      latestMovies: [],
+      latestSeries: [],
+      vodCategories: [],
+      seriesCategories: [],
+    };
   }
 }
 
@@ -1093,12 +1313,20 @@ export interface IptvCategoryWithMovies {
   items: IptvVodItem[];
 }
 
-export async function fetchIptvCategoriesWithMovies(maxCategories = 40, filter = ''): Promise<{ categories: IptvCategoryWithMovies[]; total: number }> {
+export async function fetchIptvCategoriesWithMovies(
+  maxCategories = 40,
+  filter = "",
+): Promise<{ categories: IptvCategoryWithMovies[]; total: number }> {
   const key = `iptv_cats_movies_${maxCategories}_${filter}`;
-  const cached = getCached<{ categories: IptvCategoryWithMovies[]; total: number }>(key);
+  const cached = getCached<{
+    categories: IptvCategoryWithMovies[];
+    total: number;
+  }>(key);
   if (cached) return cached;
   try {
-    const res = await cloudFetch(`/api/xtream/vod/categories-with-movies?max_categories=${maxCategories}&per_category=12${filter ? '&filter=' + filter : ''}`);
+    const res = await cloudFetch(
+      `/api/xtream/vod/categories-with-movies?max_categories=${maxCategories}&per_category=12${filter ? "&filter=" + filter : ""}`,
+    );
     const data = await res.json();
     setCached(key, data);
     return data;
@@ -1107,17 +1335,23 @@ export async function fetchIptvCategoriesWithMovies(maxCategories = 40, filter =
   }
 }
 
-export async function fetchIptvMovies(params?: { categoryId?: string; page?: number; search?: string }): Promise<IptvBrowseResult> {
+export async function fetchIptvMovies(params?: {
+  categoryId?: string;
+  page?: number;
+  search?: string;
+}): Promise<IptvBrowseResult> {
   const q = new URLSearchParams();
-  if (params?.categoryId) q.set('category_id', params.categoryId);
-  if (params?.page) q.set('page', String(params.page));
-  if (params?.search) q.set('search', params.search);
+  if (params?.categoryId) q.set("category_id", params.categoryId);
+  if (params?.page) q.set("page", String(params.page));
+  if (params?.search) q.set("search", params.search);
   const qs = q.toString();
   const key = `iptv_movies_${qs}`;
   const cached = getCached<IptvBrowseResult>(key);
   if (cached) return cached;
   try {
-    const res = await cloudFetch(`/api/xtream/vod/streams${qs ? '?' + qs : ''}`);
+    const res = await cloudFetch(
+      `/api/xtream/vod/streams${qs ? "?" + qs : ""}`,
+    );
     const data = await res.json();
     setCached(key, data);
     return data;
@@ -1126,17 +1360,23 @@ export async function fetchIptvMovies(params?: { categoryId?: string; page?: num
   }
 }
 
-export async function fetchIptvSeries(params?: { categoryId?: string; page?: number; search?: string }): Promise<IptvBrowseResult> {
+export async function fetchIptvSeries(params?: {
+  categoryId?: string;
+  page?: number;
+  search?: string;
+}): Promise<IptvBrowseResult> {
   const q = new URLSearchParams();
-  if (params?.categoryId) q.set('category_id', params.categoryId);
-  if (params?.page) q.set('page', String(params.page));
-  if (params?.search) q.set('search', params.search);
+  if (params?.categoryId) q.set("category_id", params.categoryId);
+  if (params?.page) q.set("page", String(params.page));
+  if (params?.search) q.set("search", params.search);
   const qs = q.toString();
   const key = `iptv_series_${qs}`;
   const cached = getCached<IptvBrowseResult>(key);
   if (cached) return cached;
   try {
-    const res = await cloudFetch(`/api/xtream/series/list${qs ? '?' + qs : ''}`);
+    const res = await cloudFetch(
+      `/api/xtream/series/list${qs ? "?" + qs : ""}`,
+    );
     const data = await res.json();
     setCached(key, data);
     return data;
@@ -1145,61 +1385,92 @@ export async function fetchIptvSeries(params?: { categoryId?: string; page?: num
   }
 }
 
-export async function fetchIptvMovieDetail(vodId: string): Promise<IptvVodDetail | null> {
+export async function fetchIptvMovieDetail(
+  vodId: string,
+): Promise<IptvVodDetail | null> {
   try {
     const res = await cloudFetch(`/api/xtream/vod/info/${vodId}`);
     if (!res.ok) return null;
     return await res.json();
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
-export async function fetchIptvSeriesDetail(seriesId: string): Promise<IptvSeriesDetail | null> {
+export async function fetchIptvSeriesDetail(
+  seriesId: string,
+): Promise<IptvSeriesDetail | null> {
   try {
     const res = await cloudFetch(`/api/xtream/series/info/${seriesId}`);
     if (!res.ok) return null;
     return await res.json();
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
-export async function fetchIptvSearch(query: string, page = 1): Promise<IptvBrowseResult> {
+export async function fetchIptvSearch(
+  query: string,
+  page = 1,
+): Promise<IptvBrowseResult> {
   try {
-    const res = await cloudFetch(`/api/xtream/vod/search?q=${encodeURIComponent(query)}&page=${page}`);
+    const res = await cloudFetch(
+      `/api/xtream/vod/search?q=${encodeURIComponent(query)}&page=${page}`,
+    );
     return await res.json();
-  } catch { return { items: [], page: 1, total: 0, hasMore: false }; }
+  } catch {
+    return { items: [], page: 1, total: 0, hasMore: false };
+  }
 }
 
-export async function requestIptvVodStream(vodId: string, ext = 'mp4'): Promise<{ success: boolean; streamUrl?: string; error?: string }> {
+export async function requestIptvVodStream(
+  vodId: string,
+  ext = "mp4",
+): Promise<{ success: boolean; streamUrl?: string; error?: string }> {
   try {
     const res = await cloudFetch(`/api/xtream/vod/stream/${vodId}?ext=${ext}`);
     const data = await res.json();
     if (!res.ok) return { success: false, error: data.error };
-    let url: string = data.streamUrl || '';
-    if (url && !url.startsWith('http')) url = `${CLOUD_SERVER_URL}${url}`;
+    let url: string = data.streamUrl || "";
+    if (url && !url.startsWith("http")) url = `${CLOUD_SERVER_URL}${url}`;
     return { success: true, streamUrl: url };
-  } catch (err: any) { return { success: false, error: err.message }; }
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
 }
 
-export async function requestIptvSeriesStream(episodeId: string, ext = 'mp4'): Promise<{ success: boolean; streamUrl?: string; error?: string }> {
+export async function requestIptvSeriesStream(
+  episodeId: string,
+  ext = "mp4",
+): Promise<{ success: boolean; streamUrl?: string; error?: string }> {
   try {
-    const res = await cloudFetch(`/api/xtream/series/stream/${episodeId}?ext=${ext}`);
+    const res = await cloudFetch(
+      `/api/xtream/series/stream/${episodeId}?ext=${ext}`,
+    );
     const data = await res.json();
     if (!res.ok) return { success: false, error: data.error };
-    let url: string = data.streamUrl || '';
-    if (url && !url.startsWith('http')) url = `${CLOUD_SERVER_URL}${url}`;
+    let url: string = data.streamUrl || "";
+    if (url && !url.startsWith("http")) url = `${CLOUD_SERVER_URL}${url}`;
     return { success: true, streamUrl: url };
-  } catch (err: any) { return { success: false, error: err.message }; }
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function requestPremiumStream(channelId: string): Promise<PremiumStreamResult> {
+export async function requestPremiumStream(
+  channelId: string,
+): Promise<PremiumStreamResult> {
   try {
-    const res = await cloudFetch(`/api/xtream/stream/${encodeURIComponent(channelId)}`);
+    const res = await cloudFetch(
+      `/api/xtream/stream/${encodeURIComponent(channelId)}`,
+    );
     const data = await res.json();
     if (!res.ok) return { success: false, error: data.error };
     // Prefer hlsUrl (HLS proxy) — shares one IPTV connection for all users
-    let streamUrl = data.hlsUrl || data.directUrl || data.proxyUrl || '';
-    if (streamUrl && !streamUrl.startsWith('http')) {
+    let streamUrl = data.hlsUrl || data.directUrl || data.proxyUrl || "";
+    if (streamUrl && !streamUrl.startsWith("http")) {
       streamUrl = `${CLOUD_SERVER_URL}${streamUrl}`;
     }
     return {
@@ -1210,6 +1481,128 @@ export async function requestPremiumStream(channelId: string): Promise<PremiumSt
       streamUrl,
     };
   } catch (err: any) {
-    return { success: false, error: err.message || 'خطأ في الاتصال' };
+    return { success: false, error: err.message || "خطأ في الاتصال" };
+  }
+}
+
+// ─── LuluStream Catalog ──────────────────────────────────────────────────────
+
+export interface LuluItem {
+  id: string;
+  title: string;
+  poster: string;
+  year: string;
+  genre: string;
+  rating: string;
+  lang: string;
+  vod_type: "movie" | "series";
+  episodeCount?: number;
+}
+
+export interface LuluEpisode {
+  id: string;
+  episode: number;
+  season: number;
+  title: string;
+  fileCode: string;
+  hlsUrl: string;
+  embedUrl: string;
+  canplay?: boolean;
+  thumbnail?: string;
+  overview?: string;
+  air_date?: string;
+}
+
+export interface LuluSeason {
+  season: number;
+  episodes: LuluEpisode[];
+}
+
+export interface LuluDetail extends LuluItem {
+  backdrop?: string;
+  plot?: string;
+  cast_list?: string;
+  director?: string;
+  country?: string;
+  runtime?: string;
+  genres?: string;
+  seasons?: LuluSeason[];
+  episodes?: LuluEpisode[];
+  fileCode?: string;
+  hlsUrl?: string;
+  embedUrl?: string;
+  canplay?: boolean;
+}
+
+export async function fetchLuluHome(): Promise<{
+  latestMovies: LuluItem[];
+  latestSeries: LuluItem[];
+}> {
+  try {
+    const res = await apiFetch("/api/lulu/home");
+    if (!res.ok) throw new Error("failed");
+    return await res.json();
+  } catch {
+    return { latestMovies: [], latestSeries: [] };
+  }
+}
+
+export async function fetchLuluList(params?: {
+  type?: "movie" | "series";
+  page?: number;
+  search?: string;
+}): Promise<{
+  items: LuluItem[];
+  page: number;
+  total: number;
+  hasMore: boolean;
+}> {
+  try {
+    const q = new URLSearchParams({
+      type: params?.type || "movie",
+      page: String(params?.page || 1),
+    });
+    if (params?.search) q.set("search", params.search);
+    const res = await apiFetch(`/api/lulu/list?${q}`);
+    if (!res.ok) throw new Error("failed");
+    return await res.json();
+  } catch {
+    return { items: [], page: 1, total: 0, hasMore: false };
+  }
+}
+
+export async function fetchLuluDetail(
+  id: string,
+  type: "movie" | "series",
+): Promise<LuluDetail | null> {
+  try {
+    const q = new URLSearchParams({ type, id });
+    const res = await apiFetch(`/api/lulu/detail?${q}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function requestLuluStream(opts: {
+  type: "movie" | "series";
+  id?: string;
+  ep_id?: string;
+}): Promise<{
+  available: boolean;
+  hlsUrl?: string;
+  embedUrl?: string;
+  fileCode?: string;
+}> {
+  try {
+    const p = new URLSearchParams({ type: opts.type });
+    if (opts.id) p.set("id", opts.id);
+    if (opts.ep_id) p.set("ep_id", opts.ep_id);
+    const res = await apiFetch(`/api/lulu/stream?${p}`);
+    if (!res.ok) return { available: false };
+    return await res.json();
+  } catch {
+    return { available: false };
   }
 }
