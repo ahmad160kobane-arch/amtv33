@@ -531,8 +531,31 @@ export async function requestFreeStream(channelId: string): Promise<FreeStreamRe
     const data = await res.json();
     console.log('[API] ✅ Response data:', data);
     
-    // Use hlsUrl via Next.js proxy rewrite (avoids mixed content block on HTTPS)
-    let streamUrl = data.hlsUrl || data.directUrl || data.proxyUrl || '';
+    let streamUrl = data.hlsUrl || '';
+    if (!streamUrl) return { success: false, error: 'رابط البث غير متوفر' };
+
+    // FFmpeg+HLS: stream may not be ready yet — poll until segments exist
+    if (data.ready === false) {
+      console.log('[API] ⏳ Stream not ready, waiting for FFmpeg...');
+      const maxWait = 15000; // 15s max
+      const interval = 1000;
+      const start = Date.now();
+      while (Date.now() - start < maxWait) {
+        await new Promise(r => setTimeout(r, interval));
+        try {
+          const check = await apiFetch(`/api/xtream/stream/${encodeURIComponent(channelId)}`);
+          if (check.ok) {
+            const d = await check.json();
+            if (d.ready) {
+              streamUrl = d.hlsUrl || streamUrl;
+              console.log('[API] ✅ Stream ready!');
+              break;
+            }
+          }
+        } catch {}
+      }
+    }
+
     return {
       success: true,
       name: data.name,
