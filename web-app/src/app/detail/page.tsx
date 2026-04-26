@@ -30,7 +30,7 @@ function DetailContent() {
   const vodType = params.get("type") || params.get("vodType") || "movie";
   const paramTitle = params.get("title") || "";
   const paramPoster = params.get("poster") || "";
-  const sourceLulu = params.get("source") === "lulu";
+  const sourceLulu = params.get("source") !== "vidsrc";
 
   const [detail, setDetail] = useState<VidsrcDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -127,6 +127,10 @@ function DetailContent() {
             luluEmbed: lData.embedUrl,
             subtitleUrls: lData.subtitleUrls || null,
           } as VidsrcDetail);
+        } else {
+          // lulu not found, content might not exist
+          setLoading(false);
+          return;
         }
       } else {
         const data = await fetchVidsrcDetail(
