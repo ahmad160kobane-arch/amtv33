@@ -10,6 +10,7 @@ const vodRoutes = require('./routes/vod');
 const adminRoutes = require('./routes/admin');
 const cloudRoutes = require('./routes/cloud');
 const agentRoutes = require('./routes/agent');
+const luluRoutes = require('./routes/lulu');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -49,6 +50,7 @@ app.use('/api/vod', vodRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/cloud', cloudRoutes);
 app.use('/api/agent', agentRoutes);
+app.use('/api/lulu', luluRoutes);
 
 // ─── Health Check ────────────────────────────────────────
 app.get('/api/health', async (req, res) => {
