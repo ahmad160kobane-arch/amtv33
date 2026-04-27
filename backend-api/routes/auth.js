@@ -66,12 +66,22 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'بيانات الدخول غير صحيحة' });
     }
 
-    // ─── Single-session enforcement: increment login_version ───────
-    // All existing sessions (JWTs) with old version become invalid immediately
-    const updated = await db.prepare(
-      'UPDATE users SET login_version = COALESCE(login_version, 0) + 1 WHERE id = ? RETURNING login_version'
-    ).get(user.id);
-    const newLoginVersion = updated ? updated.login_version : 1;
+    // ─── Session enforcement based on max_connections ──────────────
+    // max_connections = 1 → increment login_version on every login
+    //   → all other devices' JWTs become invalid immediately (kicked out)
+    // max_connections > 1 → keep same login_version → multiple devices stay logged in
+    const maxConn = user.max_connections || 1;
+    let newLoginVersion;
+    if (maxConn <= 1) {
+      const updated = await db.prepare(
+        'UPDATE users SET login_version = COALESCE(login_version, 0) + 1 WHERE id = ? RETURNING login_version'
+      ).get(user.id);
+      newLoginVersion = updated ? updated.login_version : 1;
+    } else {
+      // Multi-device plan: keep current login_version, don't invalidate other devices
+      const current = await db.prepare('SELECT COALESCE(login_version, 0) as lv FROM users WHERE id = ?').get(user.id);
+      newLoginVersion = current ? current.lv : 0;
+    }
 
     const token = generateToken(user.id, newLoginVersion);
 
