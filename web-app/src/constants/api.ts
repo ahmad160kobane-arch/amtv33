@@ -7,7 +7,7 @@ const API_BASE_URL = "";
 
 // Direct cloud server URL — used for HLS streaming (bypasses Next.js proxy)
 // This reduces load on the web app server by letting the browser connect directly
-const CLOUD_URL = "http://62.171.153.204:8090";
+const CLOUD_URL = "https://www.amlive.shop";
 
 export function getCloudUrl() { return CLOUD_URL; }
 
@@ -667,6 +667,7 @@ export interface FreeStreamResult {
   logo?: string;
   group?: string;
   streamUrl?: string;
+  streamId?: string;
   headers?: Record<string, string>;
   error?: string;
 }
@@ -676,8 +677,14 @@ export async function requestFreeStream(
 ): Promise<FreeStreamResult> {
   try {
     console.log("[API] 🔄 Requesting stream for channel:", channelId);
+    // ─── Send deviceId so cloud-server creates session with correct device_id ───
+    // This enables heartbeat tracking and proper connection limit enforcement
+    const deviceId = typeof localStorage !== 'undefined'
+      ? (localStorage.getItem('ma_device_id') || '')
+      : '';
+    const didParam = deviceId ? `?did=${encodeURIComponent(deviceId)}` : '';
     const res = await apiFetch(
-      `/api/xtream/stream/${encodeURIComponent(channelId)}`,
+      `/api/xtream/stream/${encodeURIComponent(channelId)}${didParam}`,
     );
     if (!res.ok) {
       console.error("[API] ❌ Request failed:", res.status, res.statusText);
@@ -726,6 +733,7 @@ export async function requestFreeStream(
       logo: data.logo,
       group: data.category,
       streamUrl,
+      streamId: data.streamId ? String(data.streamId) : '',
     };
   } catch (error: any) {
     console.error("[API] ❌ Exception:", error);
@@ -1020,6 +1028,17 @@ export interface LuluDetail extends LuluItem {
   subtitleUrls?: { ar?: string; ku?: string } | null;
 }
 
+export async function fetchLuluGenres(): Promise<string[]> {
+  try {
+    const res = await apiFetch("/api/lulu/genres");
+    if (!res.ok) throw new Error();
+    const data = await res.json();
+    return data.genres || [];
+  } catch {
+    return [];
+  }
+}
+
 export async function fetchLuluHome(): Promise<{
   latestMovies: LuluItem[];
   latestSeries: LuluItem[];
@@ -1077,7 +1096,6 @@ export async function fetchLuluDetail(
 }
 
 // ─── Session Management (cloud-server) ──────────────────
-const CLOUD_URL = "http://62.171.153.204:8090";
 
 async function cloudFetch(
   path: string,

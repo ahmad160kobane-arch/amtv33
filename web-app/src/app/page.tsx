@@ -4,6 +4,8 @@ import { useRouter } from "next/navigation";
 import {
   fetchFreeChannels,
   fetchLuluHome,
+  fetchLuluGenres,
+  fetchLuluList,
   FreeChannel,
   LuluItem,
 } from "@/constants/api";
@@ -32,6 +34,7 @@ export default function HomePage() {
   const [loading, setLoading] = useState(true);
   const [luluMovies, setLuluMovies] = useState<LuluItem[]>([]);
   const [luluSeries, setLuluSeries] = useState<LuluItem[]>([]);
+  const [genreRows, setGenreRows] = useState<{ genre: string; items: LuluItem[] }[]>([]);
 
   const loadData = useCallback(async () => {
     try {
@@ -42,6 +45,28 @@ export default function HomePage() {
       setChannels(chData?.channels || []);
       setLuluMovies(luluData.latestMovies || []);
       setLuluSeries(luluData.latestSeries || []);
+
+      // جلب أفضل 4 تصنيفات وعرض محتوى لكل منها
+      try {
+        const genres = await fetchLuluGenres();
+        const topGenres = genres.slice(0, 4);
+        const genreData = await Promise.all(
+          topGenres.map(async (genre) => {
+            const [movieData, seriesData] = await Promise.all([
+              fetchLuluList({ type: "movie", page: 1, cat: genre }),
+              fetchLuluList({ type: "series", page: 1, cat: genre }),
+            ]);
+            const items = [
+              ...(movieData.items || []).slice(0, 8),
+              ...(seriesData.items || []).slice(0, 8),
+            ];
+            return { genre, items };
+          }),
+        );
+        setGenreRows(genreData.filter((r) => r.items.length > 0));
+      } catch {
+        // لا بأس إذا فشل جلب التصنيفات
+      }
     } catch (e) {
       console.error("Home load error:", e);
     } finally {
@@ -237,6 +262,14 @@ export default function HomePage() {
                 showBadge
               />
             )}
+            {genreRows.map((row) => (
+              <ContentRow
+                key={row.genre}
+                title={row.genre}
+                items={row.items.map(luluToContentItem)}
+                seeAllHref={`/allcontent?type=movie&genre=${encodeURIComponent(row.genre)}`}
+              />
+            ))}
           </>
         )}
 

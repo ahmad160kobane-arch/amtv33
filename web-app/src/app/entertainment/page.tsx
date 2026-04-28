@@ -1,7 +1,7 @@
 "use client";
 import React, { useEffect, useState, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
-import { fetchLuluList, LuluItem } from "@/constants/api";
+import { fetchLuluList, fetchLuluGenres, LuluItem } from "@/constants/api";
 import ContentCard from "@/components/ContentCard";
 import { SkeletonGrid } from "@/components/Skeleton";
 
@@ -22,6 +22,8 @@ function EntertainmentContent() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
+  const [genres, setGenres] = useState<string[]>([]);
+  const [activeGenre, setActiveGenre] = useState<string>("");
 
   const load = useCallback(
     async (p = 1, reset = false) => {
@@ -32,6 +34,7 @@ function EntertainmentContent() {
           type: activeType,
           page: p,
           search: searchQuery || undefined,
+          cat: activeGenre || undefined,
         });
         const newItems = data.items || [];
         setItems((prev) => (reset ? newItems : [...prev, ...newItems]));
@@ -43,13 +46,17 @@ function EntertainmentContent() {
         setLoadingMore(false);
       }
     },
-    [activeType, searchQuery],
+    [activeType, searchQuery, activeGenre],
   );
+
+  useEffect(() => {
+    fetchLuluGenres().then(setGenres);
+  }, []);
 
   useEffect(() => {
     setPage(1);
     load(1, true);
-  }, [activeType, searchQuery, load]);
+  }, [activeType, searchQuery, activeGenre, load]);
 
   const loadMore = () => {
     const next = page + 1;
@@ -181,6 +188,35 @@ function EntertainmentContent() {
             </button>
           ))}
         </div>
+
+        {/* Genre filter chips */}
+        {genres.length > 0 && (
+          <div className="flex gap-1.5 md:gap-2 overflow-x-auto no-scrollbar pb-2 mb-2">
+            <button
+              onClick={() => setActiveGenre("")}
+              className={`flex-shrink-0 px-2.5 md:px-3 py-1.5 rounded-lg text-xs md:text-sm font-medium transition ${
+                activeGenre === ""
+                  ? "bg-brand-primary text-black"
+                  : "bg-light-input dark:bg-dark-input text-light-muted dark:text-dark-muted hover:text-light-text dark:hover:text-dark-text"
+              }`}
+            >
+              الكل
+            </button>
+            {genres.map((g) => (
+              <button
+                key={g}
+                onClick={() => setActiveGenre(g)}
+                className={`flex-shrink-0 px-2.5 md:px-3 py-1.5 rounded-lg text-xs md:text-sm font-medium transition whitespace-nowrap ${
+                  activeGenre === g
+                    ? "bg-brand-primary text-black"
+                    : "bg-light-input dark:bg-dark-input text-light-muted dark:text-dark-muted hover:text-light-text dark:hover:text-dark-text"
+                }`}
+              >
+                {g}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Grid */}
         {loading ? (
