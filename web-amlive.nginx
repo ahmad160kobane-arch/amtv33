@@ -1,0 +1,46 @@
+server {
+    listen 80;
+    listen [::]:80;
+    server_name amlive.shop www.amlive.shop;
+
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_types text/plain text/css application/json application/javascript
+               text/xml application/xml text/javascript
+               application/vnd.apple.mpegurl video/MP2T;
+
+    proxy_connect_timeout 120s;
+    proxy_send_timeout    120s;
+    proxy_read_timeout    120s;
+    send_timeout          120s;
+
+    location / {
+        proxy_pass         http://127.0.0.1:3002;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade $http_upgrade;
+        proxy_set_header   Connection 'upgrade';
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Real-IP $remote_addr;
+        proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+    location ~* \.(m3u8|ts)$ {
+        proxy_pass       http://127.0.0.1:3002;
+        proxy_buffering  off;
+        proxy_cache      off;
+        add_header       Cache-Control "no-cache, no-store";
+        add_header       Access-Control-Allow-Origin "*";
+    }
+
+    location /health {
+        return 200 'webapp-ok\n';
+        add_header Content-Type text/plain;
+    }
+
+    access_log /var/log/nginx/web-amlive-access.log;
+    error_log  /var/log/nginx/web-amlive-error.log;
+}

@@ -1,22 +1,25 @@
 {
-  "name": "MA Streaming",
-  "short_name": "MA TV",
-  "description": "منصة بث المحتوى العربي والعالمي",
+  "name": "AM Live — أفلام ومسلسلات عربية",
+  "short_name": "AM Live",
+  "description": "شاهد أحدث الأفلام والمسلسلات العربية والعالمية بجودة عالية. محتوى حصري ومميز مجانًا.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0f0f0f",
   "theme_color": "#FFB800",
   "orientation": "portrait-primary",
   "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
     { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
     { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
   ],
-  "categories": ["entertainment"],
+  "categories": ["entertainment", "video"],
   "lang": "ar",
   "dir": "rtl",
   "screenshots": [],
   "shortcuts": [
-    { "name": "مباشر", "url": "/live", "description": "القنوات المباشرة" },
-    { "name": "ترفيه", "url": "/entertainment", "description": "أفلام ومسلسلات" }
+    { "name": "أفلام", "url": "/allcontent?type=movie", "description": "أحدث الأفلام العربية والعالمية" },
+    { "name": "مسلسلات", "url": "/allcontent?type=series", "description": "أحدث المسلسلات العربية" },
+    { "name": "بث مباشر", "url": "/live", "description": "القنوات المباشرة" },
+    { "name": "ترفيه", "url": "/entertainment", "description": "محتوى ترفيهي متنوع" }
   ]
 }

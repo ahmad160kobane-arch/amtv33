@@ -1,7 +1,7 @@
 /** @type {import('next').NextConfig} */
 // Hardcoded VPS endpoints — Railway env vars intentionally ignored to prevent misconfiguration
 const BACKEND_URL  = 'https://amtv33-production.up.railway.app';
-const CLOUD_URL    = 'http://62.171.153.204:8090';
+const CLOUD_URL    = 'http://localhost:8090';
 
 const SECURITY_HEADERS = [
   // Prevent this app from being embedded in other sites

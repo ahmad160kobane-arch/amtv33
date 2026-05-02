@@ -169,6 +169,22 @@ export default function VodPlayer({ streamUrl, title, poster, subtitle, subtitle
     };
   }, [streamUrl]);
 
+  // ─── Stop playback immediately when session is invalidated ───
+  useEffect(() => {
+    const onStreamStop = () => {
+      const video = videoRef.current;
+      if (video) {
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+      }
+      setPlaying(false);
+      setError('تم تسجيل الدخول من جهاز آخر');
+    };
+    window.addEventListener('stream:stop', onStreamStop);
+    return () => window.removeEventListener('stream:stop', onStreamStop);
+  }, []);
+
   useEffect(() => { scheduleHide(); return () => { if (hideTimer.current) clearTimeout(hideTimer.current); }; }, [scheduleHide]);
 
   // Keyboard shortcuts

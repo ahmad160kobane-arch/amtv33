@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 
 interface LivePlayerProps {
   streamUrl: string;
+  streamId?: string;
   title: string;
   logo?: string;
   group?: string;
@@ -10,7 +11,7 @@ interface LivePlayerProps {
   onRetry?: () => void;
 }
 
-export default function LivePlayer({ streamUrl, title, logo, group, onClose, onRetry }: LivePlayerProps) {
+export default function LivePlayer({ streamUrl, streamId: propStreamId, title, logo, group, onClose, onRetry }: LivePlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const hideTimer = useRef<any>(null);
@@ -20,7 +21,9 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
   const [showControls, setShowControls] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [error, setError] = useState('');
+  const [errorType, setErrorType] = useState<'connection_limit' | 'subscription_required' | 'subscription_expired' | 'network' | 'general' | ''>('');
   const [buffering, setBuffering] = useState(true);
+  const [autoplayBlocked, setAutoplayBlocked] = useState(false);
   const [isAtLive, setIsAtLive] = useState(true);
 
   const scheduleHide = useCallback(() => {
@@ -35,23 +38,63 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
     if (!videoRef.current || !streamUrl) return;
     const video = videoRef.current;
     setError('');
+    setErrorType('');
     setBuffering(true);
     let hlsInstance: any = null;
     let retryCount = 0;
     const MAX_AUTO_RETRY = 3;
     let retryTimer: any = null;
+    // Synchronous flag — prevents HLS.js retry on 401/403/429 (React state is async, causes race condition)
+    let authErrorDetected = false;
 
-    console.log('[LivePlayer] 🎬 Starting stream:', streamUrl);
+    // Generate or retrieve persistent device ID for connection limit tracking
+    let deviceId = '';
+    try {
+      deviceId = localStorage.getItem('ma_device_id') || '';
+      if (!deviceId) {
+        deviceId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+          ? crypto.randomUUID()
+          : Math.random().toString(36).slice(2) + Date.now().toString(36);
+        localStorage.setItem('ma_device_id', deviceId);
+      }
+    } catch {}
 
-    const isTs = streamUrl.includes('/xtream-pipe/') || streamUrl.includes('.ts') || streamUrl.includes('/live-pipe/');
-    const isHls = streamUrl.includes('.m3u8') || streamUrl.includes('/proxy/live/');
+    // Append deviceId to HLS proxy URLs so cloud-server can enforce connection limits
+    const effectiveStreamUrl = (() => {
+      if (!deviceId) return streamUrl;
+      try {
+        const url = new URL(streamUrl);
+        url.searchParams.set('did', deviceId);
+        return url.toString();
+      } catch {
+        return streamUrl;
+      }
+    })();
 
-    console.log('[LivePlayer] Stream type:', { isTs, isHls, streamUrl });
+    console.log('[LivePlayer] 🎬 Starting stream:', effectiveStreamUrl);
+
+    const LOADING_TIMEOUT = 20000;
+    let loadingTimer: any = null;
+
+    loadingTimer = setTimeout(() => {
+      if (!playing && !error) {
+        console.warn('[LivePlayer] ⏰ Loading timeout — stream did not start within 20s');
+        setBuffering(false);
+        setErrorType('network');
+        setError('انتهت مهلة التحميل — يرجى إعادة المحاولة');
+        if (hlsInstance) { try { hlsInstance.stopLoad(); hlsInstance.destroy(); hlsInstance = null; } catch {} }
+      }
+    }, LOADING_TIMEOUT);
+
+    const isTs = effectiveStreamUrl.includes('/xtream-pipe/') || effectiveStreamUrl.includes('.ts') || effectiveStreamUrl.includes('/live-pipe/');
+    const isHls = effectiveStreamUrl.includes('.m3u8') || effectiveStreamUrl.includes('/proxy/live/');
+
+    console.log('[LivePlayer] Stream type:', { isTs, isHls, effectiveStreamUrl });
 
     const onPlay = () => { setPlaying(true); retryCount = 0; };
     const onPause = () => setPlaying(false);
     const onWaiting = () => setBuffering(true);
-    const onPlaying = () => { setBuffering(false); setPlaying(true); retryCount = 0; };
+    const onPlaying = () => { setBuffering(false); setPlaying(true); setAutoplayBlocked(false); retryCount = 0; if (loadingTimer) { clearTimeout(loadingTimer); loadingTimer = null; } };
     const onError = () => {
       if (retryCount < MAX_AUTO_RETRY) {
         retryCount++;
@@ -92,7 +135,7 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
         const Mpegts = (window as any).mpegts;
         if (Mpegts && Mpegts.isSupported()) {
           const mpegtsPlayer = Mpegts.createPlayer({
-            type: 'mse', isLive: true, url: streamUrl,
+            type: 'mse', isLive: true, url: effectiveStreamUrl,
             enableWorker: true,
             liveBufferLatencyChasing: true,
             liveBufferLatencyMaxLatency: 3,
@@ -104,7 +147,7 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
           mpegtsPlayer.on('error', () => onError());
           (video as any)._mpegtsPlayer = mpegtsPlayer;
         } else {
-          video.src = streamUrl;
+          video.src = effectiveStreamUrl;
           video.play().catch(() => {});
         }
       };
@@ -121,9 +164,13 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
       if (video.canPlayType('application/vnd.apple.mpegurl')) {
         // Safari native HLS
         console.log('[LivePlayer] ✅ Using Safari native HLS');
-        video.src = streamUrl;
+        video.src = effectiveStreamUrl;
         video.play().catch((err) => {
           console.error('[LivePlayer] ❌ Safari play error:', err);
+          if (err.name === 'NotAllowedError') {
+            setAutoplayBlocked(true);
+            setBuffering(false);
+          }
         });
       } else {
         console.log('[LivePlayer] 🔧 Loading HLS.js...');
@@ -132,18 +179,50 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
           console.log('[LivePlayer] HLS.js loaded:', !!Hls, 'Supported:', Hls?.isSupported());
           if (Hls && Hls.isSupported()) {
             console.log('[LivePlayer] ✅ Creating HLS instance...');
+            // Cache token once — avoid synchronous localStorage read on every XHR
+            const cachedToken = typeof localStorage !== 'undefined'
+              ? localStorage.getItem('ma_auth_token')
+              : null;
+
             hlsInstance = new Hls({
               enableWorker: true,
               lowLatencyMode: false,
               startLevel: -1,
-              debug: true, // Enable debug for troubleshooting
+              debug: false,
               // ═══ Auth: inject Authorization header for every XHR (manifest + segments) ═══
-              // Needed for direct cloud server access without Next.js proxy
               xhrSetup: (xhr: XMLHttpRequest, url: string) => {
-                const token = typeof localStorage !== 'undefined'
-                  ? localStorage.getItem('ma_auth_token')
-                  : null;
-                if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+                if (cachedToken) xhr.setRequestHeader('Authorization', `Bearer ${cachedToken}`);
+                xhr.addEventListener('readystatechange', () => {
+                  if (xhr.readyState !== 4) return;
+                  if (xhr.status === 429 || xhr.status === 401 || xhr.status === 403) {
+                    authErrorDetected = true; // sync flag — stops HLS.js retry immediately
+                    try {
+                      const body = JSON.parse(xhr.responseText || '{}');
+                      const errType = body.error || '';
+                      if (errType === 'connection_limit') {
+                        setErrorType('connection_limit');
+                        setError(body.message || 'الحد الأقصى للاتصالات مكتمل');
+                      } else if (errType === 'subscription_required') {
+                        setErrorType('subscription_required');
+                        setError(body.message || 'هذا المحتوى يتطلب اشتراك بريميوم');
+                      } else if (errType === 'subscription_expired') {
+                        setErrorType('subscription_expired');
+                        setError('انتهت صلاحية اشتراكك');
+                      } else if (xhr.status === 401 || xhr.status === 403) {
+                        setErrorType('general');
+                        setError('انتهت جلستك، يرجى تسجيل الدخول من جديد');
+                      } else {
+                        setErrorType('network');
+                        setError(body.message || 'تجاوزت حد الطلبات');
+                      }
+                    } catch {
+                      setErrorType('network');
+                      setError('خطأ في الاتصال بالخادم');
+                    }
+                    setBuffering(false);
+                    if (hlsInstance) { try { hlsInstance.stopLoad(); hlsInstance.destroy(); hlsInstance = null; } catch {} }
+                  }
+                });
               },
               // ═══ Fast startup — start playing with minimal buffered data ═══
               startFragPrefetch: true,             // prefetch first frag while parsing manifest
@@ -157,9 +236,9 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
               // ═══ Buffer ═══
               maxBufferLength: 10,
               maxMaxBufferLength: 20,
-              maxBufferSize: 30 * 1024 * 1024,
+              maxBufferSize: 8 * 1024 * 1024,  // 8MB — sufficient for live, less GC pressure
               maxBufferHole: 1.0,
-              backBufferLength: 10,
+              backBufferLength: 0,              // live mode: no need to buffer behind
               // ═══ Aggressive timeouts for faster first-play ═══
               manifestLoadingTimeOut: 6000,
               manifestLoadingMaxRetry: 4,
@@ -173,8 +252,8 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
               fragLoadingMaxRetryTimeout: 3000,
             });
             
-            console.log('[LivePlayer] 🔗 Loading source:', streamUrl);
-            hlsInstance.loadSource(streamUrl);
+            console.log('[LivePlayer] 🔗 Loading source:', effectiveStreamUrl);
+            hlsInstance.loadSource(effectiveStreamUrl);
             hlsInstance.attachMedia(video);
 
             hlsInstance.on(Hls.Events.MANIFEST_LOADING, () => {
@@ -189,20 +268,25 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
               console.log('[LivePlayer] ✅ Manifest parsed - starting playback');
               video.play().catch((err) => {
                 console.error('[LivePlayer] ❌ Play error:', err);
+                if (err.name === 'NotAllowedError') {
+                  setAutoplayBlocked(true);
+                  setBuffering(false);
+                }
               });
             });
 
-                    // Auto seek-to-live: if player falls >15s behind, jump to live edge
-            // This prevents the 120s+ accumulated delay from stale manifest cache
+                    // Auto seek-to-live: check every fragment, but only update React state when value changes
+            let _isAtLive = true;
             hlsInstance.on(Hls.Events.FRAG_CHANGED, () => {
               try {
                 if (video.seekable.length > 0) {
                   const edge = video.seekable.end(0);
                   const latency = edge - video.currentTime;
-                  setIsAtLive(latency <= 12);
+                  const nowAtLive = latency <= 12;
+                  if (nowAtLive !== _isAtLive) { _isAtLive = nowAtLive; setIsAtLive(nowAtLive); }
                   if (!video.paused && latency > 15) {
                     video.currentTime = Math.max(0, edge - 2);
-                    setIsAtLive(true);
+                    if (!_isAtLive) { _isAtLive = true; setIsAtLive(true); }
                   }
                 }
               } catch {}
@@ -212,13 +296,28 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
               console.error('[LivePlayer] ❌ HLS Error:', data.type, data.details, data);
               if (data.fatal) {
                 console.error('[LivePlayer] 💀 Fatal error:', data.type);
+                if (loadingTimer) { clearTimeout(loadingTimer); loadingTimer = null; }
                 switch (data.type) {
                   case Hls.ErrorTypes.NETWORK_ERROR:
+                    if (authErrorDetected) break;
                     console.log('[LivePlayer] 🔄 Network error - retrying...', retryCount);
+                    if (data.response && (data.response.code === 401 || data.response.code === 403 || data.response.code === 429)) {
+                      authErrorDetected = true;
+                      setBuffering(false);
+                      if (data.response.code === 429) {
+                        setErrorType('connection_limit');
+                        setError('الحد الأقصى للأجهزة مكتمل — أغلق البث على جهاز آخر');
+                      } else {
+                        setErrorType('general');
+                        setError('انتهت جلستك — يرجى تسجيل الدخول من جديد');
+                      }
+                      break;
+                    }
                     if (retryCount < MAX_AUTO_RETRY) {
                       retryCount++;
                       hlsInstance.startLoad();
                     } else {
+                      setErrorType('network');
                       setError('فشل الاتصال بالبث — تحقق من الشبكة');
                     }
                     break;
@@ -258,7 +357,7 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
       }
     } else {
       console.log('[LivePlayer] 📺 Direct video source');
-      video.src = streamUrl;
+      video.src = effectiveStreamUrl;
       video.play().catch((err) => {
         console.error('[LivePlayer] ❌ Direct play error:', err);
       });
@@ -266,6 +365,7 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
 
     return () => {
       if (retryTimer) clearTimeout(retryTimer);
+      if (loadingTimer) clearTimeout(loadingTimer);
       video.removeEventListener('play', onPlay);
       video.removeEventListener('pause', onPause);
       video.removeEventListener('waiting', onWaiting);
@@ -274,7 +374,24 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
       const mp = (video as any)._mpegtsPlayer;
       if (mp) { try { mp.destroy(); } catch {} (video as any)._mpegtsPlayer = null; }
       if (hlsInstance) { try { hlsInstance.destroy(); } catch {} }
-      
+
+      // Release session on cloud-server so connection slot is freed immediately
+      try {
+        const token = typeof localStorage !== 'undefined' ? localStorage.getItem('ma_auth_token') : null;
+        // Use the same cloud URL as the API
+        const CLOUD = (typeof window !== 'undefined' && (window as any).__CLOUD_URL) || 'https://www.amlive.shop';
+        const urlMatch = streamUrl.match(/\/hls\/([^/]+)\//) || streamUrl.match(/\/proxy\/live\/([^/]+)\//);
+        const rawId = propStreamId || (urlMatch ? urlMatch[1] : null);
+        const sid = rawId ? `live_${rawId}` : null;
+        if (token && sid) {
+          fetch(`${CLOUD}/api/stream/release/${encodeURIComponent(rawId || sid)}`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+            keepalive: true,
+          }).catch(() => {});
+        }
+      } catch {}
+
       // Prevent player conflict/overlapping streams when switching
       try {
         video.pause();
@@ -283,6 +400,23 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
       } catch {}
     };
   }, [streamUrl]);
+
+  // ─── Stop playback immediately when session is invalidated ───
+  useEffect(() => {
+    const onStreamStop = () => {
+      const video = videoRef.current;
+      if (video) {
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+      }
+      setPlaying(false);
+      setErrorType('general');
+      setError('تم تسجيل الدخول من جهاز آخر');
+    };
+    window.addEventListener('stream:stop', onStreamStop);
+    return () => window.removeEventListener('stream:stop', onStreamStop);
+  }, []);
 
   useEffect(() => { scheduleHide(); return () => { if (hideTimer.current) clearTimeout(hideTimer.current); }; }, [scheduleHide]);
 
@@ -351,6 +485,28 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
         autoPlay
       />
 
+      {/* Autoplay Blocked */}
+      {autoplayBlocked && !error && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 z-20 gap-4 px-6 text-center">
+          <div className="w-16 h-16 rounded-full bg-brand-primary/20 flex items-center justify-center">
+            <svg className="w-8 h-8 text-brand-primary" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+          </div>
+          <p className="text-white font-bold text-base">اضغط للتشغيل</p>
+          <p className="text-white/50 text-xs">المتصفح منع التشغيل التلقائي</p>
+          <button
+            onClick={() => {
+              setAutoplayBlocked(false);
+              if (videoRef.current) {
+                videoRef.current.play().catch(() => {});
+              }
+            }}
+            className="px-6 py-2.5 rounded-xl bg-brand-primary text-black font-bold text-sm hover:opacity-90 active:scale-95 transition"
+          >
+            تشغيل البث
+          </button>
+        </div>
+      )}
+
       {/* Buffering */}
       {buffering && !error && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/40 z-20 pointer-events-none">
@@ -363,17 +519,60 @@ export default function LivePlayer({ streamUrl, title, logo, group, onClose, onR
 
       {/* Error */}
       {error && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 z-20 gap-3">
-          <svg className="w-10 h-10 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-          <p className="text-white/80 text-sm font-medium">{error}</p>
-          {onRetry && (
-            <button onClick={(e) => { e.stopPropagation(); onRetry(); }}
-              className="px-5 py-2 rounded-xl bg-brand-primary text-black font-bold text-sm hover:bg-brand-dark transition">
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 z-20 gap-4 px-6 text-center">
+          {/* Icon */}
+          {errorType === 'connection_limit' ? (
+            <div className="w-16 h-16 rounded-full bg-orange-500/20 flex items-center justify-center">
+              <svg className="w-8 h-8 text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+            </div>
+          ) : errorType === 'subscription_required' ? (
+            <div className="w-16 h-16 rounded-full bg-purple-500/20 flex items-center justify-center">
+              <svg className="w-8 h-8 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+              </svg>
+            </div>
+          ) : errorType === 'subscription_expired' ? (
+            <div className="w-16 h-16 rounded-full bg-yellow-500/20 flex items-center justify-center">
+              <svg className="w-8 h-8 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+          ) : (
+            <div className="w-16 h-16 rounded-full bg-red-500/20 flex items-center justify-center">
+              <svg className="w-8 h-8 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+          )}
+
+          {/* Title */}
+          <div className="flex flex-col gap-1">
+            <p className="text-white font-bold text-base leading-snug">
+              {errorType === 'connection_limit' && 'الحد الأقصى للأجهزة مكتمل'}
+              {errorType === 'subscription_required' && 'يتطلب اشتراك بريميوم'}
+              {errorType === 'subscription_expired' && 'انتهى الاشتراك'}
+              {errorType === 'network' && 'خطأ في الاتصال'}
+              {errorType === 'general' && 'انتهت الجلسة'}
+              {!errorType && 'تعذّر تشغيل القناة'}
+            </p>
+            <p className="text-white/60 text-xs leading-relaxed max-w-[260px]">{error}</p>
+          </div>
+
+          {/* Action button */}
+          {errorType === 'connection_limit' ? (
+            <p className="text-orange-300/80 text-xs">أغلق البث على جهاز آخر ثم حاول مجدداً</p>
+          ) : errorType === 'subscription_required' ? (
+            <p className="text-purple-300/80 text-xs">يرجى الاشتراك في الباقة البريميوم للمشاهدة</p>
+          ) : errorType === 'subscription_expired' ? (
+            <p className="text-yellow-300/80 text-xs">يرجى تجديد اشتراكك للاستمرار في المشاهدة</p>
+          ) : onRetry ? (
+            <button onClick={(e) => { e.stopPropagation(); onRetry!(); }}
+              className="px-6 py-2.5 rounded-xl bg-brand-primary text-black font-bold text-sm hover:opacity-90 active:scale-95 transition">
               إعادة المحاولة
             </button>
-          )}
+          ) : null}
         </div>
       )}
 

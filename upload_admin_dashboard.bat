@@ -13,11 +13,13 @@ echo   ✓ واجهة محسّنة مع تعليمات واضحة
 echo.
 
 echo 1️⃣ عمل نسخة احتياطية...
-ssh root@62.171.153.204 "cp /root/ma-streaming/admin-dashboard/public/app.js /root/ma-streaming/admin-dashboard/public/app.js.backup"
+ssh root@62.171.153.204 "cp /root/ma-streaming/admin-dashboard/public/app.js /root/ma-streaming/admin-dashboard/public/app.js.backup && cp /root/ma-streaming/admin-dashboard/public/style.css /root/ma-streaming/admin-dashboard/public/style.css.backup && cp /root/ma-streaming/admin-dashboard/public/index.html /root/ma-streaming/admin-dashboard/public/index.html.backup"
 
 echo.
-echo 2️⃣ رفع app.js المحسّن...
+echo 2️⃣ رفع الملفات المحدّثة (app.js + style.css + index.html)...
 scp admin-dashboard/public/app.js root@62.171.153.204:/root/ma-streaming/admin-dashboard/public/
+scp admin-dashboard/public/style.css root@62.171.153.204:/root/ma-streaming/admin-dashboard/public/
+scp admin-dashboard/public/index.html root@62.171.153.204:/root/ma-streaming/admin-dashboard/public/
 
 echo.
 echo 3️⃣ رفع ملف التعليمات...

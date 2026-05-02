@@ -11,6 +11,11 @@ const CLOUD_URL = "https://www.amlive.shop";
 
 export function getCloudUrl() { return CLOUD_URL; }
 
+// Make cloud URL available to components (for session release, etc.)
+if (typeof window !== 'undefined') {
+  (window as any).__CLOUD_URL = CLOUD_URL;
+}
+
 // ─── Simple in-memory cache ───────────────────────────
 const _cache = new Map<string, { data: any; ts: number }>();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
@@ -677,54 +682,61 @@ export async function requestFreeStream(
 ): Promise<FreeStreamResult> {
   try {
     console.log("[API] 🔄 Requesting stream for channel:", channelId);
-    // ─── Send deviceId so cloud-server creates session with correct device_id ───
-    // This enables heartbeat tracking and proper connection limit enforcement
     const deviceId = typeof localStorage !== 'undefined'
       ? (localStorage.getItem('ma_device_id') || '')
       : '';
-    const didParam = deviceId ? `?did=${encodeURIComponent(deviceId)}` : '';
-    const res = await apiFetch(
-      `/api/xtream/stream/${encodeURIComponent(channelId)}${didParam}`,
-    );
+
+    // Release any existing session for this device to avoid stale sessions blocking new streams
+    try {
+      const token = getStorage(TOKEN_KEY);
+      if (token && deviceId) {
+        const sessionRes = await cloudFetch('/api/session/active');
+        if (sessionRes.ok) {
+          const sessionData = await sessionRes.json();
+          const mySessions = (sessionData.sessions || []).filter(
+            (s: ActiveSession) => s.device_id === deviceId
+          );
+          for (const s of mySessions) {
+            await cloudFetch('/api/session/force-release', {
+              method: 'POST',
+              body: JSON.stringify({ sessionId: s.id }),
+            });
+          }
+        }
+      }
+    } catch {}
+
+    // ─── Use POST /api/stream/live/:channelId ───
+    // This returns HLS proxy URL with st= token (no FFmpeg, shared cache, instant)
+    // GET /api/xtream/stream triggers FFmpeg+HLS which is slow and unstable
+    const res = await apiFetch(`/api/stream/live/${encodeURIComponent(channelId)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId }),
+    });
+
+    if (res.status === 429) {
+      try {
+        const d = await res.json();
+        return { success: false, error: d.message || 'الحد الأقصى للاتصالات مكتمل' };
+      } catch {}
+      return { success: false, error: 'الحد الأقصى للاتصالات مكتمل' };
+    }
+
     if (!res.ok) {
-      console.error("[API] ❌ Request failed:", res.status, res.statusText);
+      console.error("[API] ❌ Request failed:", res.status);
       return { success: false, error: "فشل جلب الرابط" };
     }
-    const data = await res.json();
-    console.log("[API] ✅ Response data:", data);
 
-    let streamUrl = data.hlsUrl || "";
+    const data = await res.json();
+    console.log("[API] ✅ Stream data:", data);
+
+    let streamUrl = data.hlsUrl || data.vodUrl || "";
     if (!streamUrl) return { success: false, error: "رابط البث غير متوفر" };
 
-    // ─── Use direct cloud URL (no proxy through Next.js) ───────────────
-    // This reduces load on web app server — browser connects directly to VPS
+    // Convert relative URLs to absolute cloud URL
     if (streamUrl.startsWith("/")) {
       streamUrl = CLOUD_URL + streamUrl;
-    }
-
-    // FFmpeg+HLS: stream may not be ready yet — poll until segments exist
-    if (data.ready === false) {
-      console.log("[API] ⏳ Stream not ready, waiting for FFmpeg...");
-      const maxWait = 15000; // 15s max
-      const interval = 1000;
-      const start = Date.now();
-      while (Date.now() - start < maxWait) {
-        await new Promise((r) => setTimeout(r, interval));
-        try {
-          const check = await apiFetch(
-            `/api/xtream/stream/${encodeURIComponent(channelId)}`,
-          );
-          if (check.ok) {
-            const d = await check.json();
-            if (d.ready) {
-              const rawUrl = d.hlsUrl || streamUrl;
-              streamUrl = rawUrl.startsWith("/") ? CLOUD_URL + rawUrl : rawUrl;
-              console.log("[API] ✅ Stream ready!");
-              break;
-            }
-          }
-        } catch {}
-      }
     }
 
     return {
@@ -1000,6 +1012,9 @@ export interface LuluEpisode {
   episode: number;
   season: number;
   title: string;
+  thumbnail: string;
+  overview?: string;
+  air_date?: string;
   fileCode: string;
   hlsUrl: string;
   embedUrl: string;

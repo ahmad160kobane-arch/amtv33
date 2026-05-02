@@ -91,9 +91,10 @@ db.init = async function () {
     CREATE INDEX IF NOT EXISTS idx_sessions_seen ON active_sessions(last_seen);
   `);
 
-  // Migration: add device_info + ip columns if missing
+  // Migration: add device_info + ip + device_id columns if missing
   try { await pool.query("ALTER TABLE active_sessions ADD COLUMN IF NOT EXISTS device_info TEXT DEFAULT ''"); } catch(e) {}
   try { await pool.query("ALTER TABLE active_sessions ADD COLUMN IF NOT EXISTS ip TEXT DEFAULT ''"); } catch(e) {}
+  try { await pool.query("ALTER TABLE active_sessions ADD COLUMN IF NOT EXISTS device_id TEXT DEFAULT ''"); } catch(e) {}
 
   // ─── IPTV Accounts table (multi-account support) ───
   await pool.query(`
@@ -140,6 +141,8 @@ db.init = async function () {
 
   // Migration: add is_streaming column to xtream_channels
   try { await pool.query("ALTER TABLE xtream_channels ADD COLUMN IF NOT EXISTS is_streaming BOOLEAN DEFAULT false"); } catch(e) {}
+  // Migration: add is_continuous column for 24/7 channels
+  try { await pool.query("ALTER TABLE xtream_channels ADD COLUMN IF NOT EXISTS is_continuous BOOLEAN DEFAULT false"); } catch(e) {}
 
   // ─── Stream Errors log table (global error log for all channels) ───
   await pool.query(`
@@ -153,6 +156,66 @@ db.init = async function () {
       created_at  BIGINT DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_stream_errors_time ON stream_errors(created_at);
+  `);
+
+  // ─── Lulu Upload Accounts (API keys) ───
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS lulu_upload_accounts (
+      id         SERIAL PRIMARY KEY,
+      name       TEXT NOT NULL DEFAULT '',
+      api_key    TEXT NOT NULL,
+      main_folder_id INTEGER DEFAULT 0,
+      created_at BIGINT DEFAULT 0
+    );
+  `);
+
+  // ─── Lulu Uploaded Files (file codes stored permanently) ───
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS lulu_uploaded_files (
+      id              SERIAL PRIMARY KEY,
+      file_code       TEXT NOT NULL,
+      title           TEXT NOT NULL DEFAULT '',
+      original_name   TEXT DEFAULT '',
+      type            TEXT DEFAULT 'movie',
+      cat_name        TEXT DEFAULT '',
+      show_name       TEXT DEFAULT '',
+      season          INTEGER DEFAULT 0,
+      episode_num     INTEGER DEFAULT 0,
+      iptv_stream_id  TEXT DEFAULT '',
+      lulu_account_id INTEGER DEFAULT 0,
+      iptv_account_id INTEGER DEFAULT 0,
+      folder_id       INTEGER DEFAULT 0,
+      job_id          INTEGER DEFAULT 0,
+      status          TEXT DEFAULT 'ok',
+      error_msg       TEXT DEFAULT '',
+      created_at      BIGINT DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_lulu_files_code ON lulu_uploaded_files(file_code);
+    CREATE INDEX IF NOT EXISTS idx_lulu_files_cat ON lulu_uploaded_files(cat_name);
+    CREATE INDEX IF NOT EXISTS idx_lulu_files_type ON lulu_uploaded_files(type);
+    CREATE INDEX IF NOT EXISTS idx_lulu_files_lulu ON lulu_uploaded_files(lulu_account_id);
+    CREATE INDEX IF NOT EXISTS idx_lulu_files_time ON lulu_uploaded_files(created_at);
+  `);
+
+  // ─── Lulu Upload Jobs (persistent job history) ───
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS lulu_upload_jobs (
+      id              SERIAL PRIMARY KEY,
+      job_uuid        TEXT NOT NULL DEFAULT '',
+      status          TEXT DEFAULT 'queued',
+      type            TEXT DEFAULT 'vod',
+      total           INTEGER DEFAULT 0,
+      done            INTEGER DEFAULT 0,
+      failed          INTEGER DEFAULT 0,
+      cat_name        TEXT DEFAULT '',
+      lulu_account_id INTEGER DEFAULT 0,
+      iptv_account_id INTEGER DEFAULT 0,
+      started_at      BIGINT DEFAULT 0,
+      finished_at     BIGINT DEFAULT 0,
+      created_at      BIGINT DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_lulu_jobs_uuid ON lulu_upload_jobs(job_uuid);
+    CREATE INDEX IF NOT EXISTS idx_lulu_jobs_status ON lulu_upload_jobs(status);
   `);
 
   console.log('[DB] PostgreSQL connected + tables ready');

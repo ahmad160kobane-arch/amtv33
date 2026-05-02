@@ -49,7 +49,7 @@ class StreamManager {
    * @param {string} sourceUrl - رابط مصدر IPTV (يأتي من الباك اند)
    * @param {string} name - اسم القناة/المحتوى (للسجلات)
    */
-  async requestStream(streamId, type, sourceUrl, name = 'Unknown') {
+  async requestStream(streamId, type, sourceUrl, name = 'Unknown', options = {}) {
     // إذا البث يعمل بالفعل — أضف مشاهد
     if (this.streams.has(streamId)) {
       const info = this.streams.get(streamId);
@@ -90,7 +90,10 @@ class StreamManager {
     }
 
     if (result.success) {
-      this.streams.get(streamId).viewers = 1;
+      const streamInfo = this.streams.get(streamId);
+      streamInfo.viewers = 1;
+      // 24/7 continuous channels never stop on idle
+      if (options.isContinuous) streamInfo.isContinuous = true;
       return { success: true, hlsUrl: this._getHlsUrl(streamId, type), ready: false, waiting: true };
     }
     return result;
@@ -145,9 +148,14 @@ class StreamManager {
         try { fs.rmSync(hlsDir, { recursive: true, force: true }); } catch {}
         return;
       }
+      // قناة 24/7 — لا تُوقف FFmpeg أبداً عند عدم وجود مشاهدين
+      if (info.isContinuous) {
+        console.log(`[Stream] 24/7 ${info.name} — يعمل بلا توقف`);
+        return;
+      }
       info.idleTimer = setTimeout(() => {
         const current = this.streams.get(streamId);
-        if (current && current.viewers <= 0) {
+        if (current && current.viewers <= 0 && !current.isContinuous) {
           console.log(`[Stream] إيقاف ${current.name} (خمول)`);
           this._killStream(streamId);
         }

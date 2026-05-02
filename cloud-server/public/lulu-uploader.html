@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>رافع المحتوى — LuluStream</title>
+<style>
+  :root {
+    --bg: #0f0f13;
+    --surface: #1a1a24;
+    --surface2: #22222f;
+    --border: #2e2e3e;
+    --accent: #6c63ff;
+    --accent2: #4ade80;
+    --danger: #ef4444;
+    --warn: #f59e0b;
+    --text: #e2e2f0;
+    --muted: #6b6b8a;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', Tahoma, sans-serif; min-height: 100vh; }
+  .app { max-width: 1300px; margin: 0 auto; padding: 20px; }
+  h1 { font-size: 1.6rem; font-weight: 700; color: var(--accent); display: flex; align-items: center; gap: 10px; margin-bottom: 22px; }
+  h1 span.tag { font-size: 0.75rem; background: var(--accent); color: #fff; padding: 2px 10px; border-radius: 20px; }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 4px; background: var(--surface); border-radius: var(--radius); padding: 5px; margin-bottom: 22px; width: fit-content; }
+  .tab { padding: 9px 22px; border-radius: 8px; cursor: pointer; font-size: 0.92rem; color: var(--muted); transition: all .2s; border: none; background: none; }
+  .tab.active { background: var(--accent); color: #fff; font-weight: 600; }
+  .tab:hover:not(.active) { color: var(--text); background: var(--surface2); }
+
+  /* Panels */
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  /* Cards */
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
+  .card h3 { font-size: 1rem; margin-bottom: 14px; color: var(--accent); }
+
+  /* Form */
+  .form-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 12px; }
+  .form-group { display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 180px; }
+  label { font-size: 0.82rem; color: var(--muted); }
+  input, select { background: var(--surface2); border: 1px solid var(--border); border-radius: 7px; color: var(--text); padding: 9px 12px; font-size: 0.9rem; outline: none; width: 100%; }
+  input:focus, select:focus { border-color: var(--accent); }
+  button { padding: 9px 18px; border-radius: 7px; border: none; cursor: pointer; font-size: 0.9rem; font-weight: 600; transition: opacity .2s; }
+  button:hover { opacity: 0.85; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-danger  { background: var(--danger);  color: #fff; }
+  .btn-success { background: var(--accent2); color: #000; }
+  .btn-ghost   { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* Table */
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  th { background: var(--surface2); padding: 10px 12px; text-align: right; color: var(--muted); border-bottom: 1px solid var(--border); }
+  td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  tr:hover td { background: rgba(108,99,255,0.05); }
+
+  /* Badges */
+  .badge { display: inline-block; font-size: 0.75rem; padding: 2px 9px; border-radius: 20px; font-weight: 600; }
+  .badge-ok     { background: #052e16; color: var(--accent2); }
+  .badge-error  { background: #450a0a; color: #fca5a5; }
+  .badge-done   { background: #052e16; color: var(--accent2); }
+  .badge-running{ background: #1e3a5f; color: #93c5fd; }
+  .badge-queued { background: #292524; color: var(--warn); }
+  .badge-cancelled { background: var(--surface2); color: var(--muted); }
+  .badge-daily_limit { background: #451a03; color: #fcd34d; }
+
+  /* Browse panel layout */
+  .browse-layout { display: grid; grid-template-columns: 280px 1fr; gap: 16px; }
+  @media(max-width:780px) { .browse-layout { grid-template-columns: 1fr; } }
+
+  .sidebar { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; height: fit-content; }
+  .sidebar h4 { font-size: 0.85rem; color: var(--muted); margin-bottom: 10px; text-transform: uppercase; letter-spacing: .05em; }
+
+  .cat-list { max-height: 420px; overflow-y: auto; }
+  .cat-item { padding: 8px 10px; border-radius: 7px; cursor: pointer; font-size: 0.88rem; margin-bottom: 3px; transition: background .15s; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cat-item:hover  { background: var(--surface2); }
+  .cat-item.active { background: var(--accent); color: #fff; }
+  .cat-item .count { font-size: 0.75rem; color: var(--muted); float: left; }
+  .cat-item.active .count { color: rgba(255,255,255,.6); }
+
+  /* Content grid */
+  .content-area { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+  .content-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+  .content-toolbar input { flex: 1; min-width: 160px; }
+  .select-bar { display: flex; gap: 8px; align-items: center; font-size: 0.88rem; color: var(--muted); }
+  .select-bar strong { color: var(--accent); }
+
+  .content-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; max-height: 480px; overflow-y: auto; padding: 4px; }
+  .item-card { background: var(--surface2); border: 2px solid transparent; border-radius: 9px; padding: 8px; cursor: pointer; transition: border-color .15s; position: relative; }
+  .item-card:hover { border-color: var(--border); }
+  .item-card.selected { border-color: var(--accent); }
+  .item-card img { width: 100%; height: 100px; object-fit: cover; border-radius: 6px; margin-bottom: 6px; background: var(--bg); }
+  .item-card .ic-name { font-size: 0.78rem; color: var(--text); line-height: 1.3; max-height: 2.6em; overflow: hidden; }
+  .item-card .ic-check { position: absolute; top: 6px; right: 6px; width: 18px; height: 18px; background: var(--accent); border-radius: 50%; display: none; align-items: center; justify-content: center; }
+  .item-card.selected .ic-check { display: flex; }
+  .ic-check svg { width: 10px; height: 10px; fill: #fff; }
+
+  /* Series episodes list */
+  .ep-list { max-height: 480px; overflow-y: auto; }
+  .ep-item { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 7px; border: 2px solid transparent; cursor: pointer; margin-bottom: 4px; font-size: 0.86rem; transition: border-color .15s, background .15s; }
+  .ep-item:hover { background: var(--surface2); }
+  .ep-item.selected { border-color: var(--accent); background: rgba(108,99,255,0.08); }
+  .ep-item input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; flex-shrink: 0; }
+
+  /* Progress bar */
+  .progress-bar-wrap { background: var(--surface2); border-radius: 20px; height: 8px; overflow: hidden; margin: 8px 0; }
+  .progress-bar { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 20px; transition: width .4s; }
+
+  /* Alerts */
+  .alert { padding: 10px 14px; border-radius: 8px; font-size: 0.88rem; margin-bottom: 12px; }
+  .alert-info    { background: #1e3a5f22; border: 1px solid #1e3a5f; color: #93c5fd; }
+  .alert-success { background: #05160b; border: 1px solid #166534; color: var(--accent2); }
+  .alert-error   { background: #450a0a22; border: 1px solid #7f1d1d; color: #fca5a5; }
+  .alert-warn    { background: #451a0322; border: 1px solid #92400e; color: #fcd34d; }
+
+  /* Series back button */
+  .back-btn { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; color: var(--muted); cursor: pointer; margin-bottom: 12px; }
+  .back-btn:hover { color: var(--text); }
+
+  /* Loading */
+  .loading { text-align: center; color: var(--muted); padding: 30px; font-size: 0.9rem; }
+  .spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; margin-left: 8px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .empty { text-align: center; color: var(--muted); padding: 40px; font-size: 0.9rem; }
+
+  /* Upload footer */
+  .upload-footer { position: sticky; bottom: 0; background: var(--surface); border-top: 1px solid var(--border); padding: 12px 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; border-radius: 0 0 var(--radius) var(--radius); margin-top: 12px; }
+
+  /* Job detail */
+  .job-results { max-height: 300px; overflow-y: auto; font-size: 0.82rem; }
+  .job-result-row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid var(--border); gap: 10px; }
+  .job-result-row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  select option { background: var(--surface2); }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <h1>🎬 رافع المحتوى — LuluStream <span class="tag">Admin</span></h1>
+
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('accounts')">حسابات Lulu</button>
+    <button class="tab" onclick="switchTab('browse')">تصفح IPTV</button>
+    <button class="tab" onclick="switchTab('jobs')" id="tab-jobs">مهام الرفع</button>
+  </div>
+
+  <!-- ═══════════════ TAB: Accounts ═══════════════ -->
+  <div class="panel active" id="panel-accounts">
+
+    <div class="card">
+      <h3>إضافة حساب LuluStream</h3>
+      <div id="acc-alert"></div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>اسم الحساب</label>
+          <input id="acc-name" placeholder="مثال: الحساب الرئيسي" />
+        </div>
+        <div class="form-group">
+          <label>مفتاح API</label>
+          <input id="acc-key" placeholder="258176jfw9e96irnxai2fm" />
+        </div>
+        <div class="form-group" style="max-width:180px">
+          <label>معرّف المجلد الرئيسي (اختياري)</label>
+          <input id="acc-folder" type="number" placeholder="0" value="0" />
+        </div>
+        <button class="btn-primary" onclick="addLuluAccount()" style="height:40px;margin-top:auto">إضافة</button>
+      </div>
+      <p style="font-size:.8rem;color:var(--muted)">💡 اترك معرّف المجلد 0 وسيُنشأ تلقائياً مجلد «محتوى عربي» في Lulu.</p>
+    </div>
+
+    <div class="card">
+      <h3>الحسابات المضافة</h3>
+      <div class="table-wrap">
+        <table id="acc-table">
+          <thead><tr><th>#</th><th>الاسم</th><th>مفتاح API</th><th>المجلد</th><th>التاريخ</th><th>حذف</th></tr></thead>
+          <tbody id="acc-tbody"><tr><td colspan="6" class="loading">تحميل...<span class="spinner"></span></td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div><!-- /accounts -->
+
+  <!-- ═══════════════ TAB: Browse ═══════════════ -->
+  <div class="panel" id="panel-browse">
+
+    <!-- Top bar: account selectors -->
+    <div class="card" style="padding:14px">
+      <div class="form-row" style="margin:0">
+        <div class="form-group">
+          <label>حساب IPTV</label>
+          <select id="sel-iptv" onchange="onIptvChange()">
+            <option value="">الافتراضي (myhand.org)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>حساب Lulu (للرفع)</label>
+          <select id="sel-lulu">
+            <option value="">— اختر حساب Lulu —</option>
+          </select>
+        </div>
+        <div class="form-group" style="max-width:140px">
+          <label>نوع المحتوى</label>
+          <select id="sel-type" onchange="onTypeChange()">
+            <option value="vod">أفلام</option>
+            <option value="series">مسلسلات</option>
+          </select>
+        </div>
+        <button class="btn-primary" onclick="loadCategories()" style="height:40px;margin-top:auto">تحميل الفئات</button>
+      </div>
+    </div>
+
+    <div id="browse-alert"></div>
+
+    <div class="browse-layout" id="browse-main" style="display:none">
+      <!-- Sidebar: categories -->
+      <div class="sidebar">
+        <h4>الفئات <span id="cat-count" style="font-weight:normal;color:var(--muted)"></span></h4>
+        <input id="cat-search" placeholder="بحث في الفئات..." oninput="filterCats()" style="margin-bottom:10px;font-size:.82rem;padding:7px 10px" />
+        <div class="cat-list" id="cat-list"></div>
+      </div>
+
+      <!-- Main: content -->
+      <div class="content-area">
+
+        <!-- Back button (series → episodes) -->
+        <div class="back-btn" id="back-btn" style="display:none" onclick="backToSeriesList()">
+          ← العودة للمسلسلات
+        </div>
+
+        <div class="content-toolbar">
+          <input id="content-search" placeholder="بحث في المحتوى..." oninput="searchContent()" style="min-width:200px" />
+          <div class="select-bar">
+            <input type="checkbox" id="chk-all" onchange="toggleSelectAll()" style="width:16px;height:16px;accent-color:var(--accent)" />
+            <label for="chk-all">تحديد الكل</label>
+            <strong id="sel-count">0</strong> محدد
+          </div>
+        </div>
+
+        <div id="content-body">
+          <div class="empty">اختر فئة لعرض المحتوى</div>
+        </div>
+
+        <!-- Upload footer -->
+        <div class="upload-footer" id="upload-footer" style="display:none">
+          <span style="font-size:.88rem;color:var(--muted)"><strong id="footer-count" style="color:var(--accent)">0</strong> عنصر محدد</span>
+          <span id="footer-cat" style="font-size:.82rem;color:var(--muted)"></span>
+          <button class="btn-success" onclick="startUpload()">🚀 بدء الرفع</button>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /browse -->
+
+  <!-- ═══════════════ TAB: Jobs ═══════════════ -->
+  <div class="panel" id="panel-jobs">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <h3 style="margin:0">مهام الرفع الجارية والمكتملة</h3>
+        <button class="btn-ghost" onclick="loadJobs()">🔄 تحديث</button>
+      </div>
+      <div id="jobs-alert"></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>الحالة</th><th>النوع</th><th>التقدم</th><th>وقت البدء</th><th>إجراء</th></tr></thead>
+          <tbody id="jobs-tbody"><tr><td colspan="6" class="loading">تحميل...<span class="spinner"></span></td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Job detail -->
+    <div class="card" id="job-detail-card" style="display:none">
+      <h3 id="job-detail-title">تفاصيل المهمة</h3>
+      <div id="job-detail-progress" style="margin-bottom:12px"></div>
+      <div class="job-results" id="job-detail-results"></div>
+    </div>
+  </div><!-- /jobs -->
+
+</div><!-- /app -->
+
+<script>
+// ──────────────────────────────────────────────────────────────────────────────
+// State
+// ──────────────────────────────────────────────────────────────────────────────
+const S = {
+  luluAccounts  : [],
+  iptvAccounts  : [],
+  categories    : { vod: [], series: [] },
+  activeCat     : null,
+  activeType    : 'vod',
+  contentItems  : [],    // current loaded items (movies or series)
+  seriesItems   : [],    // episodes when drilling into a series
+  inSeriesDetail: false,
+  currentSeries : null,
+  selectedIds   : new Set(),
+  currentCatName: '',
+  token         : null,
+};
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Auth helpers
+// ──────────────────────────────────────────────────────────────────────────────
+function getToken() {
+  if (S.token) return S.token;
+  S.token = localStorage.getItem('authToken') || sessionStorage.getItem('authToken') || '';
+  return S.token;
+}
+
+async function apiFetch(url, opts = {}) {
+  const token = getToken();
+  const res = await fetch(url, {
+    ...opts,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(opts.headers || {}),
+    },
+  });
+  if (res.status === 401) {
+    showAlert('browse-alert', 'error', 'يجب تسجيل الدخول كمسؤول أولاً');
+    throw new Error('Unauthorized');
+  }
+  return res;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// UI helpers
+// ──────────────────────────────────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach((t, i) => {
+    t.classList.toggle('active', ['accounts','browse','jobs'][i] === name);
+  });
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById(`panel-${name}`).classList.add('active');
+  if (name === 'jobs') loadJobs();
+  if (name === 'accounts') loadAccounts();
+}
+
+function showAlert(elId, type, msg) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  el.innerHTML = `<div class="alert alert-${type}">${msg}</div>`;
+  if (type !== 'error') setTimeout(() => { if (el) el.innerHTML = ''; }, 4000);
+}
+
+function fmtDate(ts) {
+  if (!ts) return '—';
+  return new Date(ts).toLocaleString('ar');
+}
+
+function updateSelCount() {
+  const n = S.selectedIds.size;
+  document.getElementById('sel-count').textContent = n;
+  const footer = document.getElementById('upload-footer');
+  const footerCount = document.getElementById('footer-count');
+  if (footerCount) footerCount.textContent = n;
+  if (footer) footer.style.display = n > 0 ? 'flex' : 'none';
+  const chkAll = document.getElementById('chk-all');
+  if (chkAll) {
+    const total = S.inSeriesDetail ? S.seriesItems.length : S.contentItems.length;
+    chkAll.indeterminate = n > 0 && n < total;
+    chkAll.checked = total > 0 && n === total;
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Accounts tab
+// ──────────────────────────────────────────────────────────────────────────────
+async function loadAccounts() {
+  try {
+    const r = await apiFetch('/api/lulu-upload/accounts');
+    const d = await r.json();
+    S.luluAccounts = d.accounts || [];
+    renderAccTable();
+    refreshLuluDropdown();
+  } catch {}
+}
+
+function renderAccTable() {
+  const tbody = document.getElementById('acc-tbody');
+  if (!S.luluAccounts.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">لا توجد حسابات — أضف حساباً للبدء</td></tr>';
+    return;
+  }
+  tbody.innerHTML = S.luluAccounts.map(a => `
+    <tr>
+      <td>${a.id}</td>
+      <td>${esc(a.name)}</td>
+      <td style="font-family:monospace;font-size:.8rem">${esc(a.api_key_masked)}</td>
+      <td>${a.main_folder_id || '—'}</td>
+      <td>${fmtDate(a.created_at)}</td>
+      <td><button class="btn-danger" style="padding:5px 12px;font-size:.8rem" onclick="deleteAccount(${a.id})">حذف</button></td>
+    </tr>
+  `).join('');
+}
+
+function refreshLuluDropdown() {
+  const sel = document.getElementById('sel-lulu');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">— اختر حساب Lulu —</option>' +
+    S.luluAccounts.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+  if (cur) sel.value = cur;
+}
+
+async function addLuluAccount() {
+  const name   = document.getElementById('acc-name').value.trim();
+  const apiKey = document.getElementById('acc-key').value.trim();
+  const folder = parseInt(document.getElementById('acc-folder').value) || 0;
+  if (!apiKey) { showAlert('acc-alert', 'error', 'أدخل مفتاح API'); return; }
+  showAlert('acc-alert', 'info', 'جارٍ التحقق من المفتاح...');
+  try {
+    const r = await apiFetch('/api/lulu-upload/accounts', {
+      method: 'POST',
+      body: JSON.stringify({ name: name || 'حساب Lulu', api_key: apiKey, main_folder_id: folder }),
+    });
+    const d = await r.json();
+    if (!r.ok || d.error) { showAlert('acc-alert', 'error', d.error || 'فشل الإضافة'); return; }
+    showAlert('acc-alert', 'success', '✅ تمت إضافة الحساب بنجاح');
+    document.getElementById('acc-name').value = '';
+    document.getElementById('acc-key').value  = '';
+    loadAccounts();
+  } catch (e) { showAlert('acc-alert', 'error', e.message); }
+}
+
+async function deleteAccount(id) {
+  if (!confirm('حذف هذا الحساب؟')) return;
+  await apiFetch(`/api/lulu-upload/accounts/${id}`, { method: 'DELETE' });
+  loadAccounts();
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Browse tab — categories
+// ──────────────────────────────────────────────────────────────────────────────
+async function loadIptvAccounts() {
+  try {
+    const r = await apiFetch('/api/lulu-upload/iptv-accounts');
+    const d = await r.json();
+    S.iptvAccounts = d.accounts || [];
+    const sel = document.getElementById('sel-iptv');
+    sel.innerHTML = '<option value="">الافتراضي (myhand.org)</option>' +
+      S.iptvAccounts.map(a => `<option value="${a.id}">${esc(a.name || a.server_url)}</option>`).join('');
+  } catch {}
+}
+
+function onIptvChange() { /* just update state */ }
+function onTypeChange() {
+  S.activeType = document.getElementById('sel-type').value;
+  S.activeCat  = null;
+  S.selectedIds.clear();
+  updateSelCount();
+  document.getElementById('content-body').innerHTML = '<div class="empty">اختر فئة لعرض المحتوى</div>';
+  document.getElementById('back-btn').style.display = 'none';
+  S.inSeriesDetail = false;
+  renderCatList();
+}
+
+async function loadCategories() {
+  const iptvId = document.getElementById('sel-iptv').value;
+  document.getElementById('browse-alert').innerHTML = '';
+  document.getElementById('cat-list').innerHTML = '<div class="loading">جارٍ التحميل...<span class="spinner"></span></div>';
+  document.getElementById('browse-main').style.display = 'grid';
+
+  try {
+    const qs  = iptvId ? `?iptv_id=${iptvId}` : '';
+    const r   = await apiFetch(`/api/lulu-upload/iptv/categories${qs}`);
+    const d   = await r.json();
+    if (d.error) { showAlert('browse-alert', 'error', d.error); return; }
+    S.categories.vod    = d.vod    || [];
+    S.categories.series = d.series || [];
+    renderCatList();
+  } catch (e) { showAlert('browse-alert', 'error', e.message); }
+}
+
+function renderCatList() {
+  const type = S.activeType;
+  const cats = type === 'vod' ? S.categories.vod : S.categories.series;
+  const q    = document.getElementById('cat-search')?.value?.toLowerCase() || '';
+  const filt = q ? cats.filter(c => c.name.toLowerCase().includes(q)) : cats;
+  document.getElementById('cat-count').textContent = `(${filt.length})`;
+  if (!filt.length) {
+    document.getElementById('cat-list').innerHTML = '<div class="empty" style="padding:16px">لا توجد فئات</div>';
+    return;
+  }
+  document.getElementById('cat-list').innerHTML = filt.map(c => `
+    <div class="cat-item ${S.activeCat === c.id ? 'active' : ''}" onclick="selectCat(${c.id}, '${esc(c.name).replace(/'/g,"\\'")}')">
+      ${esc(c.name)}
+    </div>
+  `).join('');
+}
+
+function filterCats() { renderCatList(); }
+
+async function selectCat(catId, catName) {
+  S.activeCat    = catId;
+  S.currentCatName = catName;
+  S.selectedIds.clear();
+  S.inSeriesDetail = false;
+  S.currentSeries  = null;
+  updateSelCount();
+  document.getElementById('back-btn').style.display = 'none';
+  document.getElementById('footer-cat').textContent  = catName;
+  renderCatList();
+  await loadContent(catId);
+}
+
+async function loadContent(catId) {
+  const iptvId = document.getElementById('sel-iptv').value;
+  const type   = S.activeType;
+  const body   = document.getElementById('content-body');
+  body.innerHTML = '<div class="loading">جارٍ التحميل...<span class="spinner"></span></div>';
+
+  try {
+    let qs = `?type=${type}&cat_id=${catId}`;
+    if (iptvId) qs += `&iptv_id=${iptvId}`;
+    const r  = await apiFetch(`/api/lulu-upload/iptv/content${qs}`);
+    const d  = await r.json();
+    if (d.error) { body.innerHTML = `<div class="alert alert-error">${d.error}</div>`; return; }
+    S.contentItems = d.items || [];
+    document.getElementById('content-search').value = '';
+    renderContentGrid(S.contentItems);
+  } catch (e) { body.innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
+}
+
+function searchContent() {
+  const q = document.getElementById('content-search').value.toLowerCase();
+  if (S.inSeriesDetail) {
+    renderEpisodeList(q ? S.seriesItems.filter(i => i.name.toLowerCase().includes(q)) : S.seriesItems);
+  } else {
+    renderContentGrid(q ? S.contentItems.filter(i => i.name.toLowerCase().includes(q)) : S.contentItems);
+  }
+}
+
+function renderContentGrid(items) {
+  const body = document.getElementById('content-body');
+  if (!items.length) { body.innerHTML = '<div class="empty">لا يوجد محتوى في هذه الفئة</div>'; return; }
+
+  if (S.activeType === 'series' && !S.inSeriesDetail) {
+    // Show series cards with click-to-drill
+    body.innerHTML = `<div class="content-grid" id="items-grid">${items.map(item => `
+      <div class="item-card ${S.selectedIds.has(item.streamId) ? 'selected' : ''}"
+           data-id="${item.streamId}"
+           onclick="drillSeries(${item.streamId}, '${esc(item.name).replace(/'/g,"\\'")}')">
+        <img src="${item.poster || ''}" onerror="this.src=''" alt="" />
+        <div class="ic-name">${esc(item.name)}</div>
+      </div>
+    `).join('')}</div>`;
+  } else if (S.activeType === 'vod') {
+    body.innerHTML = `<div class="content-grid" id="items-grid">${items.map(item => `
+      <div class="item-card ${S.selectedIds.has(item.streamId) ? 'selected' : ''}"
+           data-id="${item.streamId}"
+           onclick="toggleItem('${item.streamId}', this)">
+        <div class="ic-check"><svg viewBox="0 0 10 8"><polyline points="1,4 4,7 9,1" fill="none" stroke="#fff" stroke-width="1.5"/></svg></div>
+        <img src="${item.poster || ''}" onerror="this.src=''" alt="" />
+        <div class="ic-name">${esc(item.name)}</div>
+      </div>
+    `).join('')}</div>`;
+  }
+  updateSelCount();
+}
+
+function toggleItem(id, el) {
+  if (S.selectedIds.has(id)) { S.selectedIds.delete(id); el.classList.remove('selected'); }
+  else                        { S.selectedIds.add(id);    el.classList.add('selected'); }
+  updateSelCount();
+}
+
+function toggleSelectAll() {
+  const checked = document.getElementById('chk-all').checked;
+  const items   = S.inSeriesDetail ? S.seriesItems : S.contentItems;
+  if (checked) items.forEach(i => S.selectedIds.add(S.inSeriesDetail ? String(i.streamId) : i.streamId));
+  else          S.selectedIds.clear();
+  // Re-render to reflect
+  if (S.inSeriesDetail) renderEpisodeList(S.seriesItems);
+  else renderContentGrid(items);
+  updateSelCount();
+}
+
+// ── Drill into series episodes ──────────────────────────────────────────────
+async function drillSeries(seriesId, seriesName) {
+  S.inSeriesDetail = true;
+  S.currentSeries  = { id: seriesId, name: seriesName };
+  S.selectedIds.clear();
+  updateSelCount();
+  document.getElementById('back-btn').style.display = 'inline-flex';
+  document.getElementById('content-body').innerHTML = '<div class="loading">جارٍ تحميل الحلقات...<span class="spinner"></span></div>';
+
+  const iptvId = document.getElementById('sel-iptv').value;
+  let qs = `?type=series&series_id=${seriesId}`;
+  if (iptvId) qs += `&iptv_id=${iptvId}`;
+
+  try {
+    const r = await apiFetch(`/api/lulu-upload/iptv/content${qs}`);
+    const d = await r.json();
+    if (d.error) { document.getElementById('content-body').innerHTML = `<div class="alert alert-error">${d.error}</div>`; return; }
+    S.seriesItems = (d.items || []).map(e => ({ ...e, streamId: String(e.streamId), catName: S.currentCatName, showName: seriesName }));
+    renderEpisodeList(S.seriesItems);
+  } catch (e) { document.getElementById('content-body').innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
+}
+
+function backToSeriesList() {
+  S.inSeriesDetail = false;
+  S.currentSeries  = null;
+  S.selectedIds.clear();
+  updateSelCount();
+  document.getElementById('back-btn').style.display = 'none';
+  renderContentGrid(S.contentItems);
+}
+
+function renderEpisodeList(items) {
+  const body = document.getElementById('content-body');
+  if (!items.length) { body.innerHTML = '<div class="empty">لا توجد حلقات</div>'; return; }
+
+  body.innerHTML = `<div class="ep-list">${items.map(ep => `
+    <div class="ep-item ${S.selectedIds.has(ep.streamId) ? 'selected' : ''}" onclick="toggleEp('${ep.streamId}', this)">
+      <input type="checkbox" ${S.selectedIds.has(ep.streamId) ? 'checked' : ''} onclick="event.stopPropagation();toggleEp('${ep.streamId}',this.closest('.ep-item'))" />
+      <span>${esc(ep.name)}</span>
+    </div>
+  `).join('')}</div>`;
+  updateSelCount();
+}
+
+function toggleEp(id, el) {
+  if (S.selectedIds.has(id)) { S.selectedIds.delete(id); el.classList.remove('selected'); el.querySelector('input').checked = false; }
+  else                        { S.selectedIds.add(id);    el.classList.add('selected');    el.querySelector('input').checked = true;  }
+  updateSelCount();
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Upload
+// ──────────────────────────────────────────────────────────────────────────────
+async function startUpload() {
+  if (!S.selectedIds.size) { showAlert('browse-alert', 'warn', 'لم تحدد أي عنصر'); return; }
+  const luluAccId = document.getElementById('sel-lulu').value;
+  if (!luluAccId) { showAlert('browse-alert', 'error', 'اختر حساب Lulu أولاً'); return; }
+
+  const iptvId   = document.getElementById('sel-iptv').value;
+  const type     = S.activeType;
+  const allItems = S.inSeriesDetail ? S.seriesItems : S.contentItems;
+  const selIds   = new Set(S.selectedIds);
+
+  // Build payload items
+  const items = allItems
+    .filter(i => selIds.has(S.inSeriesDetail ? String(i.streamId) : i.streamId))
+    .map(i => ({
+      streamId : i.streamId,
+      name     : i.name,
+      ext      : i.ext || 'mp4',
+      type     : i.type || (type === 'vod' ? 'movie' : 'episode'),
+      catName  : S.currentCatName,
+      showName : i.showName || S.currentSeries?.name || '',
+      season   : i.season || 1,
+      year     : i.year || '',
+      imdbId   : i.imdbId || '',
+    }));
+
+  showAlert('browse-alert', 'info', `⏳ جارٍ إنشاء مهمة رفع ${items.length} عنصر...`);
+
+  try {
+    const r = await apiFetch('/api/lulu-upload/jobs', {
+      method: 'POST',
+      body: JSON.stringify({
+        items,
+        lulu_account_id: luluAccId,
+        iptv_id         : iptvId || undefined,
+        type            : type === 'vod' ? 'vod' : 'series',
+        cat_name        : S.currentCatName,
+      }),
+    });
+    const d = await r.json();
+    if (d.error || !d.success) { showAlert('browse-alert', 'error', d.error || 'فشل'); return; }
+    showAlert('browse-alert', 'success', `✅ تمت إضافة المهمة #${d.jobId} — انتقل لتبويب «مهام الرفع» لمتابعة التقدم`);
+    S.selectedIds.clear();
+    updateSelCount();
+    // Switch to jobs tab after 1.5s
+    setTimeout(() => switchTab('jobs'), 1500);
+  } catch (e) { showAlert('browse-alert', 'error', e.message); }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Jobs tab
+// ──────────────────────────────────────────────────────────────────────────────
+async function loadJobs() {
+  try {
+    const r = await apiFetch('/api/lulu-upload/jobs');
+    const d = await r.json();
+    renderJobsTable(d.jobs || []);
+  } catch {}
+}
+
+function renderJobsTable(jobs) {
+  const tbody = document.getElementById('jobs-tbody');
+  if (!jobs.length) { tbody.innerHTML = '<tr><td colspan="6" class="empty">لا توجد مهام</td></tr>'; return; }
+  tbody.innerHTML = jobs.slice().reverse().map(j => {
+    const pct = j.total ? Math.round((j.done / j.total) * 100) : 0;
+    return `<tr>
+      <td>${j.id}</td>
+      <td><span class="badge badge-${j.status}">${statusLabel(j.status)}</span></td>
+      <td>${j.type === 'vod' ? 'أفلام' : 'مسلسلات'}</td>
+      <td>
+        <div style="font-size:.8rem;color:var(--muted);margin-bottom:3px">${j.done}/${j.total} ${j.current ? `· ${esc(j.current).slice(0,30)}...` : ''}</div>
+        <div class="progress-bar-wrap" style="width:140px">
+          <div class="progress-bar" style="width:${pct}%"></div>
+        </div>
+      </td>
+      <td style="font-size:.8rem">${fmtDate(j.startedAt)}</td>
+      <td>
+        <button class="btn-ghost" style="padding:4px 10px;font-size:.78rem" onclick="showJobDetail(${j.id})">تفاصيل</button>
+        ${j.status === 'running' || j.status === 'queued' ? `<button class="btn-danger" style="padding:4px 10px;font-size:.78rem;margin-right:4px" onclick="cancelJob(${j.id})">إلغاء</button>` : ''}
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function statusLabel(s) {
+  return { queued:'في الانتظار', running:'جارٍ', done:'مكتمل', cancelled:'ملغى', daily_limit:'حد يومي' }[s] || s;
+}
+
+async function showJobDetail(id) {
+  const r = await apiFetch(`/api/lulu-upload/jobs/${id}`);
+  const j = await r.json();
+  const card = document.getElementById('job-detail-card');
+  card.style.display = 'block';
+  document.getElementById('job-detail-title').textContent = `تفاصيل المهمة #${j.id}`;
+  const pct = j.total ? Math.round((j.done / j.total) * 100) : 0;
+  document.getElementById('job-detail-progress').innerHTML = `
+    <div style="display:flex;gap:20px;font-size:.88rem;color:var(--muted);margin-bottom:8px">
+      <span>✅ مكتمل: <strong style="color:var(--accent2)">${j.done}</strong></span>
+      <span>❌ فشل: <strong style="color:#fca5a5">${j.failed}</strong></span>
+      <span>📦 الكل: <strong>${j.total}</strong></span>
+      <span class="badge badge-${j.status}">${statusLabel(j.status)}</span>
+    </div>
+    <div class="progress-bar-wrap"><div class="progress-bar" style="width:${pct}%"></div></div>
+    ${j.current ? `<div style="font-size:.8rem;color:var(--muted);margin-top:6px">الحالي: ${esc(j.current)}</div>` : ''}
+  `;
+  const results = j.results || [];
+  document.getElementById('job-detail-results').innerHTML = results.length
+    ? results.slice().reverse().map(r => `
+        <div class="job-result-row">
+          <span class="name">${esc(r.name)}</span>
+          ${r.status === 'ok'
+            ? `<span class="badge badge-ok">✅ ${r.fileCode || 'ok'}</span>`
+            : `<span class="badge badge-error" title="${esc(r.error||'')}">❌ فشل</span>`}
+        </div>`).join('')
+    : '<div style="color:var(--muted);font-size:.85rem">لا توجد نتائج بعد</div>';
+}
+
+async function cancelJob(id) {
+  if (!confirm('إلغاء هذه المهمة؟')) return;
+  await apiFetch(`/api/lulu-upload/jobs/${id}`, { method: 'DELETE' });
+  loadJobs();
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Utilities
+// ──────────────────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Auto-refresh jobs every 5s when on that tab
+// ──────────────────────────────────────────────────────────────────────────────
+setInterval(() => {
+  if (document.getElementById('panel-jobs').classList.contains('active')) loadJobs();
+}, 5000);
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Init
+// ──────────────────────────────────────────────────────────────────────────────
+(async function init() {
+  await Promise.all([loadAccounts(), loadIptvAccounts()]);
+})();
+</script>
+</body>
+</html>

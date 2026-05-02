@@ -82,12 +82,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const onSessionInvalidated = () => {
       setUser(null);
+      // Stop any playing stream
+      window.dispatchEvent(new CustomEvent('stream:stop'));
     };
     window.addEventListener('auth:session_invalidated', onSessionInvalidated);
     return () => {
       window.removeEventListener('auth:session_invalidated', onSessionInvalidated);
     };
   }, []);
+
+  // ─── Periodic session heartbeat (every 10s) ──────────────────────────
+  // Detects login_version mismatch ASAP so the user is kicked out in real-time
+  // when someone else logs in on a different device.
+  useEffect(() => {
+    if (!user) return;
+    const interval = setInterval(async () => {
+      try {
+        const profile = await fetchProfile();
+        if (!profile) {
+          // Session no longer valid — kick out immediately
+          setUser(null);
+          window.dispatchEvent(new CustomEvent('auth:session_invalidated'));
+          window.dispatchEvent(new CustomEvent('stream:stop'));
+        }
+      } catch {
+        // Network error — don't kick out on transient failures
+      }
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [user]);
 
   const isPremium = checkIsPremium(user);
   const loggedIn = !!user;

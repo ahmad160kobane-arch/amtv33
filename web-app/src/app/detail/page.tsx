@@ -80,6 +80,9 @@ function DetailContent() {
             episode: e.episode,
             season: e.season,
             title: e.title,
+            thumbnail: e.thumbnail || "",
+            overview: e.overview || "",
+            released: e.air_date || "",
             luluHls: e.hlsUrl,
             luluEmbed: e.embedUrl,
             subtitleUrls: e.subtitleUrls || null,
@@ -155,6 +158,19 @@ function DetailContent() {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  // ─── Stop playback immediately when session is invalidated ───
+  useEffect(() => {
+    const onStreamStop = () => {
+      setStreamUrl("");
+      setEmbedUrl("");
+      setEmbedSources([]);
+      setStreamError("تم تسجيل الدخول من جهاز آخر");
+      setCurrentEpisode(null);
+    };
+    window.addEventListener("stream:stop", onStreamStop);
+    return () => window.removeEventListener("stream:stop", onStreamStop);
+  }, []);
 
   // ── Anti-popup: block ALL popups/new tabs/redirects globally ──
   useEffect(() => {

@@ -93,6 +93,7 @@ function LiveContent() {
   const [logoErrors, setLogoErrors] = useState<Set<string>>(new Set());
   const [activeChannel, setActiveChannel] = useState<FreeChannel | null>(null);
   const [streamUrl, setStreamUrl] = useState('');
+  const [currentStreamId, setCurrentStreamId] = useState('');
   const [streamLoading, setStreamLoading] = useState(false);
   const [streamError, setStreamError] = useState('');
 
@@ -106,6 +107,7 @@ function LiveContent() {
       const result = await requestFreeStream(ch.id);
       if (result.success && result.streamUrl) {
         setStreamUrl(result.streamUrl);
+        setCurrentStreamId(result.streamId || '');
       } else {
         setStreamError(result.error || 'فشل تحميل القناة');
       }
@@ -187,10 +189,11 @@ function LiveContent() {
                 {streamUrl && !streamLoading && (
                   <LivePlayer
                     streamUrl={streamUrl}
+                    streamId={currentStreamId}
                     title={activeChannel.name}
                     logo={activeChannel.logo}
                     group={activeChannel.group}
-                    onClose={() => { setActiveChannel(null); setStreamUrl(''); }}
+                    onClose={() => { setActiveChannel(null); setStreamUrl(''); setCurrentStreamId(''); }}
                     onRetry={() => selectChannel(activeChannel)}
                   />
                 )}

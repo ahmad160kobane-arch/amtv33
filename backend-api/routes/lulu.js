@@ -277,12 +277,14 @@ router.get("/stream", requireAuth, requirePremium, async (req, res) => {
 router.get("/genres", async (req, res) => {
   try {
     const r = await pool.query(
-      `SELECT DISTINCT unnest(string_to_array(genres, '،')) as genre
+      `SELECT DISTINCT trim(unnest(string_to_array(
+         replace(genres, ',', '،'), '،'
+       ))) as genre
        FROM lulu_catalog
        WHERE genres IS NOT NULL AND genres != ''
        ORDER BY genre`,
     );
-    res.json({ genres: r.rows.map((row) => row.genre.trim()).filter(Boolean) });
+    res.json({ genres: [...new Set(r.rows.map((row) => row.genre.trim()).filter(Boolean))] });
   } catch (e) {
     console.error("[Lulu] genres error:", e.message);
     res.status(500).json({ error: "فشل جلب التصنيفات" });

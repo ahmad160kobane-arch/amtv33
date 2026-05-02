@@ -141,9 +141,12 @@ class XtreamProxy {
    * GET manifest — cached 8s, coalesced per-channel, stale fallback on error
    * Each channel uses its own IPTV account credentials
    */
-  async getManifest(streamId, baseUrl, sessionId) {
+  async getManifest(streamId, baseUrl, sessionId, queryParams = {}) {
     this._touch(streamId, sessionId);
     const now = Date.now();
+
+    this._queryParams = this._queryParams || {};
+    this._queryParams[streamId] = queryParams;
 
     // Helper: return last known-good manifest if still within stale window
     const serveStale = (c) => {
@@ -481,6 +484,9 @@ class XtreamProxy {
     const rewritten = [];
     const newSegments = [];
 
+    const qParams = this._queryParams?.[streamId];
+    const qs = qParams ? `did=${encodeURIComponent(qParams.did || '')}${qParams.st ? '&st=' + encodeURIComponent(qParams.st) : ''}` : '';
+
     for (const line of lines) {
       const t = line.trim();
       if (!t || t.startsWith('#')) {
@@ -494,9 +500,9 @@ class XtreamProxy {
       const enc = encodeURIComponent(abs);
       
       if (t.endsWith('.m3u8') || t.includes('.m3u8?')) {
-        rewritten.push(`/proxy/live/${streamId}/sub/${enc}`);
+        rewritten.push(qs ? `/proxy/live/${streamId}/sub/${enc}?${qs}` : `/proxy/live/${streamId}/sub/${enc}`);
       } else {
-        rewritten.push(`/proxy/live/${streamId}/seg/${enc}`);
+        rewritten.push(qs ? `/proxy/live/${streamId}/seg/${enc}?${qs}` : `/proxy/live/${streamId}/seg/${enc}`);
         newSegments.push(abs);
       }
     }
@@ -514,6 +520,9 @@ class XtreamProxy {
     const rewritten = [];
     const newSegments = [];
 
+    const qParams = this._queryParams?.[streamId];
+    const qs = qParams ? `did=${encodeURIComponent(qParams.did || '')}${qParams.st ? '&st=' + encodeURIComponent(qParams.st) : ''}` : '';
+
     for (const line of lines) {
       const t = line.trim();
       if (!t || t.startsWith('#')) {
@@ -521,7 +530,7 @@ class XtreamProxy {
         continue;
       }
       const abs = t.startsWith('http') ? t : `${baseUrl}${t}`;
-      rewritten.push(`/proxy/live/${streamId}/seg/${encodeURIComponent(abs)}`);
+      rewritten.push(qs ? `/proxy/live/${streamId}/seg/${encodeURIComponent(abs)}?${qs}` : `/proxy/live/${streamId}/seg/${encodeURIComponent(abs)}`);
       newSegments.push(abs);
     }
 
