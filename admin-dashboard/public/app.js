@@ -23,7 +23,8 @@ async function cloudApi(path, opts = {}) {
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
   const res = await fetch(`${CLOUD}${path}`, { ...opts, headers });
-  const data = await res.json();
+  let data;
+  try { data = await res.json(); } catch { data = {}; }
   if (!res.ok) throw new Error(data.error || 'خطأ في السيرفر السحابي');
   return data;
 }
@@ -354,11 +355,12 @@ async function renderLuluPage(c) {
       <div class="panel"><div class="panel-body" style="padding:14px">
         <div class="form-row" style="margin:0">
           <div class="form-group"><label>بحث</label><input class="form-control" id="ldb-search" placeholder="بحث بالاسم..." onkeydown="if(event.key==='Enter')luluLoadDBContent()"></div>
-          <div class="form-group"><label>النوع</label><select class="form-control" id="ldb-type"><option value="movie">أفلام</option><option value="series">مسلسلات</option></select></div>
-          <div style="display:flex;align-items:flex-end"><button class="btn btn-primary" onclick="luluLoadDBContent()">تحميل</button></div>
+          <div class="form-group"><label>النوع</label><select class="form-control" id="ldb-type"><option value="all">الكل</option><option value="movie">أفلام</option><option value="episode">حلقات</option></select></div>
+          <div style="display:flex;align-items:flex-end;gap:8px"><button class="btn btn-primary" onclick="luluLoadDBContent()">تحميل</button><button class="btn btn-success" onclick="luluSyncFromLulu()">🔄 مزامنة من Lulu</button></div>
         </div>
+        <div id="ldb-sync-status" style="margin-top:8px"></div>
       </div></div>
-      <div id="ldb-body"><div class="empty-state"><p>اضغط "تحميل" لعرض المحتوى من القاعدة</p></div></div>
+      <div id="ldb-body"><div class="empty-state"><p>اضغط "تحميل" لعرض المحتوى من القاعدة أو "مزامنة" لجلب الملفات من LuluStream</p></div></div>
     </div>
 
     <!-- TAB: Uploaded Files (from PG) -->
@@ -535,27 +537,31 @@ async function luluUploadSelected() {
 let _ldbPage = 1;
 async function luluLoadDBContent() {
   const search = document.getElementById('ldb-search')?.value?.trim()||'';
-  const type = document.getElementById('ldb-type')?.value||'movie';
+  const type = document.getElementById('ldb-type')?.value||'all';
   const body = document.getElementById('ldb-body');
   body.innerHTML = '<div class="loading"><div class="spinner"></div><p>جارٍ التحميل من القاعدة...</p></div>';
   try {
-    const endpoint = type==='movie' ? '/api/admin/iptv-content/vod' : '/api/admin/iptv-content/series';
-    const qs = `?page=${_ldbPage}&limit=30${search?`&search=${encodeURIComponent(search)}`:''}`;
-    const d = await cloudApi(endpoint + qs);
+    const qs = `?page=${_ldbPage}&limit=50&type=${type}${search?`&search=${encodeURIComponent(search)}`:''}`;
+    const d = await cloudApi(`/api/lulu-upload/db-content${qs}`);
     const items = d.items || [];
     const total = d.total || 0;
     const hasMore = d.hasMore || false;
-    if (!items.length) { body.innerHTML='<div class="empty-state"><p>لا محتوى في القاعدة</p></div>'; return; }
+    if (!items.length) { body.innerHTML='<div class="empty-state"><p>لا محتوى في القاعدة — جرب "مزامنة من Lulu" أولاً</p></div>'; return; }
     body.innerHTML = `
       <div style="margin-bottom:12px;font-size:.88rem;color:var(--text2)">إجمالي: <strong style="color:var(--primary)">${total}</strong> — صفحة ${_ldbPage}</div>
-      <div class="lulu-grid">${items.map(item=>`
-        <div class="lulu-item" ${type==='series'?`onclick="luluDBSeriesDetail(${item.id},'${(item.title||'').replace(/'/g,"\\'")}')"`:''}>
-          <div style="padding:8px;background:var(--bg4);border-radius:6px;min-height:60px;display:flex;align-items:center;justify-content:center">
-            <span style="font-size:24px">${type==='movie'?'🎬':'📺'}</span></div>
-          <div class="lulu-item-name">${esc(item.title||'بدون عنوان')}</div>
-          ${item.xtream_id?'<div style="font-size:.7rem;color:var(--success)">✓ IPTV</div>':''}
-          ${item.tmdb_id?'<div style="font-size:.7rem;color:var(--info)">✓ TMDb</div>':''}
-          ${type==='series'&&item.episode_count?`<div style="font-size:.7rem;color:var(--text2)">${item.episode_count} حلقة</div>`:''}
+      <div class="lulu-grid">${items.map(f=>`
+        <div class="lulu-item" ${f.type==='series'&&f.episodes?.length?`onclick="luluDBShowEpisodes('${esc(f.id)}','${(f.title||'').replace(/'/g,"\\'")}')"`:''}>
+          <div style="padding:8px;background:var(--bg4);border-radius:6px;min-height:80px;display:flex;align-items:center;justify-content:center;overflow:hidden">
+            ${f.poster?`<img src="${esc(f.poster)}" onerror="this.parentElement.innerHTML='<span style=font-size:24px>${f.type==='movie'?'🎬':'📺'}</span>'" style="width:100%;height:80px;object-fit:cover;border-radius:4px" alt="">`:`<span style="font-size:24px">${f.type==='movie'?'🎬':'📺'}</span>`}
+          </div>
+          <div class="lulu-item-name">${esc(f.title||'بدون عنوان')}</div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap;font-size:.7rem;margin-top:2px">
+            <span class="badge badge-${f.type==='movie'?'primary':'info'}">${f.type==='movie'?'فيلم':'مسلسل'}</span>
+            ${f.canplay?'<span class="badge badge-online">✅ جاهز</span>':'<span class="badge badge-warning">⏳ معالجة</span>'}
+            ${f.file_code?`<a href="https://lulustream.com/e/${esc(f.file_code)}" target="_blank" class="badge badge-info" style="text-decoration:none">🔗 مشاهدة</a>`:''}
+          </div>
+          ${f.type==='series'&&f.episode_count?`<div style="font-size:.7rem;color:var(--text2)">${f.episode_count} حلقة</div>`:''}
+          ${f.year?`<div style="font-size:.7rem;color:var(--text2)">${f.year}</div>`:''}
         </div>`).join('')}</div>
       <div style="margin-top:16px;display:flex;gap:8px;justify-content:center">
         ${_ldbPage>1?`<button class="btn btn-outline" onclick="_ldbPage=${_ldbPage-1};luluLoadDBContent()">← السابق</button>`:''}
@@ -564,14 +570,33 @@ async function luluLoadDBContent() {
   } catch (e) { body.innerHTML=`<div class="empty-state"><p style="color:var(--danger)">${e.message}</p></div>`; }
 }
 
-async function luluDBSeriesDetail(id, title) {
+async function luluDBShowEpisodes(catId, title) {
   try {
-    const d = await cloudApi(`/api/admin/iptv-content/series/${id}/episodes`);
-    const episodes = d.episodes || [];
+    const d = await cloudApi(`/api/lulu-upload/db-content?type=series&page=1&limit=1&search=${encodeURIComponent(title)}`);
+    const item = (d.items||[]).find(i=>i.id===catId);
+    const episodes = item?.episodes || [];
     showModal(`حلقات: ${title}`, `<div style="margin-bottom:8px;font-size:.88rem;color:var(--text2)">${episodes.length} حلقة</div>
-      <div class="lulu-ep-list">${episodes.map(ep=>`<div class="lulu-ep"><span>${esc(ep.title||`S${ep.season||1}E${ep.episode_num||1}`)}</span>${ep.xtream_id?'<span class="badge badge-online" style="margin-right:auto">✓ IPTV</span>':''}</div>`).join('')}</div>`,
+      <div class="lulu-ep-list">${episodes.map(ep=>`<div class="lulu-ep">
+        <span>S${ep.season||1}E${ep.episode||1} — ${esc(ep.title||'')}</span>
+        ${ep.canplay?'<span class="badge badge-online" style="margin-right:auto">✅</span>':'<span class="badge badge-warning" style="margin-right:auto">⏳</span>'}
+        ${ep.file_code?`<a href="https://lulustream.com/e/${esc(ep.file_code)}" target="_blank" style="font-size:.7rem;color:var(--primary);margin-right:4px">🔗</a>`:''}
+      </div>`).join('')}</div>`,
       `<button class="btn btn-outline" onclick="closeModal()">إغلاق</button>`);
   } catch (e) { toast(e.message,'error'); }
+}
+
+async function luluSyncFromLulu() {
+  const statusEl = document.getElementById('ldb-sync-status');
+  if (!statusEl) return;
+  statusEl.innerHTML = '<div class="lulu-alert lulu-alert-info">⏳ جارٍ المزامنة من LuluStream...</div>';
+  try {
+    const d = await cloudApi('/api/lulu-upload/sync', { method: 'POST' });
+    statusEl.innerHTML = `<div class="lulu-alert lulu-alert-success">✅ تمت المزامنة: ${d.synced} جديد، ${d.skipped} موجود مسبقاً، ${d.errors} أخطاء</div>`;
+    _ldbPage = 1;
+    luluLoadDBContent();
+  } catch (e) {
+    statusEl.innerHTML = `<div class="lulu-alert lulu-alert-error">❌ ${e.message}</div>`;
+  }
 }
 
 // ── Uploaded Files Tab (from PG) ──────────────────────
@@ -601,7 +626,7 @@ async function luluLoadUploadedFiles() {
     body.innerHTML = `<div style="margin-bottom:12px;font-size:.88rem;color:var(--text2)">إجمالي: <strong style="color:var(--primary)">${total}</strong> — صفحة ${_lufPage}</div>
       <div class="table-wrap"><table><thead><tr><th>file_code</th><th>العنوان</th><th>النوع</th><th>الفئة</th><th>المسلسل</th><th>الحالة</th><th>التاريخ</th></tr></thead>
       <tbody>${files.map(f=>`<tr>
-        <td style="direction:ltr;font-size:.78rem;color:var(--info)">${esc(f.file_code)}</td>
+        <td style="direction:ltr;font-size:.78rem;color:var(--info)">${esc(f.file_code)}${f.status==='ok'?`<a href="https://lulustream.com/${esc(f.file_code)}" target="_blank" style="margin-right:6px;font-size:.7rem;color:var(--primary)">🔗 مشاهدة</a>`:''}</td>
         <td>${esc(f.title||f.original_name)}</td>
         <td><span class="badge badge-${f.type==='movie'?'primary':'info'}">${f.type==='movie'?'فيلم':'حلقة'}</span></td>
         <td style="font-size:.85rem">${esc(f.cat_name)}</td>
@@ -618,24 +643,73 @@ async function luluLoadUploadedFiles() {
 
 // ── Jobs Tab ───────────────────────────────────────
 let _luluJobsTimer = null;
-function luluStartJobsRefresh(){clearInterval(_luluJobsTimer);_luluJobsTimer=setInterval(()=>{if(document.getElementById('lpanel-jobs')?.classList.contains('active'))luluLoadJobs();},5000);}
+let _luluSSE = null;
+const _luluJobCache = {};
+
+function luluStartJobsRefresh(){
+  clearInterval(_luluJobsTimer);
+  luluConnectSSE();
+  _luluJobsTimer=setInterval(()=>{
+    if(document.getElementById('lpanel-jobs')?.classList.contains('active')) luluLoadJobs();
+  },8000);
+}
+
+function luluConnectSSE(){
+  if(_luluSSE){try{_luluSSE.close();}catch{}}
+  if(!token) return;
+  try{
+    _luluSSE = new EventSource(`${CLOUD}/api/lulu-upload/progress?token=${encodeURIComponent(token)}`);
+    _luluSSE.onmessage = function(e){
+      try{
+        const d = JSON.parse(e.data);
+        if(d.jobId){
+          _luluJobCache[d.jobId] = d;
+          if(document.getElementById('lpanel-jobs')?.classList.contains('active')){
+            luluUpdateJobRow(d.jobId, d);
+          }
+        }
+      }catch{}
+    };
+    _luluSSE.onerror = function(){ setTimeout(luluConnectSSE, 5000); };
+  }catch{ }
+}
+
 async function luluLoadJobs(){try{const d=await cloudApi('/api/lulu-upload/jobs');luluRenderJobs(d.jobs||[]);}catch{}}
-function luluRenderJobs(jobs){const tbody=document.getElementById('ljobs-tbody');if(!tbody)return;if(!jobs.length){tbody.innerHTML='<tr><td colspan="6" class="empty-state">لا مهام</td></tr>';return;}tbody.innerHTML=jobs.slice().reverse().map(j=>{const pct=j.total?Math.round((j.done/j.total)*100):0;const sl={queued:'في الانتظار',running:'جارٍ',done:'مكتمل',cancelled:'ملغى',daily_limit:'حد يومي'};return`<tr><td>${j.id}</td><td><span class="badge badge-${j.status==='done'?'online':j.status==='running'?'info':j.status==='cancelled'?'blocked':'warning'}">${sl[j.status]||j.status}</span></td><td>${j.type==='vod'?'أفلام':'مسلسلات'}</td><td><div style="font-size:.8rem;color:var(--text2);margin-bottom:3px">${j.done}/${j.total}${j.current?` · ${esc(j.current).slice(0,30)}...`:''}</div><div class="lulu-progress-wrap"><div class="lulu-progress-bar" style="width:${pct}%"></div></div></td><td style="font-size:.8rem">${formatDate(j.startedAt)}</td><td><div class="btn-group"><button class="btn btn-sm btn-outline" onclick="luluShowJobDetail(${j.id})">تفاصيل</button>${j.status==='running'||j.status==='queued'?`<button class="btn btn-sm btn-danger" onclick="luluCancelJob(${j.id})">إلغاء</button>`:''}</div></td></tr>`;}).join('');}
-async function luluShowJobDetail(id){const j=await cloudApi(`/api/lulu-upload/jobs/${id}`);const card=document.getElementById('ljob-detail');if(!card)return;card.style.display='block';document.getElementById('ljob-detail-title').textContent=`مهمة #${j.id}`;const pct=j.total?Math.round((j.done/j.total)*100):0;document.getElementById('ljob-detail-progress').innerHTML=`<div style="display:flex;gap:20px;font-size:.88rem;color:var(--text2);flex-wrap:wrap;margin-bottom:8px"><span>✅ ${j.done}</span><span>❌ ${j.failed}</span><span>📦 ${j.total}</span></div><div class="lulu-progress-wrap"><div class="lulu-progress-bar" style="width:${pct}%"></div></div>`;const results=j.results||[];document.getElementById('ljob-detail-results').innerHTML=results.length?results.slice().reverse().map(r=>`<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border);font-size:.82rem;gap:10px"><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.name)}</span>${r.status==='ok'?`<span class="badge badge-online">✅ ${esc(r.fileCode||'ok')}</span>`:`<span class="badge badge-danger">❌</span>`}</div>`).join(''):'<div style="color:var(--text2);font-size:.85rem">لا نتائج بعد</div>';}
+
+function luluItemStatusLabel(s){
+  const map={preparing:'تحضير',uploading:'جارٍ الرفع',uploaded:'تم الرفع',subtitles:'ترجمة',processing:'معالجة Lulu',fetching_metadata:'جلب التفاصيل',saving:'حفظ',done:'مكتمل',error:'خطأ',daily_limit:'حد يومي'};
+  return map[s]||s||'';
+}
+
+function luluRenderJobs(jobs){const tbody=document.getElementById('ljobs-tbody');if(!tbody)return;if(!jobs.length){tbody.innerHTML='<tr><td colspan="6" class="empty-state">لا مهام</td></tr>';return;}tbody.innerHTML=jobs.slice().reverse().map(j=>{const pct=j.total?Math.round((j.done/j.total)*100):0;const sl={queued:'في الانتظار',running:'جارٍ',done:'مكتمل',cancelled:'ملغى',daily_limit:'حد يومي'};const cached=_luluJobCache[j.id];const itemStatus=cached?.currentItemStatus||j.currentItemStatus||'';const itemPct=cached?.itemProgress??j.itemProgress??0;return`<tr id="ljob-row-${j.id}"><td>${j.id}</td><td><span class="badge badge-${j.status==='done'?'online':j.status==='running'?'info':j.status==='cancelled'?'blocked':'warning'}">${sl[j.status]||j.status}</span></td><td>${j.type==='vod'?'أفلام':'مسلسلات'}</td><td><div style="font-size:.8rem;color:var(--text2);margin-bottom:3px">${j.done}/${j.total}${j.current?` · <span class="lulu-current-name">${esc(j.current).slice(0,30)}</span>`:''}</div>${itemStatus&&j.status==='running'?`<div style="font-size:.72rem;color:var(--info);margin-bottom:2px">${luluItemStatusLabel(itemStatus)} ${itemPct>0?itemPct+'%':''}</div>`:''}<div class="lulu-progress-wrap"><div class="lulu-progress-bar" style="width:${pct}%"></div></div></td><td style="font-size:.8rem">${formatDate(j.startedAt)}</td><td><div class="btn-group"><button class="btn btn-sm btn-outline" onclick="luluShowJobDetail(${j.id})">تفاصيل</button>${j.status==='running'||j.status==='queued'?`<button class="btn btn-sm btn-danger" onclick="luluCancelJob(${j.id})">إلغاء</button>`:''}</div></td></tr>`;}).join('');}
+
+function luluUpdateJobRow(jobId, data){
+  const row=document.getElementById(`ljob-row-${jobId}`);
+  if(!row) return luluLoadJobs();
+  const nameEl=row.querySelector('.lulu-current-name');
+  const pct=Math.round(((data.done||0)/(data.total||1))*100);
+  const bar=row.querySelector('.lulu-progress-bar');
+  if(bar) bar.style.width=pct+'%';
+  if(nameEl&&data.current) nameEl.textContent=data.current.slice(0,30);
+  const doneText=row.querySelector('div[style*="margin-bottom:3px"]');
+  if(doneText) doneText.innerHTML=`${data.done||0}/${data.total||0}${data.current?` · <span class="lulu-current-name">${esc(data.current).slice(0,30)}</span>`:''}`;
+}
+
+async function luluShowJobDetail(id){const j=await cloudApi(`/api/lulu-upload/jobs/${id}`);const card=document.getElementById('ljob-detail');if(!card)return;card.style.display='block';document.getElementById('ljob-detail-title').textContent=`مهمة #${j.id}`;const pct=j.total?Math.round((j.done/j.total)*100):0;const itemStatus=j.currentItemStatus||'';const itemPct=j.itemProgress||0;document.getElementById('ljob-detail-progress').innerHTML=`<div style="display:flex;gap:20px;font-size:.88rem;color:var(--text2);flex-wrap:wrap;margin-bottom:8px"><span>✅ ${j.done}</span><span>❌ ${j.failed}</span><span>📦 ${j.total}</span>${itemStatus?`<span style="color:var(--info)">⏳ ${luluItemStatusLabel(itemStatus)} ${itemPct>0?itemPct+'%':''}</span>`:''}</div><div class="lulu-progress-wrap"><div class="lulu-progress-bar" style="width:${pct}%"></div></div>`;const results=j.results||[];document.getElementById('ljob-detail-results').innerHTML=results.length?results.slice().reverse().map(r=>`<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border);font-size:.82rem;gap:10px"><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.name)}</span>${r.status==='ok'?`<span class="badge badge-online">✅ ${esc(r.fileCode||'ok')}</span>`:`<span class="badge badge-danger">❌ ${esc(r.error||'')}</span>`}</div>`).join(''):'<div style="color:var(--text2);font-size:.85rem">لا نتائج بعد</div>';}
 async function luluCancelJob(id){if(!confirm('إلغاء المهمة؟'))return;await cloudApi(`/api/lulu-upload/jobs/${id}`,{method:'DELETE'});luluLoadJobs();}
 
 // ─── Cloud ─────────────────────────────────────────
 async function renderCloud(c) {
-  let cloud={};try{cloud=await api('/api/admin/cloud-status');}catch{}const online=cloud.online;
+  let cloud={};try{cloud=await cloudApi('/api/admin/cloud-status');}catch{}const online=cloud.online;
   c.innerHTML=`<div class="stats-grid" style="margin-bottom:20px"><div class="stat-card ${online?'success':'danger'}"><div class="stat-label">الحالة</div><div class="stat-value">${online?'🟢 متصل':'🔴 غير متصل'}</div></div><div class="stat-card info"><div class="stat-label">التشغيل</div><div class="stat-value">${cloud.uptime?formatUptime(cloud.uptime):'—'}</div></div><div class="stat-card primary"><div class="stat-label">البث النشط</div><div class="stat-value">${cloud.activeStreams??'—'}</div></div><div class="stat-card warning"><div class="stat-label">الذاكرة</div><div class="stat-value">${cloud.memory||'—'}</div></div></div><div class="panel"><div class="panel-header"><h3>معلومات السيرفر</h3></div><div class="panel-body"><div class="cloud-grid"><div class="cloud-card"><div class="cloud-label">العنوان</div><div class="cloud-value" style="font-size:14px;direction:ltr">${esc(cloud.url||CLOUD)}</div></div><div class="cloud-card"><div class="cloud-label">البورت</div><div class="cloud-value">8090</div></div></div><div style="margin-top:16px"><button class="btn btn-primary" onclick="renderPage('cloud')">🔄 تحديث</button></div></div></div>`;
 }
 
 // ─── Logs ──────────────────────────────────────────
 async function renderLogs(c) {
-  let data={};try{data=await api('/api/admin/logs?limit=200');}catch{}const logs=data.logs||[];
+  let data={};try{data=await cloudApi('/api/admin/logs?limit=200');}catch{}const logs=data.logs||[];
   c.innerHTML=`<div class="panel"><div class="panel-header"><h3>السجلات (${logs.length})</h3><div class="btn-group"><button class="btn btn-outline" onclick="renderPage('logs')">🔄</button><button class="btn btn-danger" onclick="clearLogs()">مسح</button></div></div><div class="panel-body no-pad">${logs.length===0?'<div class="empty-state"><p>لا سجلات</p></div>':logs.map(l=>`<div class="log-entry"><span class="log-time">${formatDate(l.timestamp)}</span><span class="badge badge-${l.level}">${l.level}</span><span class="log-msg">${esc(l.message)}</span></div>`).join('')}</div></div>`;
 }
-async function clearLogs(){if(!confirm('مسح السجلات؟'))return;try{await api('/api/admin/logs',{method:'DELETE'});toast('تم المسح');renderPage('logs');}catch(e){toast(e.message,'error');}}
+async function clearLogs(){if(!confirm('مسح السجلات؟'))return;try{await cloudApi('/api/admin/logs',{method:'DELETE'});toast('تم المسح');renderPage('logs');}catch(e){toast(e.message,'error');}}
 
 // ─── Helpers ───────────────────────────────────────
 function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}

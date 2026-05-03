@@ -307,3 +307,5 @@ select.form-control { appearance:none; }
 /* Progress bar */
 .lulu-progress-wrap { background:var(--bg4); border-radius:20px; height:6px; overflow:hidden; min-width:100px; }
 .lulu-progress-bar { height:100%; background:linear-gradient(90deg, var(--primary), var(--success)); border-radius:20px; transition:width .4s; }
+.lulu-item-status { font-size:.72rem; color:var(--info); margin-bottom:2px; display:flex; align-items:center; gap:4px; }
+.lulu-item-status .lulu-spinner { width:12px; height:12px; border-width:2px; }

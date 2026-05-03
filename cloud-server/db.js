@@ -218,6 +218,77 @@ db.init = async function () {
     CREATE INDEX IF NOT EXISTS idx_lulu_jobs_status ON lulu_upload_jobs(status);
   `);
 
+  // ─── Lulu Catalog (used by app for browsing) ───
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS lulu_catalog (
+      id            TEXT PRIMARY KEY,
+      title         TEXT NOT NULL DEFAULT '',
+      vod_type      TEXT NOT NULL DEFAULT 'movie',
+      poster        TEXT DEFAULT '',
+      backdrop      TEXT DEFAULT '',
+      plot          TEXT DEFAULT '',
+      year          TEXT DEFAULT '',
+      rating        TEXT DEFAULT '',
+      genres        TEXT DEFAULT '',
+      cast_list     TEXT DEFAULT '',
+      director      TEXT DEFAULT '',
+      country       TEXT DEFAULT '',
+      runtime       TEXT DEFAULT '',
+      lang          TEXT DEFAULT '',
+      file_code     TEXT DEFAULT '',
+      hls_url       TEXT DEFAULT '',
+      embed_url     TEXT DEFAULT '',
+      canplay       BOOLEAN DEFAULT false,
+      episode_count INTEGER DEFAULT 0,
+      uploaded_at   BIGINT DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_lulu_catalog_type    ON lulu_catalog(vod_type);
+    CREATE INDEX IF NOT EXISTS idx_lulu_catalog_canplay ON lulu_catalog(canplay);
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS lulu_episodes (
+      id          TEXT PRIMARY KEY,
+      catalog_id  TEXT NOT NULL REFERENCES lulu_catalog(id) ON DELETE CASCADE,
+      season      INTEGER DEFAULT 1,
+      episode     INTEGER DEFAULT 1,
+      title       TEXT DEFAULT '',
+      overview    TEXT DEFAULT '',
+      thumbnail   TEXT DEFAULT '',
+      air_date    TEXT DEFAULT '',
+      file_code   TEXT DEFAULT '',
+      hls_url     TEXT DEFAULT '',
+      embed_url   TEXT DEFAULT '',
+      canplay     BOOLEAN DEFAULT false
+    );
+    CREATE INDEX IF NOT EXISTS idx_lulu_episodes_cat    ON lulu_episodes(catalog_id);
+    CREATE INDEX IF NOT EXISTS idx_lulu_episodes_canplay ON lulu_episodes(canplay);
+  `);
+
+  // ─── Migration: add missing columns to lulu_catalog ──────
+  const luluMigrations = [
+    "ALTER TABLE lulu_catalog ADD COLUMN IF NOT EXISTS tmdb_id     INTEGER DEFAULT NULL",
+    "ALTER TABLE lulu_catalog ADD COLUMN IF NOT EXISTS tmdb_type   TEXT    DEFAULT ''",
+    "ALTER TABLE lulu_catalog ADD COLUMN IF NOT EXISTS imdb_id     TEXT    DEFAULT ''",
+    "ALTER TABLE lulu_catalog ADD COLUMN IF NOT EXISTS lulu_fld_id INTEGER DEFAULT 0",
+    "ALTER TABLE lulu_catalog ADD COLUMN IF NOT EXISTS updated_at  BIGINT  DEFAULT 0",
+  ];
+  for (const sql of luluMigrations) {
+    try { await pool.query(sql); } catch {}
+  }
+  console.log("[DB] Migration: lulu_catalog extra columns added");
+
+  // ─── Admin Logs ───
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS admin_logs (
+      id         SERIAL PRIMARY KEY,
+      level      TEXT DEFAULT 'info',
+      message    TEXT NOT NULL DEFAULT '',
+      timestamp  BIGINT DEFAULT 0,
+      created_at BIGINT DEFAULT 0
+    );
+  `);
+
   console.log('[DB] PostgreSQL connected + tables ready');
 };
 

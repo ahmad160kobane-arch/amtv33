@@ -297,6 +297,19 @@ db.init = async function () {
     CREATE INDEX IF NOT EXISTS idx_channels_xtream ON channels(xtream_id);
   `);
 
+  // ─── Migration: add missing columns to lulu_catalog ──────
+  const luluMigrations = [
+    "ALTER TABLE lulu_catalog ADD COLUMN IF NOT EXISTS tmdb_id     INTEGER DEFAULT NULL",
+    "ALTER TABLE lulu_catalog ADD COLUMN IF NOT EXISTS tmdb_type   TEXT    DEFAULT ''",
+    "ALTER TABLE lulu_catalog ADD COLUMN IF NOT EXISTS imdb_id     TEXT    DEFAULT ''",
+    "ALTER TABLE lulu_catalog ADD COLUMN IF NOT EXISTS lulu_fld_id INTEGER DEFAULT 0",
+    "ALTER TABLE lulu_catalog ADD COLUMN IF NOT EXISTS updated_at  BIGINT  DEFAULT 0",
+  ];
+  for (const sql of luluMigrations) {
+    try { await pool.query(sql); } catch {}
+  }
+  console.log("[DB] Migration: lulu_catalog extra columns added");
+
   // ─── Migration: add is_direct_passthrough column if missing ──────
   try {
     await pool.query(

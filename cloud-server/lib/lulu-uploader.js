@@ -1,13 +1,16 @@
 /**
- * Lulu Uploader — IPTV → LuluStream Upload Manager
- * يتحكم في رفع المحتوى من IPTV إلى LuluStream عبر واجهة الداشبورد
+ * Lulu Uploader v2 — IPTV → LuluStream Upload Manager
+ * - سيرفر وسيط بين IPTV و LuluStream (عبر IPTV proxy)
+ * - رفع تسلسلي (واحد بعد الآخر) لتجنب الحظر
+ * - جلب metadata كامل من IPTV قبل التخزين
+ * - تخزين في lulu_catalog فقط عند النجاح (فشل = لا شيء في القاعدة)
+ * - تتبع تقدم حقيقي مع SSE
  */
 'use strict';
 
 const http  = require('http');
 const https = require('https');
 
-// ─── HTTP helper ───────────────────────────────────────────────────────────────
 function httpGet(url, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith('https') ? https : http;
@@ -29,7 +32,6 @@ function parseJson(body) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// ─── Name helpers ──────────────────────────────────────────────────────────────
 function cleanTitle(name = '') {
   return name
     .replace(/^(EN|AR|NF|TR|HN|KR|IT|FR|DE|ES|PL|PER|KRD|NL|CH|JP|RU)\s*[|\-]/i, '')
@@ -39,7 +41,25 @@ function cleanTitle(name = '') {
     .trim();
 }
 
+function detectLang(catName = '') {
+  const n = catName.toLowerCase();
+  if (/ar.*sub|مترجم|arabic.*sub/i.test(n))  return 'مترجم للعربية';
+  if (/ar.*dub|doblaj|مدبلج/i.test(n))       return 'مدبلج للعربية';
+  if (/arabic|عربي/i.test(n))                return 'عربي';
+  if (/turkish|تركي/i.test(n))               return 'تركي';
+  if (/hindi|indian|هندي/i.test(n))          return 'هندي';
+  if (/persian|فارسي/i.test(n))              return 'فارسي';
+  if (/french|فرنسي/i.test(n))              return 'فرنسي';
+  if (/german|ألماني/i.test(n))             return 'ألماني';
+  if (/spanish|إسباني/i.test(n))            return 'إسباني';
+  if (/anime|أنمي/i.test(n))               return 'أنمي';
+  if (/cartoon|كرتون/i.test(n))            return 'كرتون';
+  if (/english|إنجليزي/i.test(n))          return 'إنجليزي';
+  return '';
+}
+
 // ─── LuluStream API helpers ────────────────────────────────────────────────────
+
 async function luluAPI(apiKey, endpoint, params = {}) {
   const p = new URLSearchParams({ key: apiKey, ...params });
   const url = `https://api.lulustream.com/api${endpoint}?${p}`;
@@ -67,11 +87,32 @@ async function luluRemoteUpload(apiKey, srcUrl, title, fldId = 0) {
 
 async function luluEnsureFolder(apiKey, name, parentId = 0) {
   try {
+    const listRes = await httpGet(
+      `https://api.lulustream.com/api/folder/list?key=${apiKey}&fld_id=${parentId}`, 30000);
+    const listData = parseJson(listRes.body);
+    const folders = listData?.result?.folders || [];
+    const existing = folders.find(f => f.name === name);
+    if (existing) return existing.fld_id;
+  } catch {}
+  try {
     const p = new URLSearchParams({ key: apiKey, name, parent_id: parentId });
     const res = await httpGet(`https://api.lulustream.com/api/folder/create?${p}`, 30000);
     const data = parseJson(res.body);
-    return data?.result?.fld_id || data?.fld_id || 0;
+    return data?.result?.fld_id || 0;
   } catch { return 0; }
+}
+
+async function luluFileEdit(apiKey, fileCode, { title, descr, tags } = {}) {
+  const params = new URLSearchParams({ key: apiKey, file_code: fileCode, file_public: '1' });
+  if (title) params.set('file_title', title.slice(0, 200));
+  if (descr) params.set('file_descr', descr.slice(0, 1000));
+  if (tags)  params.set('tags', tags.slice(0, 300));
+  const url = `https://api.lulustream.com/api/file/edit?${params}`;
+  try {
+    const res = await httpGet(url, 15000);
+    const d = parseJson(res.body);
+    return d?.msg === 'OK';
+  } catch { return false; }
 }
 
 async function luluUploadSubtitle(apiKey, fileCode, subUrl, lang) {
@@ -96,7 +137,24 @@ async function luluListFolders(apiKey, parentId = 0) {
   } catch { return []; }
 }
 
+async function luluCheckCanplay(apiKey, fileCode, maxWaitMs = 300000, intervalMs = 30000) {
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    try {
+      const data = await luluAPI(apiKey, '/file/info', { file_code: fileCode });
+      const info = Array.isArray(data?.result) ? data.result[0] : data?.result;
+      if (info && (info.canplay === 1 || info.canplay === true || info.status === 'active')) {
+        const hlsUrl = info.hls_url || info.download_url || '';
+        return { canplay: true, hlsUrl };
+      }
+    } catch {}
+    await sleep(intervalMs);
+  }
+  return { canplay: false, hlsUrl: '' };
+}
+
 // ─── IPTV Xtream API helpers ───────────────────────────────────────────────────
+
 function buildIptvBase(account) {
   const port = account.port || 8080;
   return `http://${account.host}:${port}/player_api.php?username=${account.username}&password=${account.password}`;
@@ -132,25 +190,8 @@ async function getVodInfo(account, vodId) {
   return iptvFetch(account, 'get_vod_info', `&vod_id=${vodId}`);
 }
 
-// ─── LuluStream canplay check ──────────────────────────────────────────────────
-async function luluCheckCanplay(apiKey, fileCode, maxWaitMs = 300000, intervalMs = 30000) {
-  const start = Date.now();
-  while (Date.now() - start < maxWaitMs) {
-    try {
-      const data = await luluAPI(apiKey, '/file/info', { file_code: fileCode });
-      const info = Array.isArray(data?.result) ? data.result[0] : data?.result;
-      if (info && (info.canplay === 1 || info.canplay === true || info.status === 'active')) {
-        // Also grab hls_url if available
-        const hlsUrl = info.hls_url || info.download_url || '';
-        return { canplay: true, hlsUrl };
-      }
-    } catch { /* ignore polling errors */ }
-    await sleep(intervalMs);
-  }
-  return { canplay: false, hlsUrl: '' };
-}
-
 // ─── SubDL subtitle search ─────────────────────────────────────────────────────
+
 const SUBDL_KEY = process.env.SUBDL_KEY || 'MA5RWk78R1H6Gyd-Xu0B37pLWc3MjUCQ';
 
 async function searchSubtitles(title, year = '', type = 'movie', imdbId = '') {
@@ -176,11 +217,28 @@ async function searchSubtitles(title, year = '', type = 'movie', imdbId = '') {
   } catch { return []; }
 }
 
+// ─── SSE Progress Manager ──────────────────────────────────────────────────────
+
+const _sseClients = new Set();
+
+function addSSEClient(res) {
+  _sseClients.add(res);
+  res.on('close', () => _sseClients.delete(res));
+}
+
+function broadcastProgress(jobId, data) {
+  const msg = `data: ${JSON.stringify({ jobId, ...data })}\n\n`;
+  for (const client of _sseClients) {
+    try { client.write(msg); } catch {}
+  }
+}
+
 // ─── Job Manager ──────────────────────────────────────────────────────────────
+
 let _jobIdCounter = 0;
-const _jobs        = new Map(); // id → job object
+const _jobs        = new Map();
 let _workerRunning = false;
-let _db = null; // set by initDB()
+let _db = null;
 
 function initDB(dbModule) {
   _db = dbModule;
@@ -204,6 +262,8 @@ function _buildJob({ items, account, apiKey, vpsUrl, proxySecret, mainFolderId, 
     done        : 0,
     failed      : 0,
     current     : null,
+    currentItemStatus : '',
+    itemProgress: 0,
     results     : [],
     startedAt   : null,
     finishedAt  : null,
@@ -227,6 +287,8 @@ function getJobsSummary() {
     done      : j.done,
     failed    : j.failed,
     current   : j.current,
+    currentItemStatus : j.currentItemStatus,
+    itemProgress: j.itemProgress,
     startedAt : j.startedAt,
     finishedAt: j.finishedAt,
     type      : j.type,
@@ -243,6 +305,8 @@ function getJobDetail(id) {
     done      : j.done,
     failed    : j.failed,
     current   : j.current,
+    currentItemStatus : j.currentItemStatus,
+    itemProgress: j.itemProgress,
     results   : j.results,
     startedAt : j.startedAt,
     finishedAt: j.finishedAt,
@@ -258,6 +322,8 @@ function cancelJob(id) {
   }
 }
 
+function getSSEClients() { return _sseClients; }
+
 async function _runWorkerLoop() {
   if (_workerRunning) return;
   _workerRunning = true;
@@ -272,11 +338,24 @@ async function _runWorkerLoop() {
   }
 }
 
+function _emitProgress(job, itemStatus, itemProgress) {
+  job.currentItemStatus = itemStatus;
+  job.itemProgress = itemProgress;
+  broadcastProgress(job.id, {
+    status: job.status,
+    done: job.done,
+    failed: job.failed,
+    total: job.total,
+    current: job.current,
+    currentItemStatus: itemStatus,
+    itemProgress,
+  });
+}
+
 async function _processJob(job) {
   job.status    = 'running';
   job.startedAt = Date.now();
 
-  // Create DB job record
   if (_db) {
     try {
       const row = await _db.prepare(
@@ -290,13 +369,11 @@ async function _processJob(job) {
     } catch (e) { console.error('[LuluJob] DB insert error:', e.message); }
   }
 
-  // Ensure root Arabic folder
   let mainFolderId = job.mainFolderId;
   if (!mainFolderId) {
     mainFolderId = await luluEnsureFolder(job.apiKey, 'محتوى عربي');
   }
 
-  // Category folder cache (name → folderId)
   const catFolders = {};
 
   for (const item of job.items) {
@@ -304,14 +381,14 @@ async function _processJob(job) {
     job.current = item.name;
 
     try {
-      // Get or create category sub-folder
+      _emitProgress(job, 'preparing', 0);
+
       let catFolderId = catFolders[item.catName];
       if (catFolderId === undefined) {
         catFolderId = await luluEnsureFolder(job.apiKey, item.catName, mainFolderId);
         catFolders[item.catName] = catFolderId;
       }
 
-      // Build VPS proxy URL (includes iptvAccountId for dynamic credential lookup)
       const ext       = item.ext || 'mp4';
       const proxyType = item.type === 'episode' ? 'series' : 'movie';
       const iptvId    = job.iptvAccountId || 0;
@@ -319,7 +396,6 @@ async function _processJob(job) {
 
       const title    = cleanTitle(item.name) || item.name;
 
-      // Series episode: nest inside show/season folders
       let targetFolderId = catFolderId;
       if (item.type === 'episode' && item.showName) {
         let showFolderId = catFolders[`show:${item.showName}`];
@@ -335,10 +411,25 @@ async function _processJob(job) {
         targetFolderId = seasonFolderId;
       }
 
-      // Upload
+      _emitProgress(job, 'uploading', 10);
+
       const fileCode = await luluRemoteUpload(job.apiKey, srcUrl, title, targetFolderId);
 
-      // Subtitles via SubDL
+      _emitProgress(job, 'uploaded', 40);
+
+      const langLabel = detectLang(item.catName || '');
+      const arabicDescr = [];
+      if (langLabel) arabicDescr.push(`اللغة: ${langLabel}`);
+      if (item.genre) arabicDescr.push(`النوع: ${item.genre}`);
+      if (item.year) arabicDescr.push(`السنة: ${item.year}`);
+      const descr = arabicDescr.join('\n');
+      const tags = [langLabel, item.genre, item.year].filter(Boolean).join(',');
+
+      await sleep(1500);
+      await luluFileEdit(job.apiKey, fileCode, { title, descr, tags });
+
+      _emitProgress(job, 'subtitles', 50);
+
       try {
         const subType = item.type === 'episode' ? 'tv' : 'movie';
         const subs    = await searchSubtitles(title, item.year || '', subType, item.imdbId || '');
@@ -355,167 +446,120 @@ async function _processJob(job) {
           const fullUrl = url.startsWith('http') ? url : `https://dl.subdl.com${url}`;
           await luluUploadSubtitle(job.apiKey, fileCode, fullUrl, lang);
         }
-      } catch { /* subtitle errors are non-fatal */ }
+      } catch {}
 
-      // ─── Wait for LuluStream to confirm canplay ──────────────────────────────
+      _emitProgress(job, 'processing', 60);
+
       const embedUrl = `https://lulustream.com/e/${fileCode}`;
       const checkResult = await luluCheckCanplay(job.apiKey, fileCode);
 
-      if (!checkResult.canplay) {
-        // Upload succeeded but video not yet playable — track only, do NOT store in catalog
-        console.log(`[LuluJob] ${title} uploaded but not yet playable, skipping catalog`);
-        job.done++;
-        job.results.push({ name: item.name, status: 'ok', fileCode, note: 'processing' });
+      _emitProgress(job, 'fetching_metadata', 80);
 
-        if (_db) {
-          try {
-            await _db.prepare(
-              "INSERT INTO lulu_uploaded_files (file_code, title, original_name, type, cat_name, show_name, season, episode_num, iptv_stream_id, lulu_account_id, iptv_account_id, folder_id, job_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-            ).run(
-              fileCode, title, item.name, item.type || 'movie',
-              item.catName || '', item.showName || '', item.season || 0, item.ep || item.episode_num || 0,
-              String(item.streamId), job.luluAccountId, job.iptvAccountId,
-              targetFolderId, job._dbJobId || 0, 'processing', Date.now()
-            );
-          } catch (e) { console.error('[LuluJob] DB tracking insert error:', e.message); }
+      let meta = {};
+      try {
+        if (item.type === 'episode' && item.showName) {
+          const sInfo = await getSeriesInfo(job.account, item.seriesId || item.streamId);
+          meta = sInfo?.info || {};
+        } else {
+          const vInfo = await getVodInfo(job.account, item.streamId);
+          meta = vInfo?.info || {};
         }
-        // Skip catalog storage — will be synced later when canplay=true
+      } catch (e) {
+        console.log(`[LuluJob] metadata fetch failed for ${title}: ${e.message}`);
+      }
+
+      if (!checkResult.canplay) {
+        console.log(`[LuluJob] ${title} uploaded but not yet playable — NOT storing in catalog`);
+        job.done++;
+        job.results.push({ name: item.name, status: 'ok', fileCode, note: 'processing_not_in_catalog' });
         _updateDBJob(job);
         await sleep(3500);
         continue;
       }
 
-      // ─── canplay=true — fetch full IPTV metadata and store in catalog ────────
+      _emitProgress(job, 'saving', 90);
+
       const hlsUrl = checkResult.hlsUrl || '';
       job.done++;
       job.results.push({ name: item.name, status: 'ok', fileCode });
 
       if (_db) {
         try {
-          // 1) Track in lulu_uploaded_files
-          await _db.prepare(
-            "INSERT INTO lulu_uploaded_files (file_code, title, original_name, type, cat_name, show_name, season, episode_num, iptv_stream_id, lulu_account_id, iptv_account_id, folder_id, job_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-          ).run(
-            fileCode, title, item.name, item.type || 'movie',
-            item.catName || '', item.showName || '', item.season || 0, item.ep || item.episode_num || 0,
-            String(item.streamId), job.luluAccountId, job.iptvAccountId,
-            targetFolderId, job._dbJobId || 0, 'ok', Date.now()
-          );
+          const poster = meta.cover || meta.movie_image || meta.backdrop_path?.[0] || item.poster || '';
+          const backdrop = meta.backdrop_path?.[0] || meta.movie_image || '';
+          const plot = meta.plot || meta.description || '';
+          const year = meta.releasedate ? String(meta.releasedate).substring(0,4) : (item.year || '');
+          const rating = meta.rating || item.rating || '';
+          const genres = meta.genre || item.genre || '';
+          const castList = meta.cast || '';
+          const director = meta.director || '';
+          const country = meta.country || '';
+          const runtime = meta.duration || meta.runtime || '';
+          const imdbId = meta.imdb_id || item.imdbId || '';
+          const now = Date.now();
 
-          // 2) Fetch full metadata from IPTV
-          let meta = { poster: '', plot: '', year: '', rating: '', genres: '', cast_list: '', director: '', country: '', runtime: '', imdb_id: '' };
-          try {
-            if (item.type === 'episode') {
-              // For episodes, get series info for parent metadata
-              if (item.seriesId) {
-                const sInfo = await getSeriesInfo(job.account, item.seriesId);
-                const info = sInfo?.info || sInfo || {};
-                meta.poster   = info.cover || info.poster || item.poster || '';
-                meta.plot     = info.plot || '';
-                meta.year     = (info.year || info.releaseDate || '').toString().slice(0,4);
-                meta.rating   = info.rating || '';
-                meta.genres   = (info.genre || '').toString();
-                meta.cast_list = info.cast || '';
-                meta.director = info.director || '';
-                meta.country  = info.country || '';
-                meta.imdb_id  = info.imdb_id || '';
-              }
-            } else {
-              // For movies, get full VOD info
-              const vInfo = await getVodInfo(job.account, item.streamId);
-              const info = vInfo?.info || vInfo || {};
-              meta.poster    = info.stream_icon || info.poster || item.poster || '';
-              meta.plot      = info.plot || info.description || '';
-              meta.year      = (info.releasedate || info.year || '').toString().slice(0,4);
-              meta.rating    = info.rating || '';
-              meta.genres    = (info.genre || info.category_name || item.catName || '').toString();
-              meta.cast_list = info.cast || '';
-              meta.director  = info.director || '';
-              meta.country   = info.country || '';
-              meta.runtime   = info.duration || info.runtime || '';
-              meta.imdb_id   = info.imdb_id || '';
-            }
-          } catch (e) { console.error('[LuluJob] IPTV metadata fetch error:', e.message); }
-
-          // 3) Store in lulu_catalog / lulu_episodes with FULL data
           if (item.type === 'episode' && item.showName) {
-            // ── Episode: find or create series in lulu_catalog, then add episode ──
             const showTitle = cleanTitle(item.showName) || item.showName;
             let catalogRow = await _db.prepare("SELECT id, episode_count FROM lulu_catalog WHERE title ILIKE ? AND vod_type = 'series'").get(showTitle);
             let catalogId;
 
             if (catalogRow) {
               catalogId = catalogRow.id;
-              // Update parent series metadata if we have it
-              if (meta.poster || meta.plot) {
-                await _db.prepare(
-                  "UPDATE lulu_catalog SET poster = COALESCE(NULLIF(?, ''), poster), plot = COALESCE(NULLIF(?, ''), plot), year = COALESCE(NULLIF(?, ''), year), rating = COALESCE(NULLIF(?, ''), rating), genres = COALESCE(NULLIF(?, ''), genres), cast_list = COALESCE(NULLIF(?, ''), cast_list), director = COALESCE(NULLIF(?, ''), director), country = COALESCE(NULLIF(?, ''), country), imdb_id = COALESCE(NULLIF(?, ''), imdb_id), updated_at = ? WHERE id = ? AND (poster IS NULL OR poster = '')"
-                ).run(meta.poster, meta.plot, meta.year, meta.rating, meta.genres, meta.cast_list, meta.director, meta.country, meta.imdb_id, Date.now(), catalogId);
-              }
+              await _db.prepare(
+                "UPDATE lulu_catalog SET poster = COALESCE(NULLIF(poster,''),?), backdrop = COALESCE(NULLIF(backdrop,''),?), plot = COALESCE(NULLIF(plot,''),?), year = COALESCE(NULLIF(year,''),?), rating = COALESCE(NULLIF(rating,''),?), genres = COALESCE(NULLIF(genres,''),?), cast_list = COALESCE(NULLIF(cast_list,''),?), director = COALESCE(NULLIF(director,''),?), country = COALESCE(NULLIF(country,''),?), runtime = COALESCE(NULLIF(runtime,''),?), imdb_id = COALESCE(NULLIF(imdb_id,''),?), lang = COALESCE(NULLIF(lang,''),?), updated_at = ? WHERE id = ?"
+              ).run(poster, backdrop, plot, year, rating, genres, castList, director, country, runtime, imdbId, langLabel, now, catalogId);
             } else {
-              // Create new series entry with full metadata
-              const newId = 'ser-' + Date.now() + '-' + Math.random().toString(36).slice(2,6);
+              const newId = 'ser-' + now + '-' + Math.random().toString(36).slice(2,6);
               const row = await _db.prepare(
-                "INSERT INTO lulu_catalog (id, title, vod_type, poster, plot, year, rating, genres, cast_list, director, country, imdb_id, canplay, episode_count, uploaded_at) VALUES (?, ?, 'series', ?, ?, ?, ?, ?, ?, ?, ?, ?, true, 0, ?) RETURNING id"
-              ).get(newId, showTitle, meta.poster, meta.plot, meta.year, meta.rating, meta.genres, meta.cast_list, meta.director, meta.country, meta.imdb_id, Date.now());
+                "INSERT INTO lulu_catalog (id, title, vod_type, poster, backdrop, plot, year, rating, genres, cast_list, director, country, runtime, imdb_id, lang, canplay, episode_count, uploaded_at, updated_at) VALUES (?, ?, 'series', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, false, 0, ?, ?) RETURNING id"
+              ).get(newId, showTitle, poster, backdrop, plot, year, rating, genres, castList, director, country, runtime, imdbId, langLabel, now, now);
               catalogId = row?.id || newId;
             }
 
-            // Insert episode into lulu_episodes with canplay=true
             const epId = 'ep-' + fileCode;
             await _db.prepare(
-              "INSERT INTO lulu_episodes (id, catalog_id, season, episode, title, file_code, embed_url, hls_url, canplay) VALUES (?, ?, ?, ?, ?, ?, ?, ?, true) ON CONFLICT (id) DO UPDATE SET file_code = EXCLUDED.file_code, embed_url = EXCLUDED.embed_url, hls_url = EXCLUDED.hls_url, canplay = true"
+              "INSERT INTO lulu_episodes (id, catalog_id, season, episode, title, file_code, hls_url, embed_url, canplay) VALUES (?, ?, ?, ?, ?, ?, ?, ?, true) ON CONFLICT (id) DO UPDATE SET file_code = EXCLUDED.file_code, hls_url = EXCLUDED.hls_url, embed_url = EXCLUDED.embed_url, canplay = true"
             ).run(
               epId, catalogId, item.season || 1, item.ep || item.episode_num || 0,
-              title, fileCode, embedUrl, hlsUrl
+              title, fileCode, hlsUrl, embedUrl
             );
 
-            // Update episode_count on parent catalog
             await _db.prepare(
-              "UPDATE lulu_catalog SET episode_count = (SELECT COUNT(*) FROM lulu_episodes WHERE catalog_id = ?), canplay = true WHERE id = ?"
-            ).run(catalogId, catalogId);
+              "UPDATE lulu_catalog SET episode_count = (SELECT COUNT(*) FROM lulu_episodes WHERE catalog_id = ?), canplay = true, hls_url = ?, embed_url = ?, file_code = ? WHERE id = ?"
+            ).run(catalogId, hlsUrl, embedUrl, fileCode, catalogId);
 
           } else {
-            // ── Movie: insert into lulu_catalog with FULL metadata and canplay=true ──
             const catId = 'mov-' + fileCode;
             await _db.prepare(
-              "INSERT INTO lulu_catalog (id, title, vod_type, poster, plot, year, rating, genres, cast_list, director, country, runtime, imdb_id, file_code, embed_url, hls_url, canplay, episode_count, uploaded_at) VALUES (?, ?, 'movie', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, 0, ?) ON CONFLICT (id) DO UPDATE SET file_code = EXCLUDED.file_code, embed_url = EXCLUDED.embed_url, hls_url = EXCLUDED.hls_url, canplay = true, poster = COALESCE(NULLIF(EXCLUDED.poster, ''), lulu_catalog.poster), plot = COALESCE(NULLIF(EXCLUDED.plot, ''), lulu_catalog.plot)"
-            ).run(catId, title, meta.poster, meta.plot, meta.year, meta.rating, meta.genres, meta.cast_list, meta.director, meta.country, meta.runtime, meta.imdb_id, fileCode, embedUrl, hlsUrl, Date.now());
+              "INSERT INTO lulu_catalog (id, title, vod_type, poster, backdrop, plot, year, rating, genres, cast_list, director, country, runtime, imdb_id, lang, file_code, hls_url, embed_url, canplay, episode_count, lulu_fld_id, uploaded_at, updated_at) VALUES (?, ?, 'movie', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, 0, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET file_code = EXCLUDED.file_code, hls_url = EXCLUDED.hls_url, embed_url = EXCLUDED.embed_url, canplay = true, poster = COALESCE(NULLIF(poster,''),EXCLUDED.poster), backdrop = COALESCE(NULLIF(backdrop,''),EXCLUDED.backdrop), plot = COALESCE(NULLIF(plot,''),EXCLUDED.plot), year = COALESCE(NULLIF(year,''),EXCLUDED.year), rating = COALESCE(NULLIF(rating,''),EXCLUDED.rating), genres = COALESCE(NULLIF(genres,''),EXCLUDED.genres), cast_list = COALESCE(NULLIF(cast_list,''),EXCLUDED.cast_list), director = COALESCE(NULLIF(director,''),EXCLUDED.director), country = COALESCE(NULLIF(country,''),EXCLUDED.country), runtime = COALESCE(NULLIF(runtime,''),EXCLUDED.runtime), imdb_id = COALESCE(NULLIF(imdb_id,''),EXCLUDED.imdb_id), lang = COALESCE(NULLIF(lang,''),EXCLUDED.lang), updated_at = EXCLUDED.updated_at"
+            ).run(catId, title, poster, backdrop, plot, year, rating, genres, castList, director, country, runtime, imdbId, langLabel, fileCode, hlsUrl, embedUrl, targetFolderId, now, now);
           }
 
         } catch (e) { console.error('[LuluJob] DB catalog insert error:', e.message); }
       }
 
+      _emitProgress(job, 'done', 100);
+
     } catch (e) {
       job.failed++;
       job.results.push({ name: item.name, status: 'error', error: e.message });
 
-      // Save error to DB
-      if (_db) {
-        try {
-          await _db.prepare(
-            "INSERT INTO lulu_uploaded_files (file_code, title, original_name, type, cat_name, show_name, season, episode_num, iptv_stream_id, lulu_account_id, iptv_account_id, job_id, status, error_msg, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-          ).run(
-            '', item.name || '', item.name || '', item.type || 'movie',
-            item.catName || '', item.showName || '', item.season || 0, item.ep || 0,
-            String(item.streamId), job.luluAccountId, job.iptvAccountId,
-            job._dbJobId || 0, 'error', e.message, Date.now()
-          );
-        } catch (dbErr) { console.error('[LuluJob] DB error insert:', dbErr.message); }
-      }
+      // ─── على الفشل: لا نخزن أي شيء في القاعدة ───
+      console.log(`[LuluJob] FAILED ${item.name}: ${e.message} — لا تخزين في القاعدة`);
 
       if (e.message === 'daily_limit') {
         job.current = null;
         job.status  = 'daily_limit';
         job.finishedAt = Date.now();
         _updateDBJob(job);
+        _emitProgress(job, 'daily_limit', 0);
         return;
       }
+
+      _emitProgress(job, 'error', 0);
     }
 
-    // Update DB job progress
     _updateDBJob(job);
-
     await sleep(3500);
   }
 
@@ -523,6 +567,7 @@ async function _processJob(job) {
   job.status     = job._cancelled ? 'cancelled' : 'done';
   job.finishedAt = Date.now();
   _updateDBJob(job);
+  _emitProgress(job, job.status, 100);
 }
 
 async function _updateDBJob(job) {
@@ -535,22 +580,20 @@ async function _updateDBJob(job) {
 }
 
 module.exports = {
-  // IPTV
   getVodCategories,
   getSeriesCategories,
   getVodStreams,
   getVodInfo,
   getSeriesList,
   getSeriesInfo,
-  // Lulu
   luluGetAccountInfo,
   luluListFolders,
   luluEnsureFolder,
-  // Jobs
   createJob,
   getJobsSummary,
   getJobDetail,
   cancelJob,
-  // DB
   initDB,
+  addSSEClient,
+  getSSEClients,
 };
