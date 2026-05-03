@@ -8,9 +8,7 @@ import React, {
 } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import {
-  fetchVidsrcDetail,
   fetchLuluDetail,
-  requestVidsrcStream,
   requestLuluStream,
   checkFavorite,
   toggleFavorite,
@@ -136,11 +134,9 @@ function DetailContent() {
           return;
         }
       } else {
-        const data = await fetchVidsrcDetail(
-          fetchType as "movie" | "tv",
-          contentId,
-        );
-        setDetail(data);
+        // لا يوجد مصدر آخر — المحتوى غير متوفر
+        setLoading(false);
+        return;
       }
       const logged = await isLoggedIn();
       setLoggedIn(logged);
@@ -415,29 +411,8 @@ function DetailContent() {
           }
         }
 
-        // ── 2. Fallback: vidsrc ──
-        const type = ep ? "tv" : "movie";
-        const result = await requestVidsrcStream({
-          tmdbId: detail?.tmdb_id || contentId,
-          type,
-          ...(ep ? { season: ep.season, episode: ep.episode } : {}),
-          title,
-        });
-        if (result.success) {
-          applyStreamResult(result);
-          recordHistory(
-            ep ? `${contentId}_${ep.season}_${ep.episode}` : contentId,
-          );
-          if (!result.subtitles?.length)
-            fetchSubtitles(
-              detail?.tmdb_id || contentId,
-              type,
-              ep?.season,
-              ep?.episode,
-            );
-        } else {
-          setStreamError(result.error || "فشل تحميل المحتوى");
-        }
+        // لا يوجد مصدر آخر — المحتوى غير متوفر على LuluStream
+        setStreamError("لم يتوفر الفيديو بعد، جاري المعالجة...");
       } catch {
         setStreamError("خطأ في الاتصال");
       } finally {
