@@ -1,9 +1,9 @@
 /**
- * Lulu Uploader v2 — IPTV → LuluStream Upload Manager
+ * Lulu Uploader v3 — IPTV → LuluStream Upload Manager
  * - سيرفر وسيط بين IPTV و LuluStream (عبر IPTV proxy)
- * - رفع تسلسلي (واحد بعد الآخر) لتجنب الحظر
- * - جلب metadata كامل من IPTV قبل التخزين
- * - تخزين في lulu_catalog فقط عند النجاح (فشل = لا شيء في القاعدة)
+ * - رفع تسلسلي: فيلم فيلم / حلقة حلقة
+ * - لكل عنصر: رفع → انتظار canplay → جلب metadata → حفظ في كاتالوج → ثم التالي
+ * - فشل الرفع = لا شيء في القاعدة
  * - تتبع تقدم حقيقي مع SSE
  */
 'use strict';
@@ -72,8 +72,11 @@ async function luluRemoteUpload(apiKey, srcUrl, title, fldId = 0) {
   if (fldId) params.fld_id = String(fldId);
   const p = new URLSearchParams({ key: apiKey, ...params });
   const url = `https://api.lulustream.com/api/upload/url?${p}`;
+  console.log(`[LuluUpload] Sending remote upload: ${title} → folder ${fldId}`);
+  console.log(`[LuluUpload] Source URL: ${srcUrl}`);
   const res = await httpGet(url, 120000);
   const data = parseJson(res.body);
+  console.log(`[LuluUpload] API response status=${res.status} body=${String(res.body).slice(0, 200)}`);
   if (data?.msg?.includes('max URLs limit')) throw new Error('daily_limit');
   const fc =
     data?.result?.filecode ||
@@ -82,6 +85,7 @@ async function luluRemoteUpload(apiKey, srcUrl, title, fldId = 0) {
     data?.filecode ||
     data?.file_code;
   if (!fc) throw new Error(`LuluStream فشل: ${String(res.body).slice(0, 300)}`);
+  console.log(`[LuluUpload] Got file_code: ${fc}`);
   return fc;
 }
 
@@ -92,14 +96,22 @@ async function luluEnsureFolder(apiKey, name, parentId = 0) {
     const listData = parseJson(listRes.body);
     const folders = listData?.result?.folders || [];
     const existing = folders.find(f => f.name === name);
-    if (existing) return existing.fld_id;
+    if (existing) {
+      console.log(`[LuluFolder] Found existing folder: ${name} (${existing.fld_id})`);
+      return existing.fld_id;
+    }
   } catch {}
   try {
     const p = new URLSearchParams({ key: apiKey, name, parent_id: parentId });
     const res = await httpGet(`https://api.lulustream.com/api/folder/create?${p}`, 30000);
     const data = parseJson(res.body);
-    return data?.result?.fld_id || 0;
-  } catch { return 0; }
+    const fldId = data?.result?.fld_id || 0;
+    console.log(`[LuluFolder] Created folder: ${name} (${fldId})`);
+    return fldId;
+  } catch (e) {
+    console.error(`[LuluFolder] Error creating folder ${name}: ${e.message}`);
+    return 0;
+  }
 }
 
 async function luluFileEdit(apiKey, fileCode, { title, descr, tags } = {}) {
@@ -137,19 +149,27 @@ async function luluListFolders(apiKey, parentId = 0) {
   } catch { return []; }
 }
 
-async function luluCheckCanplay(apiKey, fileCode, maxWaitMs = 300000, intervalMs = 30000) {
+async function luluCheckCanplay(apiKey, fileCode, maxWaitMs = 600000, intervalMs = 20000) {
   const start = Date.now();
+  let attempt = 0;
+  console.log(`[LuluCanplay] Waiting for ${fileCode} to become playable (max ${maxWaitMs/1000}s)...`);
   while (Date.now() - start < maxWaitMs) {
+    attempt++;
     try {
       const data = await luluAPI(apiKey, '/file/info', { file_code: fileCode });
       const info = Array.isArray(data?.result) ? data.result[0] : data?.result;
       if (info && (info.canplay === 1 || info.canplay === true || info.status === 'active')) {
         const hlsUrl = info.hls_url || info.download_url || '';
+        console.log(`[LuluCanplay] ✓ ${fileCode} is playable after ${attempt} checks (${((Date.now()-start)/1000).toFixed(0)}s)`);
         return { canplay: true, hlsUrl };
       }
-    } catch {}
+      console.log(`[LuluCanplay] attempt ${attempt}: ${fileCode} not ready yet (status=${info?.status}, canplay=${info?.canplay})`);
+    } catch (e) {
+      console.log(`[LuluCanplay] attempt ${attempt}: check error ${e.message}`);
+    }
     await sleep(intervalMs);
   }
+  console.log(`[LuluCanplay] ✗ ${fileCode} NOT playable after ${attempt} checks — timeout`);
   return { canplay: false, hlsUrl: '' };
 }
 
@@ -352,9 +372,14 @@ function _emitProgress(job, itemStatus, itemProgress) {
   });
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// المعالجة الرئيسية: فيلم فيلم / حلقة حلقة — كل خطوة تنتهي قبل التالية
+// ═══════════════════════════════════════════════════════════════════════════════
+
 async function _processJob(job) {
   job.status    = 'running';
   job.startedAt = Date.now();
+  console.log(`[LuluJob] Starting job #${job.id}: ${job.total} items, type=${job.type}`);
 
   if (_db) {
     try {
@@ -373,28 +398,27 @@ async function _processJob(job) {
   if (!mainFolderId) {
     mainFolderId = await luluEnsureFolder(job.apiKey, 'محتوى عربي');
   }
+  console.log(`[LuluJob] Main folder ID: ${mainFolderId}`);
 
   const catFolders = {};
 
   for (const item of job.items) {
     if (job._cancelled) break;
     job.current = item.name;
+    const title = cleanTitle(item.name) || item.name;
+    const langLabel = detectLang(item.catName || '');
+
+    console.log(`\n[LuluJob] ═══ Processing: ${title} ═══`);
 
     try {
-      _emitProgress(job, 'preparing', 0);
+      // ─── الخطوة 1: إنشاء المجلدات ─────────────────────────────────────────
+      _emitProgress(job, 'preparing_folders', 5);
 
       let catFolderId = catFolders[item.catName];
       if (catFolderId === undefined) {
         catFolderId = await luluEnsureFolder(job.apiKey, item.catName, mainFolderId);
         catFolders[item.catName] = catFolderId;
       }
-
-      const ext       = item.ext || 'mp4';
-      const proxyType = item.type === 'episode' ? 'series' : 'movie';
-      const iptvId    = job.iptvAccountId || 0;
-      const srcUrl    = `${job.vpsUrl}/iptv-proxy/${job.proxySecret}/${iptvId}/${proxyType}/${item.streamId}.${ext}`;
-
-      const title    = cleanTitle(item.name) || item.name;
 
       let targetFolderId = catFolderId;
       if (item.type === 'episode' && item.showName) {
@@ -411,13 +435,25 @@ async function _processJob(job) {
         targetFolderId = seasonFolderId;
       }
 
-      _emitProgress(job, 'uploading', 10);
+      // ─── الخطوة 2: رفع الفيديو إلى LuluStream ─────────────────────────────
+      _emitProgress(job, 'uploading', 15);
 
+      const ext       = item.ext || 'mp4';
+      const proxyType = item.type === 'episode' ? 'series' : 'movie';
+      const iptvId    = job.iptvAccountId || 0;
+      const srcUrl    = `${job.vpsUrl}/iptv-proxy/${job.proxySecret}/${iptvId}/${proxyType}/${item.streamId}.${ext}`;
+
+      console.log(`[LuluJob] Step 2: Uploading ${title} via proxy URL`);
       const fileCode = await luluRemoteUpload(job.apiKey, srcUrl, title, targetFolderId);
 
-      _emitProgress(job, 'uploaded', 40);
+      if (!fileCode) {
+        throw new Error('لم يتم الحصول على file_code من LuluStream');
+      }
 
-      const langLabel = detectLang(item.catName || '');
+      console.log(`[LuluJob] ✓ Upload submitted: ${title} → file_code=${fileCode}`);
+      _emitProgress(job, 'uploaded', 30);
+
+      // ─── الخطوة 3: تحديث تفاصيل الملف (وصف، تاغات) ───────────────────────
       const arabicDescr = [];
       if (langLabel) arabicDescr.push(`اللغة: ${langLabel}`);
       if (item.genre) arabicDescr.push(`النوع: ${item.genre}`);
@@ -428,8 +464,9 @@ async function _processJob(job) {
       await sleep(1500);
       await luluFileEdit(job.apiKey, fileCode, { title, descr, tags });
 
-      _emitProgress(job, 'subtitles', 50);
+      _emitProgress(job, 'editing_details', 35);
 
+      // ─── الخطوة 4: ترجمة ─────────────────────────────────────────────────
       try {
         const subType = item.type === 'episode' ? 'tv' : 'movie';
         const subs    = await searchSubtitles(title, item.year || '', subType, item.imdbId || '');
@@ -448,12 +485,17 @@ async function _processJob(job) {
         }
       } catch {}
 
-      _emitProgress(job, 'processing', 60);
-
+      // ─── الخطوة 5: انتظار canplay (الفيديو جاهز للتشغيل) ───────────────────
+      _emitProgress(job, 'waiting_canplay', 40);
       const embedUrl = `https://lulustream.com/e/${fileCode}`;
       const checkResult = await luluCheckCanplay(job.apiKey, fileCode);
+      const hlsUrl = checkResult.hlsUrl || '';
+      const canplay = checkResult.canplay;
 
-      _emitProgress(job, 'fetching_metadata', 80);
+      console.log(`[LuluJob] canplay=${canplay} for ${title} (hls=${hlsUrl ? 'yes' : 'no'})`);
+
+      // ─── الخطوة 6: جلب الـ metadata الكامل من IPTV ────────────────────────
+      _emitProgress(job, 'fetching_metadata', 60);
 
       let meta = {};
       try {
@@ -464,47 +506,38 @@ async function _processJob(job) {
           const vInfo = await getVodInfo(job.account, item.streamId);
           meta = vInfo?.info || {};
         }
+        console.log(`[LuluJob] ✓ Got IPTV metadata for ${title}: poster=${!!(meta.cover || meta.movie_image)}, genre=${meta.genre || 'none'}`);
       } catch (e) {
-        console.log(`[LuluJob] metadata fetch failed for ${title}: ${e.message}`);
+        console.log(`[LuluJob] ⚠ metadata fetch failed for ${title}: ${e.message}`);
       }
 
-      if (!checkResult.canplay) {
-        console.log(`[LuluJob] ${title} uploaded but not yet playable — NOT storing in catalog`);
-        job.done++;
-        job.results.push({ name: item.name, status: 'ok', fileCode, note: 'processing_not_in_catalog' });
-        _updateDBJob(job);
-        await sleep(3500);
-        continue;
-      }
+      // ─── الخطوة 7: حفظ كل البيانات في lulu_catalog ───────────────────────
+      _emitProgress(job, 'saving_to_catalog', 80);
 
-      _emitProgress(job, 'saving', 90);
-
-      const hlsUrl = checkResult.hlsUrl || '';
-      job.done++;
-      job.results.push({ name: item.name, status: 'ok', fileCode });
+      const poster = meta.cover || meta.movie_image || meta.backdrop_path?.[0] || item.poster || '';
+      const backdrop = meta.backdrop_path?.[0] || meta.movie_image || '';
+      const plot = meta.plot || meta.description || '';
+      const year = meta.releasedate ? String(meta.releasedate).substring(0,4) : (item.year || '');
+      const rating = meta.rating || item.rating || '';
+      const genres = meta.genre || item.genre || '';
+      const castList = meta.cast || '';
+      const director = meta.director || '';
+      const country = meta.country || '';
+      const runtime = meta.duration || meta.runtime || '';
+      const imdbId = meta.imdb_id || item.imdbId || '';
+      const now = Date.now();
 
       if (_db) {
         try {
-          const poster = meta.cover || meta.movie_image || meta.backdrop_path?.[0] || item.poster || '';
-          const backdrop = meta.backdrop_path?.[0] || meta.movie_image || '';
-          const plot = meta.plot || meta.description || '';
-          const year = meta.releasedate ? String(meta.releasedate).substring(0,4) : (item.year || '');
-          const rating = meta.rating || item.rating || '';
-          const genres = meta.genre || item.genre || '';
-          const castList = meta.cast || '';
-          const director = meta.director || '';
-          const country = meta.country || '';
-          const runtime = meta.duration || meta.runtime || '';
-          const imdbId = meta.imdb_id || item.imdbId || '';
-          const now = Date.now();
-
           if (item.type === 'episode' && item.showName) {
+            // ── حلقة مسلسل: إيجاد أو إنشاء الأب في الكاتالوج ──
             const showTitle = cleanTitle(item.showName) || item.showName;
             let catalogRow = await _db.prepare("SELECT id, episode_count FROM lulu_catalog WHERE title ILIKE ? AND vod_type = 'series'").get(showTitle);
             let catalogId;
 
             if (catalogRow) {
               catalogId = catalogRow.id;
+              // تحديث بيانات الأب لو عندنا جديد
               await _db.prepare(
                 "UPDATE lulu_catalog SET poster = COALESCE(NULLIF(poster,''),?), backdrop = COALESCE(NULLIF(backdrop,''),?), plot = COALESCE(NULLIF(plot,''),?), year = COALESCE(NULLIF(year,''),?), rating = COALESCE(NULLIF(rating,''),?), genres = COALESCE(NULLIF(genres,''),?), cast_list = COALESCE(NULLIF(cast_list,''),?), director = COALESCE(NULLIF(director,''),?), country = COALESCE(NULLIF(country,''),?), runtime = COALESCE(NULLIF(runtime,''),?), imdb_id = COALESCE(NULLIF(imdb_id,''),?), lang = COALESCE(NULLIF(lang,''),?), updated_at = ? WHERE id = ?"
               ).run(poster, backdrop, plot, year, rating, genres, castList, director, country, runtime, imdbId, langLabel, now, catalogId);
@@ -516,36 +549,47 @@ async function _processJob(job) {
               catalogId = row?.id || newId;
             }
 
+            // إضافة الحلقة
             const epId = 'ep-' + fileCode;
             await _db.prepare(
-              "INSERT INTO lulu_episodes (id, catalog_id, season, episode, title, file_code, hls_url, embed_url, canplay) VALUES (?, ?, ?, ?, ?, ?, ?, ?, true) ON CONFLICT (id) DO UPDATE SET file_code = EXCLUDED.file_code, hls_url = EXCLUDED.hls_url, embed_url = EXCLUDED.embed_url, canplay = true"
+              "INSERT INTO lulu_episodes (id, catalog_id, season, episode, title, file_code, hls_url, embed_url, canplay) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET file_code = EXCLUDED.file_code, hls_url = EXCLUDED.hls_url, embed_url = EXCLUDED.embed_url, canplay = EXCLUDED.canplay"
             ).run(
               epId, catalogId, item.season || 1, item.ep || item.episode_num || 0,
-              title, fileCode, hlsUrl, embedUrl
+              title, fileCode, hlsUrl, embedUrl, canplay
             );
 
+            // تحديث episode_count + canplay على الأب
             await _db.prepare(
-              "UPDATE lulu_catalog SET episode_count = (SELECT COUNT(*) FROM lulu_episodes WHERE catalog_id = ?), canplay = true, hls_url = ?, embed_url = ?, file_code = ? WHERE id = ?"
-            ).run(catalogId, hlsUrl, embedUrl, fileCode, catalogId);
+              "UPDATE lulu_catalog SET episode_count = (SELECT COUNT(*) FROM lulu_episodes WHERE catalog_id = ?), canplay = true, embed_url = ?, updated_at = ? WHERE id = ?"
+            ).run(catalogId, embedUrl, now, catalogId);
+
+            console.log(`[LuluJob] ✓ Saved episode: ${title} → catalog=${catalogId}`);
 
           } else {
+            // ── فيلم: إضافة مباشرة في lulu_catalog ──
             const catId = 'mov-' + fileCode;
             await _db.prepare(
-              "INSERT INTO lulu_catalog (id, title, vod_type, poster, backdrop, plot, year, rating, genres, cast_list, director, country, runtime, imdb_id, lang, file_code, hls_url, embed_url, canplay, episode_count, lulu_fld_id, uploaded_at, updated_at) VALUES (?, ?, 'movie', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, 0, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET file_code = EXCLUDED.file_code, hls_url = EXCLUDED.hls_url, embed_url = EXCLUDED.embed_url, canplay = true, poster = COALESCE(NULLIF(poster,''),EXCLUDED.poster), backdrop = COALESCE(NULLIF(backdrop,''),EXCLUDED.backdrop), plot = COALESCE(NULLIF(plot,''),EXCLUDED.plot), year = COALESCE(NULLIF(year,''),EXCLUDED.year), rating = COALESCE(NULLIF(rating,''),EXCLUDED.rating), genres = COALESCE(NULLIF(genres,''),EXCLUDED.genres), cast_list = COALESCE(NULLIF(cast_list,''),EXCLUDED.cast_list), director = COALESCE(NULLIF(director,''),EXCLUDED.director), country = COALESCE(NULLIF(country,''),EXCLUDED.country), runtime = COALESCE(NULLIF(runtime,''),EXCLUDED.runtime), imdb_id = COALESCE(NULLIF(imdb_id,''),EXCLUDED.imdb_id), lang = COALESCE(NULLIF(lang,''),EXCLUDED.lang), updated_at = EXCLUDED.updated_at"
-            ).run(catId, title, poster, backdrop, plot, year, rating, genres, castList, director, country, runtime, imdbId, langLabel, fileCode, hlsUrl, embedUrl, targetFolderId, now, now);
+              "INSERT INTO lulu_catalog (id, title, vod_type, poster, backdrop, plot, year, rating, genres, cast_list, director, country, runtime, imdb_id, lang, file_code, hls_url, embed_url, canplay, episode_count, lulu_fld_id, uploaded_at, updated_at) VALUES (?, ?, 'movie', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET file_code = EXCLUDED.file_code, hls_url = EXCLUDED.hls_url, embed_url = EXCLUDED.embed_url, canplay = EXCLUDED.canplay, poster = COALESCE(NULLIF(poster,''),EXCLUDED.poster), backdrop = COALESCE(NULLIF(backdrop,''),EXCLUDED.backdrop), plot = COALESCE(NULLIF(plot,''),EXCLUDED.plot), year = COALESCE(NULLIF(year,''),EXCLUDED.year), rating = COALESCE(NULLIF(rating,''),EXCLUDED.rating), genres = COALESCE(NULLIF(genres,''),EXCLUDED.genres), cast_list = COALESCE(NULLIF(cast_list,''),EXCLUDED.cast_list), director = COALESCE(NULLIF(director,''),EXCLUDED.director), country = COALESCE(NULLIF(country,''),EXCLUDED.country), runtime = COALESCE(NULLIF(runtime,''),EXCLUDED.runtime), imdb_id = COALESCE(NULLIF(imdb_id,''),EXCLUDED.imdb_id), lang = COALESCE(NULLIF(lang,''),EXCLUDED.lang), updated_at = EXCLUDED.updated_at"
+            ).run(catId, title, poster, backdrop, plot, year, rating, genres, castList, director, country, runtime, imdbId, langLabel, fileCode, hlsUrl, embedUrl, canplay, targetFolderId, now, now);
+
+            console.log(`[LuluJob] ✓ Saved movie: ${title} → ${catId} (canplay=${canplay})`);
           }
 
-        } catch (e) { console.error('[LuluJob] DB catalog insert error:', e.message); }
+        } catch (e) {
+          console.error(`[LuluJob] ✗ DB catalog insert error for ${title}: ${e.message}`);
+        }
       }
 
+      job.done++;
+      job.results.push({ name: item.name, status: 'ok', fileCode, canplay });
       _emitProgress(job, 'done', 100);
+      console.log(`[LuluJob] ✓✓✓ COMPLETED: ${title} (done=${job.done}/${job.total})`);
 
     } catch (e) {
+      // ─── فشل الرفع: لا نخزن أي شيء في القاعدة ─────────────────────────────
       job.failed++;
       job.results.push({ name: item.name, status: 'error', error: e.message });
-
-      // ─── على الفشل: لا نخزن أي شيء في القاعدة ───
-      console.log(`[LuluJob] FAILED ${item.name}: ${e.message} — لا تخزين في القاعدة`);
+      console.log(`[LuluJob] ✗✗✗ FAILED: ${title} — ${e.message} — لا تخزين في القاعدة`);
 
       if (e.message === 'daily_limit') {
         job.current = null;
@@ -560,7 +604,13 @@ async function _processJob(job) {
     }
 
     _updateDBJob(job);
-    await sleep(3500);
+
+    // ─── تأخير بين كل عنصر والذي يليه ──────────────────────────────────────
+    if (job.done + job.failed < job.total) {
+      const delay = job.failed > 0 ? 5000 : 3000;
+      console.log(`[LuluJob] Waiting ${delay}ms before next item...`);
+      await sleep(delay);
+    }
   }
 
   job.current    = null;
@@ -568,6 +618,7 @@ async function _processJob(job) {
   job.finishedAt = Date.now();
   _updateDBJob(job);
   _emitProgress(job, job.status, 100);
+  console.log(`[LuluJob] Job #${job.id} finished: done=${job.done}, failed=${job.failed}, total=${job.total}`);
 }
 
 async function _updateDBJob(job) {
