@@ -308,7 +308,7 @@ function _iptvProxyRequest(url, headers, maxRedirects, callback) {
   const reqHeaders = {
     'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20',
     'Accept': '*/*',
-    'Connection': 'keep-alive',
+    'Connection': 'close', // close فوراً — لا نحتاج keep-alive لأن max_connections=1
     ...headers,
   };
   const proxyReq = mod.get(url, { headers: reqHeaders, timeout: 600000 }, (iptvRes) => {
@@ -498,7 +498,7 @@ app.get("/iptv-proxy/:secret/:iptvId/:type/:filename", async (req, res) => {
   reqHeaders['Referer'] = iptvBase + '/';
   reqHeaders['Accept'] = 'video/webm,video/mp4,video/*;q=0.9,*/*;q=0.8';
   reqHeaders['Accept-Language'] = 'en-US,en;q=0.5';
-  reqHeaders['Connection'] = 'keep-alive';
+  reqHeaders['Connection'] = 'close'; // close فوراً — لا نحتاج keep-alive لأن max_connections=1
 
   // ─── Retry لـ 456 (Too Many Connections) + Semaphore ──────────────
   // LuluStream يحاول تحميل الملف — إذا IPTV يرجع 456 ننتظر ونعيد المحاولة
