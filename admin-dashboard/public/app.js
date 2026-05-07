@@ -98,9 +98,11 @@ function showApp() {
 function navigate(page) {
   currentPage = page;
   document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.page === page));
+  document.querySelectorAll('.bottom-nav-item').forEach(el => el.classList.toggle('active', el.dataset.page === page));
   const titles = { overview:'نظرة عامة', users:'المستخدمين', agents:'الوكلاء', channels:'القنوات', iptv:'حسابات IPTV', lulu:'محتوى IPTV و Lulu', cloud:'السيرفر السحابي', logs:'السجلات' };
   document.getElementById('page-title').textContent = titles[page] || page;
   document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebar-overlay').classList.remove('active');
   renderPage(page);
 }
 
@@ -395,14 +397,16 @@ async function renderLuluPage(c) {
       </table></div></div></div>
     </div>
 
-    <!-- TAB: Jobs -->
+    <!-- TAB: Jobs (Remote Upload) -->
     <div class="lulu-panel" id="lpanel-jobs">
-      <div class="panel"><div class="panel-header"><h3>مهام الرفع</h3><button class="btn btn-outline" onclick="luluLoadJobs()">🔄 تحديث</button></div>
-      <div class="panel-body no-pad"><div class="table-wrap"><table>
-        <thead><tr><th>#</th><th>الحالة</th><th>النوع</th><th>التقدم</th><th>الوقت</th><th>إجراء</th></tr></thead>
-        <tbody id="ljobs-tbody"><tr><td colspan="6" style="text-align:center;color:var(--text2)">تحميل...</td></tr></tbody>
-      </table></div></div></div>
-      <div class="panel" id="ljob-detail" style="display:none"><div class="panel-header"><h3 id="ljob-detail-title">تفاصيل</h3></div><div class="panel-body"><div id="ljob-detail-progress"></div><div id="ljob-detail-results" style="max-height:280px;overflow-y:auto;margin-top:12px"></div></div></div>
+      <div class="panel"><div class="panel-header"><h3>الرفع عن بعد</h3><button class="btn btn-outline" onclick="luluLoadUploadedFiles()">🔄 تحديث المرفوعات</button></div>
+      <div class="panel-body" id="ljobs-info">
+        <div style="text-align:center;padding:24px;color:var(--text2)">
+          <p style="font-size:1.1rem;margin-bottom:8px">🚀 نظام الرفع الجديد: Remote Upload</p>
+          <p>يتم إرسال روابط IPTV مباشرة إلى LuluStream بدون تحميل محلي</p>
+          <p style="margin-top:12px">شاهد الملفات المرفوعة في تبويب <a href="#" onclick="luluSwitchTab('uploaded');return false" style="color:var(--primary)">المرفوعات</a></p>
+        </div>
+      </div></div>
     </div>
   </div>`;
 
@@ -491,7 +495,7 @@ async function luluUploadCategory() {
     season: i.season || 1, year: i.year || '', imdbId: i.imdbId || '',
   }));
 
-  luluAlert(`⏳ جارٍ إنشاء مهمة رفع ${items.length} عنصر (الفئة كاملة)...`,'info');
+  luluAlert(`⏳ جارٍ رفع ${items.length} عنصر (الفئة كاملة) عبر Remote Upload...`,'info');
   try {
     const iptvId = document.getElementById('lsel-iptv')?.value;
     const r = await fetch(`${CLOUD}/api/lulu-upload/jobs`, {
@@ -500,10 +504,9 @@ async function luluUploadCategory() {
     });
     const d = await r.json();
     if (d.error||!d.success) { luluAlert(d.error||'فشل','error'); return; }
-    toast(`✅ بدأت مهمة الرفع #${d.jobId} — ${items.length} عنصر`,'success');
-    luluAlert(`✅ مهمة #${d.jobId} مضافة — سيتم إنشاء مجلدات فرعية تلقائياً في Lulu`,'success');
+    toast(`✅ بدأ Remote Upload — ${items.length} عنصر`,'success');
+    luluAlert(`✅ تم إرسال ${items.length} عنصر لـ LuluStream عبر Remote Upload`,'success');
     LS.selectedIds.clear(); luluUpdateSelCount();
-    setTimeout(() => luluSwitchTab('jobs'), 1600);
   } catch (e) { luluAlert(e.message,'error'); }
 }
 
@@ -518,7 +521,7 @@ async function luluUploadSelected() {
     catName:LS.currentCatName, showName:i.showName||LS.currentSeries?.name||'',
     season:i.season||1, year:i.year||'', imdbId:i.imdbId||'',
   }));
-  luluAlert(`⏳ جارٍ رفع ${items.length} عنصر محدد...`,'info');
+  luluAlert(`⏳ جارٍ رفع ${items.length} عنصر محدد عبر Remote Upload...`,'info');
   try {
     const iptvId = document.getElementById('lsel-iptv')?.value;
     const r = await fetch(`${CLOUD}/api/lulu-upload/jobs`, {
@@ -527,9 +530,9 @@ async function luluUploadSelected() {
     });
     const d = await r.json();
     if (d.error||!d.success) { luluAlert(d.error||'فشل','error'); return; }
-    toast(`✅ مهمة #${d.jobId} — ${items.length} عنصر`,'success');
+    toast(`✅ Remote Upload — ${items.length} عنصر`,'success');
+    luluAlert(`✅ تم إرسال ${items.length} عنصر لـ LuluStream`,'success');
     LS.selectedIds.clear(); luluUpdateSelCount();
-    setTimeout(() => luluSwitchTab('jobs'), 1600);
   } catch (e) { luluAlert(e.message,'error'); }
 }
 
@@ -677,7 +680,7 @@ function luluConnectSSE(){
 async function luluLoadJobs(){try{const d=await cloudApi('/api/lulu-upload/jobs');luluRenderJobs(d.jobs||[]);}catch{}}
 
 function luluItemStatusLabel(s){
-  const map={preparing:'تحضير',uploading:'جارٍ الرفع',uploaded:'تم الرفع',subtitles:'ترجمة',processing:'معالجة Lulu',fetching_metadata:'جلب التفاصيل',saving:'حفظ',done:'مكتمل',error:'خطأ',daily_limit:'حد يومي'};
+  const map={preparing:'تحضير',preparing_folders:'تحضير المجلدات',uploading:'جارٍ الرفع',uploaded:'تم الرفع',editing_details:'تحديث التفاصيل',subtitles:'ترجمة',processing:'معالجة Lulu',waiting_canplay:'انتظار المعالجة',canplay_background:'معالجة خلفية',canplay_check_bg:'فحص التشغيل (خلفية)',fetching_metadata:'جلب التفاصيل',saving_to_catalog:'حفظ في الكاتالوج',saving:'حفظ',done:'مكتمل',error:'خطأ',daily_limit:'حد يومي'};
   return map[s]||s||'';
 }
 
@@ -720,9 +723,20 @@ function formatUptime(sec){const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/
 // ─── Init ──────────────────────────────────────────
 document.getElementById('login-form').addEventListener('submit', doLogin);
 document.getElementById('logout-btn').addEventListener('click', logout);
-document.getElementById('menu-toggle').addEventListener('click', () => document.getElementById('sidebar').classList.toggle('open'));
-document.getElementById('sidebar-close').addEventListener('click', () => document.getElementById('sidebar').classList.remove('open'));
+document.getElementById('menu-toggle').addEventListener('click', () => {
+  document.getElementById('sidebar').classList.add('open');
+  document.getElementById('sidebar-overlay').classList.add('active');
+});
+document.getElementById('sidebar-close').addEventListener('click', () => {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebar-overlay').classList.remove('active');
+});
 document.querySelectorAll('.nav-item').forEach(el => el.addEventListener('click', e => { e.preventDefault(); navigate(el.dataset.page); }));
+document.querySelectorAll('.bottom-nav-item').forEach(el => el.addEventListener('click', e => { e.preventDefault(); navigate(el.dataset.page); }));
+document.getElementById('sidebar-overlay').addEventListener('click', () => {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebar-overlay').classList.remove('active');
+});
 document.getElementById('modal-overlay').addEventListener('click', e => { if (e.target === e.currentTarget) closeModal(); });
 
 (async () => {
