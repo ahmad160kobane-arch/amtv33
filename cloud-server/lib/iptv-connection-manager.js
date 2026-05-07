@@ -56,11 +56,11 @@ class IptvSemaphore {
   }
 }
 
-// ─── نوعان من السيمافور ──────────────────────────────────────────────────
-// 1. streaming: اتصالات البث (movie/series/live) — max=1 لأن الحساب يسمح باتصال واحد
-// 2. api: طلبات API (player_api.php) — سريعة، max=2
+// ─── سيمافور واحد ──────────────────────────────────────────────────────
+// المزود يحسب كل الاتصالات (API + streaming) كاتصال واحد (max_connections=1)
+// لا نفرق بين API وبث — كله يمر من سيمافور واحد
 const streamingSem = new IptvSemaphore(1);
-const apiSem = new IptvSemaphore(2);
+const apiSem = streamingSem; // نفس السيمافور — المزود لا يفرق
 
 // ─── Helper: تنفيذ دالة مع سيمافور ──────────────────────────────────────
 async function withStreamingSemaphore(label, fn) {
