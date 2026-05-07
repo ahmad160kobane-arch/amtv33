@@ -4820,9 +4820,31 @@ app.post('/api/lulu-upload/jobs', requireAuth, async (req, res) => {
   res.json({ success: true, message: 'Remote upload started' });
 });
 
-// Jobs endpoints removed — system uses direct remote upload now
+// ── Jobs stubs (الداشبورد يطلبها) ────────────────────────────────────────
+app.get('/api/lulu-upload/jobs', requireAuth, async (req, res) => {
+  res.json({ jobs: [] });
+});
+app.get('/api/lulu-upload/jobs/:id', requireAuth, async (req, res) => {
+  res.status(404).json({ error: 'job not found' });
+});
+app.delete('/api/lulu-upload/jobs/:id', requireAuth, async (req, res) => {
+  res.json({ success: true });
+});
 
-// SSE progress removed — remote upload is fire-and-forget
+// SSE progress — يرسل heartbeat فقط (لا يوجد job system)
+app.get('/api/lulu-upload/progress', async (req, res) => {
+  const token = req.query.token || '';
+  if (!token) return res.status(401).json({ error: 'auth required' });
+  try {
+    const decoded = jwt.verify(token, config.JWT_SECRET);
+    const user = await _getUserById(decoded.userId);
+    if (!user || (!user.is_admin && user.role !== 'admin')) return res.status(403).json({ error: 'admin required' });
+  } catch { return res.status(401).json({ error: 'invalid token' }); }
+  res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' });
+  res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
+  const iv = setInterval(() => { try { res.write(`data: ${JSON.stringify({ type: 'ping' })}\n\n`); } catch { clearInterval(iv); } }, 15000);
+  req.on('close', () => clearInterval(iv));
+});
 
 // ── Lulu folders (for picking main folder) ────────────────────────────────────
 app.get('/api/lulu-upload/folders', requireAuth, async (req, res) => {
