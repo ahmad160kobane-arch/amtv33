@@ -4808,71 +4808,21 @@ app.post('/api/lulu-upload/jobs', requireAuth, async (req, res) => {
     catName: item.catName || cat_name || 'محتوى',
   }));
 
-  // منع تكرار: إذا يوجد job بنفس الـ cat_name قيد التشغيل أو الانتظار → ارفض
-  const existingJob = await db.prepare(
-    "SELECT id FROM lulu_upload_jobs WHERE cat_name = ? AND status IN ('running', 'queued') LIMIT 1"
-  ).get(cat_name || null);
-  if (existingJob) {
-    return res.status(409).json({ error: `يوجد job نشط بالفعل لـ "${cat_name}" (id: ${existingJob.id})` });
-  }
-
-  // إرسال رابط IPTV المباشر لـ LuluStream بدون proxy (LuluStream تتصل بـ IPTV مباشرة)
-  const vpsUrl      = null;
-  const proxySecret = null;
-
-  const job = luluUploader.createJob({
+  // Remote Upload مباشر — بدون job
+  luluUploader.remoteUploadItems({
     items       : enrichedItems,
     account     : iptvAccount,
     apiKey      : luluAcc.api_key,
-    vpsUrl,
-    proxySecret,
     mainFolderId: luluAcc.main_folder_id || 0,
-    type        : type || 'vod',
-    luluAccountId: lulu_account_id,
     iptvAccountId: iptv_id || 0,
-  });
+  }).catch(e => console.error('[RemoteUpload] Error:', e.message));
 
-  res.json({ success: true, jobId: job.id });
+  res.json({ success: true, message: 'Remote upload started' });
 });
 
-app.get('/api/lulu-upload/jobs', requireAuth, async (req, res) => {
-  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
-  res.json({ jobs: luluUploader.getJobsSummary() });
-});
+// Jobs endpoints removed — system uses direct remote upload now
 
-app.get('/api/lulu-upload/jobs/:id', requireAuth, async (req, res) => {
-  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
-  const job = luluUploader.getJobDetail(req.params.id);
-  if (!job) return res.status(404).json({ error: 'job not found' });
-  res.json(job);
-});
-
-app.delete('/api/lulu-upload/jobs/:id', requireAuth, async (req, res) => {
-  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
-  luluUploader.cancelJob(req.params.id);
-  res.json({ success: true });
-});
-
-// ── SSE: Real-time upload progress ───────────────────────────────────────────
-app.get('/api/lulu-upload/progress', async (req, res) => {
-  // Auth via query param (EventSource can't set headers)
-  const token = req.query.token || '';
-  if (!token) return res.status(401).json({ error: 'auth required' });
-  try {
-    const decoded = jwt.verify(token, config.JWT_SECRET);
-    const user = await _getUserById(decoded.userId);
-    if (!user || (!user.is_admin && user.role !== 'admin')) return res.status(403).json({ error: 'admin required' });
-  } catch { return res.status(401).json({ error: 'invalid token' }); }
-  res.set({
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive',
-    'X-Accel-Buffering': 'no',
-  });
-  res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
-  luluUploader.addSSEClient(res);
-  req.on('close', () => { /* cleanup handled inside addSSEClient */ });
-});
+// SSE progress removed — remote upload is fire-and-forget
 
 // ── Lulu folders (for picking main folder) ────────────────────────────────────
 app.get('/api/lulu-upload/folders', requireAuth, async (req, res) => {
