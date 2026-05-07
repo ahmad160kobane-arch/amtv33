@@ -60,6 +60,7 @@ function detectLang(catName = '') {
 
 // ─── Global IPTV Connection Manager ──────────────────────────────────────────
 const { streamingSem, apiSem } = require('./iptv-connection-manager');
+const restreamer = require('./ffmpeg-restreamer');
 
 // ─── LuluStream API ────────────────────────────────────────────────────────────
 
@@ -555,21 +556,10 @@ async function _processJob(job) {
     const streamType = item.type === 'episode' ? 'series' : 'movie';
     const tmpPath = path.join(os.tmpdir(), `lulu_${Date.now()}_${Math.random().toString(36).slice(2)}.mp4`);
 
-    // جلب credentials من DB
-    let iptvUrl = null;
-    try {
-      if (_db) {
-        const iptvId = job.iptvAccountId || 0;
-        let row = iptvId > 0 ? await _db.prepare("SELECT server_url,username,password FROM iptv_accounts WHERE id=? AND status='active'").get(iptvId) : null;
-        if (!row) row = await _db.prepare("SELECT server_url,username,password FROM iptv_accounts WHERE status='active' ORDER BY id ASC LIMIT 1").get();
-        if (row) {
-          const u = new URL(row.server_url);
-          const base = `${u.protocol}//${u.hostname}:${u.port || 8080}`;
-          iptvUrl = `${base}/${streamType}/${row.username}/${row.password}/${item.streamId}.${ext}`;
-          console.log(`[Download] URL: ${base}/${streamType}/***/${item.streamId}.${ext}`);
-        }
-      }
-    } catch (e) { console.log(`[Download] credentials error: ${e.message}`); }
+    // استخدم البروكسي المحلي (iptv-proxy) بدلاً من الاتصال المباشر بـ IPTV
+    // البروكسي يتحكم بالسيمافور العالمي ويعيد المحاولة عند 456
+    const iptvUrl = _buildProxyUrl(job.iptvAccountId, streamType, item.streamId, ext);
+    console.log(`[Download] Proxy URL: ${iptvUrl.replace(IPTV_PROXY_SECRET, '***')}`);
 
     if (!iptvUrl) {
       console.log(`[LuluJob] ✗ No IPTV credentials for: ${title}`);
@@ -581,7 +571,11 @@ async function _processJob(job) {
     }
 
     let fileCode = null;
+    let pausedStreamIds = [];
     try {
+      // أوقف البث المباشر مؤقتاً لتحرير اتصال IPTV الوحيد
+      pausedStreamIds = await restreamer.pauseAll();
+
       await _downloadFile(iptvUrl, tmpPath, title);
 
       // 2) رفع إلى LuluStream
@@ -600,7 +594,9 @@ async function _processJob(job) {
       _emitProgress(job, 'error', 0);
       _updateDBJob(job);
       await sleep(5000);
-      continue;
+    } finally {
+      // استأنف البث المباشر بعد الانتهاء
+      await restreamer.resumeAll(pausedStreamIds);
     }
 
     // 3) finalize في الخلفية (metadata + canplay)
