@@ -489,7 +489,7 @@ async function _processJob(job) {
   if (_db) {
     try {
       const row = await _db.prepare(
-        "INSERT INTO lulu_upload_jobs (job_uuid, status, type, total, done, failed, cat_name, lulu_account_id, iptv_account_id, started_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id"
+        "INSERT INTO lulu_upload_jobs (job_uuid, status, type, total, done, failed, cat_name, lulu_account_id, iptv_account_id, started_at, finished_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?) RETURNING id"
       ).get(String(job.id), 'running', job.type, job.total, 0, 0, job.items[0]?.catName || '', job.luluAccountId, job.iptvAccountId, job.startedAt, job.startedAt);
       if (row) job._dbJobId = row.id;
     } catch (e) { console.error('[LuluJob] DB error:', e.message); }
