@@ -1,23 +1,22 @@
 ﻿/**
 
- * Ø§Ù„Ø³ÙŠØ±ÙØ± Ø§Ù„Ø³Ø­Ø§Ø¨ÙŠ v3
+ * Ø§Ù"Ø3ÙŠØ±ÙØ± Ø§Ù"Ø3Ø­Ø§Ø ̈ÙŠ v3
 
  *
 
- * - Ù…ØªØµÙ„ Ø¨Ù‚Ø§Ø¹Ø¯Ø© Ø¨ÙŠØ§Ù†Ø§Øª Ø§Ù„Ø¨Ø§Ùƒ Ø§Ù†Ø¯ Ù…Ø¨Ø§Ø´Ø±Ø©
+ * - Ù...ØaØμÙ" Ø ̈Ù'Ø§Ø1Ø ̄Ø© Ø ̈ÙŠØ§Ù†Ø§Øa Ø§Ù"Ø ̈Ø§Ùƒ Ø§Ù†Ø ̄ Ù...Ø ̈Ø§Ø ́Ø±Ø©
 
- * - ÙŠØªØ­Ù‚Ù‚ Ù…Ù† Ø§Ù„Ù…Ø³ØªØ®Ø¯Ù… (JWT) Ù‚Ø¨Ù„ Ø§Ù„Ø¨Ø«
+ * - ÙŠØaØ­Ù'Ù' Ù...Ù† Ø§Ù"Ù...Ø3ØaØ®Ø ̄Ù... (JWT) Ù'Ø ̈Ù" Ø§Ù"Ø ̈Ø«
 
- * - ÙŠØ­Ø¯Ù‘Ø« Ø±ÙˆØ§Ø¨Ø· Ø§Ù„Ø¨Ø« ØªÙ„Ù‚Ø§Ø¦ÙŠØ§Ù‹ Ø¹Ù†Ø¯ Ø§Ù„ØªØ´ØºÙŠÙ„
+ * - ÙŠØ­Ø ̄Ù'Ø« Ø±ÙˆØ§Ø ̈Ø· Ø§Ù"Ø ̈Ø« ØaÙ"Ù'Ø§Ø¦ÙŠØ§Ù‹ Ø1Ù†Ø ̄ Ø§Ù"ØaØ ́ØoÙŠÙ"
 
- * - ÙŠÙ‚Ø¯Ù… Ø§Ù„Ø¨Ø« Ù…Ø¨Ø§Ø´Ø±Ø© Ù„Ù„ØªØ·Ø¨ÙŠÙ‚ (Ø¨Ø¯ÙˆÙ† ÙˆØ³ÙŠØ·)
+ * - ÙŠÙ'Ø ̄Ù... Ø§Ù"Ø ̈Ø« Ù...Ø ̈Ø§Ø ́Ø±Ø© Ù"Ù"ØaØ·Ø ̈ÙŠÙ' (Ø ̈Ø ̄ÙˆÙ† ÙˆØ3ÙŠØ·)
 
  */
 
 const express = require("express");
 
 const cors = require("cors");
-const cookieParser = require("cookie-parser");
 const cookieParser = require("cookie-parser");
 
 const path = require("path");
@@ -67,9 +66,8 @@ const {
 
 const xtreamProxy = require("./lib/xtream-proxy");
 const restreamer = require("./lib/ffmpeg-restreamer");
-const restreamer = require("./lib/ffmpeg-restreamer");
 
-const vidsrcApi = require("./lib/vidsrc-api"); // DISABLED — replaced by xtream-vod
+const vidsrcApi = require("./lib/vidsrc-api"); // DISABLED - replaced by xtream-vod
 
 const xtreamVod = require("./lib/xtream-vod");
 
@@ -124,7 +122,7 @@ const upstreamHttpsAgent = new https.Agent({
   rejectUnauthorized: false,
 });
 
-// â”€â”€â”€ Middleware â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Middleware â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 app.use(cors({
   origin: true,
@@ -135,147 +133,8 @@ app.use(cors({
 
 app.use(cookieParser());
 
-app.use(cookieParser());
-
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
-
-// ─── FFmpegRestreamer HLS: auth + premium + connection limit middleware ────
-// Strategy: manifest sets auth cookie → segment reads cookie (HLS players use relative URLs)
-const _restreamerHbCounter = {};
-app.use('/hls/stream_', async (req, res, next) => {
-  const match = req.path.match(/^(\d+)\//) || req.originalUrl.match(/\/stream_(\d+)\//);
-  if (!match) return next();
-  const streamId = match[1];
-  const isManifest = req.path.endsWith('.m3u8');
-  const isSegment = req.path.endsWith('.ts');
-
-  // ─── Segment: lightweight cookie-based auth + heartbeat ───
-  if (isSegment) {
-    let userId = null;
-    let stDid = '';
-    // 1) Cookie (set by manifest request)
-    const cookieName = `hls_st_${streamId}`;
-    const cookieVal = req.cookies?.[cookieName] || req.headers.cookie?.match(new RegExp(`${cookieName}=([^;]+)`))?.[1];
-    if (cookieVal) {
-      try {
-        const decoded = jwt.verify(cookieVal, config.JWT_SECRET);
-        if (decoded.userId && decoded.t === 'stream') { userId = decoded.userId; stDid = decoded.did || ''; }
-      } catch {}
-    }
-    // 2) Bearer header
-    if (!userId) {
-      const authHeader = req.headers.authorization;
-      if (authHeader && authHeader.startsWith('Bearer ')) {
-        try {
-          const decoded = jwt.verify(authHeader.slice(7), config.JWT_SECRET);
-          if (decoded.userId) userId = decoded.userId;
-        } catch {}
-      }
-    }
-    // 3) Query param fallback
-    if (!userId && req.query.st) {
-      try {
-        const decoded = jwt.verify(req.query.st, config.JWT_SECRET);
-        if (decoded.userId && decoded.t === 'stream') { userId = decoded.userId; stDid = decoded.did || ''; }
-      } catch {}
-    }
-    if (!userId) {
-      return res.status(401).end();
-    }
-
-    const deviceId = req.query.did || req.headers['x-device-id'] || stDid || '';
-    restreamer.heartbeat(streamId, userId, deviceId);
-
-    // DB heartbeat every 30th segment
-    const hbKey = `hb_${userId}_${streamId}`;
-    _restreamerHbCounter[hbKey] = ((_restreamerHbCounter[hbKey] || 0) + 1) % 30;
-    if (_restreamerHbCounter[hbKey] === 0) {
-      _getUserSessions(userId).then(sessions => {
-        const s = deviceId
-          ? sessions.find(x => x.stream_id === `live_${streamId}` && x.device_id === deviceId)
-          : sessions.find(x => x.stream_id === `live_${streamId}`);
-        if (s) _updateHeartbeat(s.id).catch(() => {});
-      }).catch(() => {});
-    }
-    return next();
-  }
-
-  // ─── Manifest: full auth + set cookie for segments ───
-  if (isManifest) {
-    const deviceId = req.query.did || req.headers['x-device-id'] || '';
-    const authResult = await _validateStreamAuth(req);
-    if (authResult.error === 'subscription_required') {
-      if (!res.headersSent) return res.status(403).json({ error: 'subscription_required', message: 'هذا المحتوى يتطلب اشتراك بريميوم' });
-      return;
-    }
-    if (authResult.error === 'subscription_expired') {
-      if (!res.headersSent) return res.status(403).json({ error: 'subscription_expired', message: 'انتهت صلاحية اشتراكك يرجى التجديد' });
-      return;
-    }
-    if (!authResult.userId) {
-      if (!res.headersSent) return res.status(401).json({ error: 'يجب تسجيل الدخول لمشاهدة البث' });
-      return;
-    }
-    const userId = authResult.userId;
-
-    if (!await _checkRateLimit(userId, 'm3u8')) {
-      if (!res.headersSent) return res.status(429).json({ error: 'تجاوزت حد الطلبات' });
-      return;
-    }
-
-    const connCheck = await checkConnectionLimit(userId, `live_${streamId}`, 'live', deviceId);
-    if (!connCheck.allowed) {
-      if (!res.headersSent) {
-        return res.status(429).json({
-          error: connCheck.error,
-          message: connCheck.message,
-          active: connCheck.active,
-          max: connCheck.max,
-        });
-      }
-      return;
-    }
-
-    // Set auth cookie for segment requests (HLS players use relative URLs without query params)
-    const stToken = req.query.st || jwt.sign(
-      { userId, streamId, t: 'stream', lv: 0, did: deviceId },
-      config.JWT_SECRET,
-      { expiresIn: '8h' },
-    );
-    res.cookie(`hls_st_${streamId}`, stToken, {
-      httpOnly: false,
-      maxAge: 8 * 60 * 60 * 1000,
-      path: `/hls/stream_${streamId}`,
-      sameSite: 'lax',
-    });
-
-    restreamer.heartbeat(streamId, userId, deviceId);
-
-    _getUserSessions(userId).then(sessions => {
-      const s = deviceId
-        ? sessions.find(x => x.stream_id === `live_${streamId}` && x.device_id === deviceId)
-        : sessions.find(x => x.stream_id === `live_${streamId}`);
-      if (s) _updateHeartbeat(s.id).catch(() => {});
-    }).catch(() => {});
-  }
-
-  next();
-});
-
-// ─── Serve FFmpeg-generated HLS files ───────────────────
-app.use('/hls', express.static(path.join(__dirname, 'hls'), {
-  setHeaders: (res, filePath) => {
-    if (filePath.endsWith('.m3u8')) {
-      res.set('Content-Type', 'application/vnd.apple.mpegurl');
-      res.set('Cache-Control', 'no-cache, no-store');
-    } else if (filePath.endsWith('.ts')) {
-      res.set('Content-Type', 'video/mp2t');
-      res.set('Cache-Control', 'public, max-age=60');
-    }
-    res.set('Access-Control-Allow-Origin', '*');
-  },
-}));
 
 // ─── FFmpegRestreamer HLS: auth + premium + connection limit middleware ────
 // Strategy: manifest sets auth cookie → segment reads cookie (HLS players use relative URLs)
@@ -436,7 +295,161 @@ app.use(
 // ─── IPTV Pass-through Proxy (لـ LuluStream remote upload) ────────
 // LuluStream لا يستطيع تحميل من IPTV مباشرة (محجوب)
 // هذا البروكسي يمرر البيانات بدون تخزين: IPTV → VPS (pass) → LuluStream
+// يدعم: redirects، HTTPS، Range requests، User-Agent
 const IPTV_PROXY_SECRET = "lulu_iptv_proxy_2026";
+
+// ─── Global IPTV Connection Manager ──────────────────────────────────────
+const { streamingSem, apiSem, getStatus: getIptvSemStatus } = require('./lib/iptv-connection-manager');
+
+function _iptvProxyRequest(url, headers, maxRedirects, callback) {
+  if (maxRedirects <= 0) return callback(new Error('too many redirects'));
+  const isHttps = url.startsWith('https');
+  const mod = isHttps ? https : http;
+  const reqHeaders = {
+    'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20',
+    'Accept': '*/*',
+    'Connection': 'keep-alive',
+    ...headers,
+  };
+  const proxyReq = mod.get(url, { headers: reqHeaders, timeout: 600000 }, (iptvRes) => {
+    // تتبع redirects (IPTV يعمل redirect دائماً إلى CDN)
+    if ([301, 302, 303, 307, 308].includes(iptvRes.statusCode) && iptvRes.headers.location) {
+      const redirectUrl = iptvRes.headers.location;
+      console.log(`[IPTV-PROXY] Redirect ${iptvRes.statusCode} → ${redirectUrl.substring(0, 80)}...`);
+      iptvRes.resume(); // drain البيانات
+      return _iptvProxyRequest(redirectUrl, headers, maxRedirects - 1, callback);
+    }
+    callback(null, iptvRes);
+  });
+  proxyReq.on('error', (e) => callback(e));
+  proxyReq.on('timeout', () => {
+    proxyReq.destroy();
+    callback(new Error('timeout'));
+  });
+  return proxyReq;
+}
+
+// HEAD request - LuluStream يرسل HEAD للتحقق من حجم ونوع الملف قبل التحميل
+// ─── Helper: IPTV proxy مع retry لـ 456 (Too Many Connections) ──────────
+async function _iptvProxyWithRetry(iptvUrl, reqHeaders, maxRetries, onStream) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const result = await new Promise((resolve, reject) => {
+        _iptvProxyRequest(iptvUrl, reqHeaders, 10, (err, iptvRes) => {
+          if (err) return reject(err);
+          resolve(iptvRes);
+        });
+      });
+      // 456 = Too Many Connections — انتظر وأعد المحاولة
+      if (result.statusCode === 456) {
+        result.resume();
+        const waitSec = attempt * 15; // 15s, 30s, 45s...
+        console.log(`[IPTV-PROXY] 456 Too Many Connections — retry ${attempt}/${maxRetries} in ${waitSec}s...`);
+        await new Promise(r => setTimeout(r, waitSec * 1000));
+        continue;
+      }
+      // نجاح أو خطأ مختلف
+      return result;
+    } catch (e) {
+      console.log(`[IPTV-PROXY] attempt ${attempt} error: ${e.message}`);
+      if (attempt >= maxRetries) throw e;
+      await new Promise(r => setTimeout(r, attempt * 5000));
+    }
+  }
+  throw new Error('max retries exceeded for 456');
+}
+
+app.head("/iptv-proxy/:secret/:iptvId/:type/:filename", async (req, res) => {
+  const { secret, iptvId, type, filename } = req.params;
+  if (secret !== IPTV_PROXY_SECRET) return res.status(403).end();
+  const dotIdx = filename.lastIndexOf(".");
+  const id = dotIdx > 0 ? filename.substring(0, dotIdx) : filename;
+  const ext = dotIdx > 0 ? filename.substring(dotIdx + 1) : "mp4";
+
+  let iptvBase, iptvUser, iptvPass;
+  try {
+    const accId = parseInt(iptvId) || 0;
+    let row;
+    if (accId > 0) {
+      row = await db.prepare("SELECT server_url, username, password FROM iptv_accounts WHERE id = ? AND status = 'active'").get(accId);
+    }
+    if (!row) {
+      row = await db.prepare("SELECT server_url, username, password FROM iptv_accounts WHERE status = 'active' ORDER BY id ASC LIMIT 1").get();
+    }
+    if (!row) return res.status(400).end();
+    const url = new URL(row.server_url);
+    iptvBase = `${url.protocol}//${url.hostname}:${url.port || 8080}`;
+    iptvUser = row.username;
+    iptvPass = row.password;
+  } catch (e) {
+    return res.status(500).end();
+  }
+
+  const urlPath = type === "series"
+    ? `/series/${iptvUser}/${iptvPass}/${id}.${ext}`
+    : `/movie/${iptvUser}/${iptvPass}/${id}.${ext}`;
+  const iptvUrl = `${iptvBase}${urlPath}`;
+
+  // HEAD مع retry لـ 456 + semaphore
+  const MAX_HEAD_RETRIES = 5;
+  for (let attempt = 1; attempt <= MAX_HEAD_RETRIES; attempt++) {
+    try {
+      await streamingSem.acquire('proxy'); // انتظر دورك — لا تضرب IPTV بطلبات متزامنة
+      const headResult = await new Promise((resolve, reject) => {
+        const isHttps = iptvUrl.startsWith('https');
+        const mod = isHttps ? https : http;
+        const headReq = mod.request(iptvUrl, {
+          method: 'HEAD',
+          headers: { 'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20', 'Accept': '*/*' },
+          timeout: 30000,
+        }, (iptvRes) => {
+          if ([301, 302, 303, 307, 308].includes(iptvRes.statusCode) && iptvRes.headers.location) {
+            iptvRes.resume();
+            const redirectMod = iptvRes.headers.location.startsWith('https') ? https : http;
+            redirectMod.request(iptvRes.headers.location, {
+              method: 'HEAD',
+              headers: { 'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20', 'Accept': '*/*' },
+              timeout: 30000,
+            }, (finalRes) => {
+              finalRes.resume();
+              resolve({ status: finalRes.statusCode, headers: finalRes.headers });
+            }).on('error', reject).end();
+            return;
+          }
+          iptvRes.resume();
+          resolve({ status: iptvRes.statusCode, headers: iptvRes.headers });
+        });
+        headReq.on('error', reject);
+        headReq.setTimeout(30000, () => { headReq.destroy(); reject(new Error('timeout')); });
+        headReq.end();
+      });
+      streamingSem.release(); // حرّر المكان
+
+      if (headResult.status === 456) {
+        const waitSec = attempt * 10;
+        console.log(`[IPTV-PROXY HEAD] 456 — retry ${attempt}/${MAX_HEAD_RETRIES} in ${waitSec}s...`);
+        await new Promise(r => setTimeout(r, waitSec * 1000));
+        continue;
+      }
+      if (headResult.status === 200) {
+        res.set('Content-Type', headResult.headers['content-type'] || 'video/mp4');
+        if (headResult.headers['content-length']) res.set('Content-Length', headResult.headers['content-length']);
+        if (headResult.headers['accept-ranges']) res.set('Accept-Ranges', headResult.headers['accept-ranges']);
+        res.set('Access-Control-Allow-Origin', '*');
+        res.set('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+        return res.status(200).end();
+      }
+      return res.status(502).end();
+    } catch (e) {
+      streamingSem.release(); // حرّر المكان عند الخطأ أيضاً
+      console.log(`[IPTV-PROXY HEAD] attempt ${attempt} error: ${e.message}`);
+      if (attempt >= MAX_HEAD_RETRIES) return res.status(502).end();
+      await new Promise(r => setTimeout(r, 5000));
+    }
+  }
+  res.status(502).end();
+});
+
 app.get("/iptv-proxy/:secret/:iptvId/:type/:filename", async (req, res) => {
   const { secret, iptvId, type, filename } = req.params;
   if (secret !== IPTV_PROXY_SECRET) return res.status(403).end("Forbidden");
@@ -477,30 +490,86 @@ app.get("/iptv-proxy/:secret/:iptvId/:type/:filename", async (req, res) => {
 
   console.log(`[IPTV-PROXY] Streaming ${type} ${id}.${ext} via ${iptvBase}`);
 
-  const proxyReq = http.get(iptvUrl, { timeout: 600000 }, (iptvRes) => {
-    if (iptvRes.statusCode !== 200) {
-      console.log(`[IPTV-PROXY] IPTV returned ${iptvRes.statusCode}`);
-      return res.status(502).end("IPTV error");
-    }
-    // تمرير headers مهمة
-    if (iptvRes.headers["content-length"])
-      res.set("Content-Length", iptvRes.headers["content-length"]);
-    if (iptvRes.headers["content-type"])
-      res.set("Content-Type", iptvRes.headers["content-type"]);
-    else res.set("Content-Type", "video/mp4");
+  // بناء headers الطلب (دعم Range من LuluStream)
+  const reqHeaders = {};
+  if (req.headers.range) reqHeaders['Range'] = req.headers.range;
+  if (req.headers['if-range']) reqHeaders['If-Range'] = req.headers['if-range'];
+  reqHeaders['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+  reqHeaders['Referer'] = iptvBase + '/';
+  reqHeaders['Accept'] = 'video/webm,video/mp4,video/*;q=0.9,*/*;q=0.8';
+  reqHeaders['Accept-Language'] = 'en-US,en;q=0.5';
+  reqHeaders['Connection'] = 'keep-alive';
 
-    iptvRes.pipe(res);
-    iptvRes.on("error", () => res.end());
-  });
-  proxyReq.on("error", (e) => {
-    console.log(`[IPTV-PROXY] Error: ${e.message}`);
-    if (!res.headersSent) res.status(502).end("Proxy error");
-  });
-  proxyReq.on("timeout", () => {
-    proxyReq.destroy();
-    if (!res.headersSent) res.status(504).end("Timeout");
-  });
-  req.on("close", () => proxyReq.destroy());
+  // ─── Retry لـ 456 (Too Many Connections) + Semaphore ──────────────
+  // LuluStream يحاول تحميل الملف — إذا IPTV يرجع 456 ننتظر ونعيد المحاولة
+  // Semaphore يحدد عدد الاتصالات المتزامنة إلى IPTV لتجنب 456
+  const MAX_GET_RETRIES = 8;
+  for (let attempt = 1; attempt <= MAX_GET_RETRIES; attempt++) {
+    try {
+      await streamingSem.acquire('proxy'); // انتظر دورك — لا تضرب IPTV بطلبات متزامنة
+      const iptvRes = await new Promise((resolve, reject) => {
+        const proxyReq = _iptvProxyRequest(iptvUrl, reqHeaders, 10, (err, iptvResInner) => {
+          if (err) return reject(err);
+          resolve(iptvResInner);
+        });
+        // إذا ألغى العميل (LuluStream) الطلب، أوقف البروكسي
+        req.on('close', () => { try { proxyReq.destroy(); } catch {} });
+      });
+      // لا نحرر المكان هنا لأننا سنستمر في البث
+      // سيتم تحريره بعد انتهاء البث أو عند الخطأ
+
+      // 456 = Too Many Connections — حرّر المكان وانتظر
+      if (iptvRes.statusCode === 456) {
+        streamingSem.release();
+        iptvRes.resume();
+        const waitSec = attempt * 15; // 15s, 30s, 45s, 60s...
+        console.log(`[IPTV-PROXY] 456 Too Many Connections for ${id}.${ext} — retry ${attempt}/${MAX_GET_RETRIES} in ${waitSec}s...`);
+        await new Promise(r => setTimeout(r, waitSec * 1000));
+        continue;
+      }
+
+      // قبول 200 و 206 (Partial Content)
+      if (iptvRes.statusCode !== 200 && iptvRes.statusCode !== 206) {
+        streamingSem.release();
+        console.log(`[IPTV-PROXY] IPTV returned ${iptvRes.statusCode}`);
+        iptvRes.resume();
+        if (!res.headersSent) res.status(502).end(`IPTV error: ${iptvRes.statusCode}`);
+        return;
+      }
+
+      // تمرير جميع headers المهمة
+      const headersToForward = ['content-length', 'content-type', 'content-range', 'accept-ranges', 'content-disposition'];
+      for (const h of headersToForward) {
+        if (iptvRes.headers[h]) res.set(h, iptvRes.headers[h]);
+      }
+      if (!res.get('Content-Type')) res.set('Content-Type', 'video/mp4');
+      res.set('Access-Control-Allow-Origin', '*');
+      res.set('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+
+      const status = iptvRes.statusCode === 206 ? 206 : 200;
+      if (!res.headersSent) res.writeHead(status, res.getHeaders());
+
+      console.log(`[IPTV-PROXY] ✓ Streaming ${id}.${ext} status=${iptvRes.statusCode} size=${iptvRes.headers['content-length'] || '?'} range=${req.headers.range || 'none'}`);
+
+      // حرّر المكان بعد بدء البث (الإتصال أصبح streaming وليس blocking)
+      streamingSem.release();
+
+      iptvRes.pipe(res);
+      iptvRes.on('error', () => { try { res.end(); } catch {} });
+      return; // نجح — لا داعي لإعادة المحاولة
+
+    } catch (e) {
+      streamingSem.release(); // حرّر المكان عند الخطأ
+      console.log(`[IPTV-PROXY] GET attempt ${attempt} error: ${e.message}`);
+      if (attempt >= MAX_GET_RETRIES) {
+        if (!res.headersSent) res.status(502).end("Proxy error: " + e.message);
+        return;
+      }
+      await new Promise(r => setTimeout(r, attempt * 5000));
+    }
+  }
+  // كل المحاولات فشلت
+  if (!res.headersSent) res.status(502).end("IPTV 456 persistent");
 });
 
 app.use((req, res, next) => {
@@ -511,8 +580,7 @@ app.use((req, res, next) => {
       !req.path.endsWith(".ts") &&
       !req.path.endsWith(".m3u8") &&
       !req.path.endsWith(".vtt") &&
-      !req.path.startsWith("/vod/proxy/") &&
-      !req.path.startsWith("/free-hls/")
+      !req.path.startsWith("/vod/proxy/")
     ) {
       console.log(
         `${req.method} ${req.path} ${res.statusCode} ${Date.now() - start}ms`,
@@ -523,7 +591,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// --- User lookup (direct PG — same database as backend) ---
+// --- User lookup (direct PG - same database as backend) ---
 
 async function _getUserById(userId) {
   return db
@@ -560,7 +628,7 @@ const RATE_WINDOW_MS  = 60 * 1000; // 1 minute window
 const BASE_RATE_M3U8  = 40;        // base manifest requests per minute per connection
 const BASE_RATE_SEG   = 80;        // base segment requests per minute per connection
 
-// Cache max_connections per user (5s TTL — same as user cache)
+// Cache max_connections per user (5s TTL - same as user cache)
 const _rateUserCache = new Map();
 const RATE_USER_CACHE_TTL = 5000;
 
@@ -635,7 +703,7 @@ async function requireAuth(req, res, next) {
     const user = await _getUserById(decoded.userId);
 
     if (!user) {
-      // User not found in DB — reject (no fallback — security risk)
+      // User not found in DB - reject (no fallback - security risk)
       return res.status(401).json({ error: 'المستخدم غير موجود' });
     }
 
@@ -696,7 +764,7 @@ function requirePremium(req, res, next) {
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-// API Ø§Ù„Ø¨Ø« â€” Ø§Ù„ØªØ·Ø¨ÙŠÙ‚ ÙŠØªØµÙ„ Ù…Ø¨Ø§Ø´Ø±Ø© (Ù…Ø¹ JWT)
+// API Ø§Ù"Ø ̈Ø« â€" Ø§Ù"ØaØ·Ø ̈ÙŠÙ' ÙŠØaØμÙ" Ù...Ø ̈Ø§Ø ́Ø±Ø© (Ù...Ø1 JWT)
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
@@ -704,21 +772,21 @@ function requirePremium(req, res, next) {
 
  * POST /api/stream/live/:channelId
 
- * Ø¨Ø¯Ø¡ Ø¨Ø« Ù‚Ù†Ø§Ø© Ù…Ø¨Ø§Ø´Ø±Ø©
+ * Ø ̈Ø ̄Ø¡ Ø ̈Ø« Ù'Ù†Ø§Ø© Ù...Ø ̈Ø§Ø ́Ø±Ø©
 
  */
 
 // ═══ Session / Connection Limit Management ═══════════════════
 
-const SESSION_TIMEOUT = 2 * 60 * 1000; // 2 min — session expires if no heartbeat
+const SESSION_TIMEOUT = 2 * 60 * 1000; // 2 min - session expires if no heartbeat
 
 const { randomUUID } = require("crypto");
 
-// ─── User data cache — reduce DB pressure under high concurrency ───
+// ─── User data cache - reduce DB pressure under high concurrency ───
 
 const _userCache = new Map();
 
-const USER_CACHE_TTL = 5000; // 5s — short enough to pick up plan changes quickly
+const USER_CACHE_TTL = 5000; // 5s - short enough to pick up plan changes quickly
 
 async function _getCachedUser(userId) {
   const cached = _userCache.get(userId);
@@ -820,14 +888,14 @@ async function _updateHeartbeat(sessionId) {
 
 /**
 
- * checkConnectionLimit — queries the real `users` table (shared PostgreSQL)
+ * checkConnectionLimit - queries the real `users` table (shared PostgreSQL)
 
  * Returns: { allowed, sessionId, error?, message?, active?, max? }
 
  */
 
 async function checkConnectionLimit(userId, streamId, streamType, deviceId = '') {
-  // Query with cache (5s TTL) — reduces DB pressure under high concurrency
+  // Query with cache (5s TTL) - reduces DB pressure under high concurrency
 
   const user = await _getCachedUser(userId);
 
@@ -869,7 +937,7 @@ async function checkConnectionLimit(userId, streamId, streamType, deviceId = '')
   const sessions = await _getUserSessions(userId);
 
   // ─── KEY FIX: same device reconnecting the same stream → update heartbeat ───
-  // Different device watching same stream is NOT treated as reconnection —
+  // Different device watching same stream is NOT treated as reconnection -
   // it counts against the connection limit like any new connection.
   if (deviceId) {
     const sameDevice = sessions.find(
@@ -981,7 +1049,7 @@ app.post("/api/session/release", requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-// GET /api/session/active — user's active sessions with subscription info
+// GET /api/session/active - user's active sessions with subscription info
 
 app.get("/api/session/active", requireAuth, async (req, res) => {
   await _cleanExpiredSessions();
@@ -1007,7 +1075,7 @@ app.get("/api/session/active", requireAuth, async (req, res) => {
   });
 });
 
-// POST /api/session/force-release — force release a specific session (for users who hit limit)
+// POST /api/session/force-release - force release a specific session (for users who hit limit)
 
 app.post("/api/session/force-release", requireAuth, async (req, res) => {
   const { sessionId } = req.body;
@@ -1026,7 +1094,7 @@ app.post("/api/session/force-release", requireAuth, async (req, res) => {
   res.json({ success: true, active: remaining.length });
 });
 
-// POST /api/session/release-all — release all sessions for user
+// POST /api/session/release-all - release all sessions for user
 
 app.post("/api/session/release-all", requireAuth, async (req, res) => {
   await db
@@ -1036,7 +1104,7 @@ app.post("/api/session/release-all", requireAuth, async (req, res) => {
   res.json({ success: true, active: 0 });
 });
 
-// GET /api/session/subscription-info — subscription details + session limits
+// GET /api/session/subscription-info - subscription details + session limits
 
 app.get("/api/session/subscription-info", requireAuth, async (req, res) => {
   const user = await db
@@ -1110,7 +1178,7 @@ app.post(
   async (req, res) => {
     const rawId = req.params.channelId;
 
-    // deviceId identifies the physical device — prevents two devices sharing one session
+    // deviceId identifies the physical device - prevents two devices sharing one session
     const deviceId = req.body.deviceId || req.headers['x-device-id'] || '';
 
     // ─── Resolve channel first to get the real stream_id for session tracking ───
@@ -1136,7 +1204,7 @@ app.post(
         .get(Number(xtreamStreamId), xtreamStreamId);
 
       if (xch) {
-        // ═══ Connection limit check — use stream_id (e.g. "live_1017030") ═══
+        // ═══ Connection limit check - use stream_id (e.g. "live_1017030") ═══
         const connCheck = await checkConnectionLimit(
           req.user.id,
           `live_${xch.stream_id}`,
@@ -1191,10 +1259,6 @@ app.post(
           console.error(`[Restreamer] فشل بدء البث: ${e.message}`);
           return res.status(500).json({ error: 'فشل بدء البث', message: e.message });
         }
-        } catch (e) {
-          console.error(`[Restreamer] فشل بدء البث: ${e.message}`);
-          return res.status(500).json({ error: 'فشل بدء البث', message: e.message });
-        }
       }
     }
 
@@ -1240,11 +1304,11 @@ app.post(
     if (!ch.stream_url)
       return res.status(400).json({ error: "القناة بدون رابط بث" });
 
-    // â•â•â• Ø§Ù„ÙˆØ¶Ø¹ Ø§Ù„Ø£Ø³Ø§Ø³ÙŠ: Direct Pipe (Ø¨Ø¯ÙˆÙ† FFmpeg â€” Ø¨Ø« ÙÙˆØ±ÙŠ) â•â•â•
+    // â•â•â• Ø§Ù"ÙˆØ¶Ø1 Ø§Ù"Ø£Ø3Ø§Ø3ÙŠ: Direct Pipe (Ø ̈Ø ̄ÙˆÙ† FFmpeg â€" Ø ̈Ø« ÙÙˆØ±ÙŠ) â•â•â•
 
-    // Ø§Ù„ØªØ·Ø¨ÙŠÙ‚ ÙŠØªØµÙ„ Ø¨Ù€ /live-pipe/:channelId Ù…Ø¨Ø§Ø´Ø±Ø©
+    // Ø§Ù"ØaØ·Ø ̈ÙŠÙ' ÙŠØaØμÙ" Ø ̈Ù€ /live-pipe/:channelId Ù...Ø ̈Ø§Ø ́Ø±Ø©
 
-    // Ø§Ù„ÙˆØ¶Ø¹ Ø§Ù„Ø§Ø­ØªÙŠØ§Ø·ÙŠ: FFmpeg â†’ HLS (Ø¥Ø°Ø§ Ø·Ù„Ø¨ Ø§Ù„ØªØ·Ø¨ÙŠÙ‚ ÙˆØ¶Ø¹ HLS)
+    // Ø§Ù"ÙˆØ¶Ø1 Ø§Ù"Ø§Ø­ØaÙŠØ§Ø·ÙŠ: FFmpeg â†' HLS (Ø¥Ø°Ø§ Ø·Ù"Ø ̈ Ø§Ù"ØaØ·Ø ̈ÙŠÙ' ÙˆØ¶Ø1 HLS)
 
     const mode = req.body.mode || "pipe"; // 'pipe' Ø£Ùˆ 'hls'
 
@@ -1269,7 +1333,7 @@ app.post(
       });
     }
 
-    // Direct pipe â€” Ø±Ø§Ø¨Ø· Ø§Ù„Ø¨Ø« Ø§Ù„Ù…Ø¨Ø§Ø´Ø± Ø¨Ø¯ÙˆÙ† FFmpeg
+    // Direct pipe â€" Ø±Ø§Ø ̈Ø· Ø§Ù"Ø ̈Ø« Ø§Ù"Ù...Ø ̈Ø§Ø ́Ø± Ø ̈Ø ̄ÙˆÙ† FFmpeg
 
     res.json({
       success: true,
@@ -1283,7 +1347,7 @@ app.post(
   },
 );
 
-// Xtream Token Redirect — mobile app follows redirect natively via ExoPlayer
+// Xtream Token Redirect - mobile app follows redirect natively via ExoPlayer
 
 app.get(
   ["/xtream-play/:token", "/xtream-play/:token/index.m3u8"],
@@ -1315,7 +1379,7 @@ app.get(
   },
 );
 
-// Xtream Pipe — redirect to HLS proxy (no persistent connections, multi-channel safe)
+// Xtream Pipe - redirect to HLS proxy (no persistent connections, multi-channel safe)
 
 app.get("/xtream-pipe/:token", async (req, res) => {
   try {
@@ -1336,12 +1400,12 @@ app.get("/xtream-pipe/:token", async (req, res) => {
   }
 });
 
-// â•â•â• Direct Live Pipe â€” Ø¨Ø« Ù…Ø¨Ø§Ø´Ø± Ø¨Ø¯ÙˆÙ† FFmpeg (pipe) â•â•â•
+// â•â•â• Direct Live Pipe â€" Ø ̈Ø« Ù...Ø ̈Ø§Ø ́Ø± Ø ̈Ø ̄ÙˆÙ† FFmpeg (pipe) â•â•â•
 
 app.get("/live-pipe/:channelId", requireAuth, requirePremium, async (req, res) => {
   const rawId = req.params.channelId;
 
-  // Xtream channel proxy — server connects to IPTV source instead of client
+  // Xtream channel proxy - server connects to IPTV source instead of client
 
   const xtreamPipeMatch = rawId.match(/^xtream_(\d+)$/);
 
@@ -1377,11 +1441,11 @@ app.get("/live-pipe/:channelId", requireAuth, requirePremium, async (req, res) =
 
  * POST /api/stream/vod/:id
 
- * Ø¨Ø¯Ø¡ Ø¨Ø« ÙÙŠÙ„Ù… Ø£Ùˆ Ø­Ù„Ù‚Ø©
+ * Ø ̈Ø ̄Ø¡ Ø ̈Ø« ÙÙŠÙ"Ù... Ø£Ùˆ Ø­Ù"Ù'Ø©
 
- * Ø§Ù„Ù…ØµØ¯Ø±: vidsrc (embed.su / vidlink.pro) Ø¹Ø¨Ø± TMDb ID
+ * Ø§Ù"Ù...ØμØ ̄Ø±: vidsrc (embed.su / vidlink.pro) Ø1Ø ̈Ø± TMDb ID
 
- * IPTV ÙÙ‚Ø· ÙƒØ§Ø­ØªÙŠØ§Ø·ÙŠ Ø¥Ø°Ø§ Ù„Ø§ ÙŠÙˆØ¬Ø¯ TMDb ID
+ * IPTV ÙÙ'Ø· ÙƒØ§Ø­ØaÙŠØ§Ø·ÙŠ Ø¥Ø°Ø§ Ù"Ø§ ÙŠÙˆØ¬Ø ̄ TMDb ID
 
  */
 
@@ -1411,7 +1475,7 @@ app.post(
         });
     }
 
-    // Ø¨Ø­Ø« Ø¨Ø§Ù„Ù€ id Ø£Ùˆ stream_token — Ø£ÙˆÙ„ÙˆÙŠØ©: episodes Ø«Ù… vod
+    // Ø ̈Ø­Ø« Ø ̈Ø§Ù"Ù€ id Ø£Ùˆ stream_token - Ø£ÙˆÙ"ÙˆÙŠØ©: episodes Ø«Ù... vod
 
     let item = null;
 
@@ -1419,7 +1483,7 @@ app.post(
 
     let parentVod = null;
 
-    // 1. Ø¨Ø­Ø« ÙÙŠ episodes Ø¨Ø§Ù„Ù€ id
+    // 1. Ø ̈Ø­Ø« ÙÙŠ episodes Ø ̈Ø§Ù"Ù€ id
 
     item = await db
       .prepare(
@@ -1431,7 +1495,7 @@ app.post(
       itemType = "episode";
     }
 
-    // 2. Ø¨Ø­Ø« ÙÙŠ vod Ø¨Ø§Ù„Ù€ id
+    // 2. Ø ̈Ø­Ø« ÙÙŠ vod Ø ̈Ø§Ù"Ù€ id
 
     if (!item) {
       item = await db
@@ -1443,7 +1507,7 @@ app.post(
       itemType = "vod";
     }
 
-    // 3. Ø¨Ø­Ø« Ø¨Ø§Ù„Ù€ stream_token
+    // 3. Ø ̈Ø­Ø« Ø ̈Ø§Ù"Ù€ stream_token
 
     if (!item) {
       item = await db
@@ -1468,9 +1532,9 @@ app.post(
     if (!item)
       return res
         .status(404)
-        .json({ error: "Ø§Ù„Ù…Ø­ØªÙˆÙ‰ ØºÙŠØ± Ù…ÙˆØ¬ÙˆØ¯" });
+        .json({ error: "Content not found" });
 
-    // Ø¥Ø°Ø§ ÙƒØ§Ù† Ù…Ø³Ù„Ø³Ù„ → Ø´ØºÙ'Ù„ Ø£ÙˆÙ„ Ø­Ù„Ù‚Ø© Ø¨Ø¯Ù„Ø§Ù‹ Ù…Ù† Ø§Ù„Ù…Ø³Ù„Ø³Ù„ Ù†ÙØ³Ù‡
+    // Ø¥Ø°Ø§ ÙƒØ§Ù† Ù...Ø3Ù"Ø3Ù" → Ø ́ØoÙ'Ù" Ø£ÙˆÙ" Ø­Ù"Ù'Ø© Ø ̈Ø ̄Ù"Ø§Ù‹ Ù...Ù† Ø§Ù"Ù...Ø3Ù"Ø3Ù" Ù†ÙØ3Ù‡
 
     if (itemType === "vod" && item.vod_type === "series") {
       parentVod = item;
@@ -1490,12 +1554,12 @@ app.post(
           .status(400)
           .json({
             error:
-              "Ù‡Ø°Ø§ Ø§Ù„Ù…Ø³Ù„Ø³Ù„ Ù„Ø§ ÙŠØ­ØªÙˆÙŠ Ø¹Ù„Ù‰ Ø­Ù„Ù‚Ø§Øª Ø¨Ø¹Ø¯",
+              "This series has no episodes yet",
           });
       }
     }
 
-    // ═══ Ø¬Ù„Ø¨ TMDb ID — Ù„Ù„Ø­Ù„Ù‚Ø§Øª Ù†Ø¬Ù„Ø¨Ù‡ Ù…Ù† Ø§Ù„Ù…Ø³Ù„Ø³Ù„ Ø§Ù„Ø£Ø¨ ═══
+    // ═══ Ø¬Ù"Ø ̈ TMDb ID - Ù"Ù"Ø­Ù"Ù'Ø§Øa Ù†Ø¬Ù"Ø ̈Ù‡ Ù...Ù† Ø§Ù"Ù...Ø3Ù"Ø3Ù" Ø§Ù"Ø£Ø ̈ ═══
 
     let tmdbId = item.tmdb || null;
 
@@ -1509,7 +1573,7 @@ app.post(
       if (parent) tmdbId = parent.tmdb;
     }
 
-    // â•â•â• Ø§Ù„Ù…ØµØ¯Ø± Ø§Ù„Ø£Ø³Ø§Ø³ÙŠ: Ø§Ø³ØªØ®Ø±Ø§Ø¬ Ù…Ø¨Ø§Ø´Ø± Ø¹Ø¨Ø± @movie-web/providers â•â•â•
+    // â•â•â• Ø§Ù"Ù...ØμØ ̄Ø± Ø§Ù"Ø£Ø3Ø§Ø3ÙŠ: Ø§Ø3ØaØ®Ø±Ø§Ø¬ Ù...Ø ̈Ø§Ø ́Ø± Ø1Ø ̈Ø± @movie-web/providers â•â•â•
 
     if (tmdbId) {
       try {
@@ -1520,7 +1584,7 @@ app.post(
         const episode = item.episode_num || undefined;
 
         console.log(
-          `[VOD] Extract: tmdb=${tmdbId} type=${type}${type === "tv" ? ` s${season}e${episode}` : ""} â€” ${item.title}`,
+          `[VOD] Extract: tmdb=${tmdbId} type=${type}${type === "tv" ? ` s${season}e${episode}` : ""} â€" ${item.title}`,
         );
 
         const extracted = await extractStream({
@@ -1535,7 +1599,7 @@ app.post(
 
         if (extracted && extracted.url) {
           console.log(
-            `[VOD] âœ“ Direct ${extracted.type}: ${extracted.sourceId} â€” ${extracted.url.substring(0, 80)}`,
+            `[VOD] âœ" Direct ${extracted.type}: ${extracted.sourceId} â€" ${extracted.url.substring(0, 80)}`,
           );
 
           const directResult = buildDirectResultFromExtracted(extracted);
@@ -1551,9 +1615,9 @@ app.post(
           );
         }
 
-        // Ø§Ø­ØªÙŠØ§Ø·: embed URLs
+        // Ø§Ø­ØaÙŠØ§Ø·: embed URLs
 
-        console.log(`[VOD] Direct extraction failed â€” trying embed resolver`);
+        console.log(`[VOD] Direct extraction failed â€" trying embed resolver`);
 
         const stream = await resolveStream(tmdbId, type, season, episode);
 
@@ -1577,13 +1641,13 @@ app.post(
           return;
         }
       } catch (e) {
-        console.error(`[VOD] Extract ÙØ´Ù„ â€” ${item.title}:`, e.message);
+        console.error(`[VOD] Extract ÙØ ́Ù" â€" ${item.title}:`, e.message);
 
-        // ØªØ§Ø¨Ø¹ Ù„Ù„Ø§Ø­ØªÙŠØ§Ø·ÙŠ IPTV
+        // ØaØ§Ø ̈Ø1 Ù"Ù"Ø§Ø­ØaÙŠØ§Ø·ÙŠ IPTV
       }
     }
 
-    // â•â•â• Ø§Ø­ØªÙŠØ§Ø·ÙŠ: IPTV (Ø¥Ø°Ø§ Ù„Ø§ ÙŠÙˆØ¬Ø¯ TMDb ID Ø£Ùˆ ÙØ´Ù„ vidsrc) â•â•â•
+    // â•â•â• Ø§Ø­ØaÙŠØ§Ø·ÙŠ: IPTV (Ø¥Ø°Ø§ Ù"Ø§ ÙŠÙˆØ¬Ø ̄ TMDb ID Ø£Ùˆ ÙØ ́Ù" vidsrc) â•â•â•
 
     let sourceUrl = item.stream_token;
 
@@ -1606,7 +1670,7 @@ app.post(
     if (!sourceUrl)
       return res
         .status(400)
-        .json({ error: "Ø§Ù„Ù…Ø­ØªÙˆÙ‰ Ø¨Ø¯ÙˆÙ† Ø±Ø§Ø¨Ø· Ø¨Ø«" });
+        .json({ error: "No stream link" });
 
     const ext = item.container_ext || "mp4";
 
@@ -1634,12 +1698,12 @@ app.post(
         streamId: item.id,
       });
     } catch (e) {
-      console.error(`[VOD] Ø®Ø·Ø£ ØªÙ‡ÙŠØ¦Ø© Ø§Ù„Ø¨Ø«:`, e.message);
+      console.error(`[VOD] Ø®Ø·Ø£ ØaÙ‡ÙŠØ¦Ø© Ø§Ù"Ø ̈Ø«:`, e.message);
 
-      return res.status(500).json({ error: "Ø®Ø·Ø£ ÙÙŠ ØªÙ‡ÙŠØ¦Ø© Ø§Ù„Ø¨Ø«" });
+      return res.status(500).json({ error: "Stream init error" });
     }
 
-    // Ø³Ø¬Ù‘Ù„ ÙÙŠ ØªØ§Ø±ÙŠØ® Ø§Ù„Ù…Ø´Ø§Ù‡Ø¯Ø©
+    // Ø3Ø¬Ù'Ù" ÙÙŠ ØaØ§Ø±ÙŠØ® Ø§Ù"Ù...Ø ́Ø§Ù‡Ø ̄Ø©
 
     recordWatchHistory(req.user.id, item.id, itemType);
   },
@@ -1649,16 +1713,12 @@ app.post(
 
  * POST /api/stream/release/:streamId
 
- * Ø¥Ù†Ù‡Ø§Ø¡ Ø§Ù„Ù…Ø´Ø§Ù‡Ø¯Ø©
+ * Ø¥Ù†Ù‡Ø§Ø¡ Ø§Ù"Ù...Ø ́Ø§Ù‡Ø ̄Ø©
 
  */
 
 app.post("/api/stream/release/:streamId", requireAuth, async (req, res) => {
   streamManager.releaseStream(req.params.streamId);
-
-  // Remove viewer from restreamer
-  const deviceId = req.body.deviceId || req.headers['x-device-id'] || '';
-  restreamer.removeViewer(req.params.streamId, req.user.id, deviceId);
 
   // Remove viewer from restreamer
   const deviceId = req.body.deviceId || req.headers['x-device-id'] || '';
@@ -1681,14 +1741,14 @@ app.post("/api/stream/release/:streamId", requireAuth, async (req, res) => {
 
  * GET /api/stream/ready/:streamId
 
- * ÙØ­Øµ Ø¬Ù‡ÙˆØ²ÙŠØ© Ø§Ù„Ø¨Ø« â€” HLS VOD Ø£Ùˆ Live
+ * ÙØ­Øμ Ø¬Ù‡ÙˆØ2ÙŠØ© Ø§Ù"Ø ̈Ø« â€" HLS VOD Ø£Ùˆ Live
 
  */
 
 app.get("/api/stream/ready/:streamId", requireAuth, (req, res) => {
   const streamId = req.params.streamId;
 
-  // ÙØ­Øµ VOD proxy Ø£ÙˆÙ„Ø§Ù‹
+  // ÙØ­Øμ VOD proxy Ø£ÙˆÙ"Ø§Ù‹
 
   const session = vodProxy.getSession(streamId);
 
@@ -1702,7 +1762,7 @@ app.get("/api/stream/ready/:streamId", requireAuth, (req, res) => {
     });
   }
 
-  // ÙØ­Øµ Live/HLS stream
+  // ÙØ­Øμ Live/HLS stream
 
   const info = streamManager.getStreamInfo(streamId);
 
@@ -1717,7 +1777,7 @@ app.get("/api/stream/ready/:streamId", requireAuth, (req, res) => {
 
  * GET /api/stream/info/:streamId
 
- * Ø¬Ù„Ø¨ Ù…Ø¹Ù„ÙˆÙ…Ø§Øª Ø§Ù„Ø¨Ø« + Ø§Ù„Ù…Ø¯Ø© â€” ÙŠÙØ³ØªØ¯Ø¹Ù‰ Ø¨Ø´ÙƒÙ„ Ø¯ÙˆØ±ÙŠ Ø­ØªÙ‰ ØªØªÙˆÙØ± Ø§Ù„Ù…Ø¯Ø©
+ * Ø¬Ù"Ø ̈ Ù...Ø1Ù"ÙˆÙ...Ø§Øa Ø§Ù"Ø ̈Ø« + Ø§Ù"Ù...Ø ̄Ø© â€" ÙŠÙØ3ØaØ ̄Ø1Ù‰ Ø ̈Ø ́ÙƒÙ" Ø ̄ÙˆØ±ÙŠ Ø­ØaÙ‰ ØaØaÙˆÙØ± Ø§Ù"Ù...Ø ̄Ø©
 
  */
 
@@ -1729,7 +1789,7 @@ app.get("/api/stream/info/:streamId", requireAuth, (req, res) => {
   const session = vodProxy.getSession(streamId);
 
   if (!info && !session)
-    return res.status(404).json({ error: "Ø§Ù„Ø¬Ù„Ø³Ø© ØºÙŠØ± Ù…ÙˆØ¬ÙˆØ¯Ø©" });
+    return res.status(404).json({ error: "Session not found" });
 
   res.json({
     name: info ? info.name : session ? session.name : "",
@@ -1748,15 +1808,15 @@ app.get("/api/stream/info/:streamId", requireAuth, (req, res) => {
 
  * POST /api/stream/seek/:streamId
 
- * Seeking ÙÙŠ VOD â€” Ø¥Ø¹Ø§Ø¯Ø© Ø¨Ø¯Ø¡ FFmpeg Ù…Ù† Ù…ÙˆØ¶Ø¹ Ø¬Ø¯ÙŠØ¯
+ * Seeking ÙÙŠ VOD â€" Ø¥Ø1Ø§Ø ̄Ø© Ø ̈Ø ̄Ø¡ FFmpeg Ù...Ù† Ù...ÙˆØ¶Ø1 Ø¬Ø ̄ÙŠØ ̄
 
  */
 
 app.post("/api/stream/seek/:streamId", requireAuth, async (req, res) => {
-  const { position } = req.body; // Ø¨Ø§Ù„Ø«ÙˆØ§Ù†ÙŠ
+  const { position } = req.body; // Ø ̈Ø§Ù"Ø«ÙˆØ§Ù†ÙŠ
 
   if (typeof position !== "number" || position < 0) {
-    return res.status(400).json({ error: "Ù…ÙˆØ¶Ø¹ ØºÙŠØ± ØµØ­ÙŠØ­" });
+    return res.status(400).json({ error: "Ù...ÙˆØ¶Ø1 ØoÙŠØ± ØμØ­ÙŠØ­" });
   }
 
   try {
@@ -1773,7 +1833,7 @@ app.post("/api/stream/seek/:streamId", requireAuth, async (req, res) => {
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-// Ù…Ø¹Ù„ÙˆÙ…Ø§Øª Ø§Ù„ÙˆØ³Ø§Ø¦Ø· â€” Ø§Ù„Ø¬ÙˆØ¯Ø© + Ø§Ù„ØªØ±Ø¬Ù…Ø© + Ø§Ù„ØµÙˆØª
+// Ù...Ø1Ù"ÙˆÙ...Ø§Øa Ø§Ù"ÙˆØ3Ø§Ø¦Ø· â€" Ø§Ù"Ø¬ÙˆØ ̄Ø© + Ø§Ù"ØaØ±Ø¬Ù...Ø© + Ø§Ù"ØμÙˆØa
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
@@ -1781,14 +1841,14 @@ app.get("/api/stream/media-info/:streamId", requireAuth, (req, res) => {
   const info = vodProxy.getMediaInfo(req.params.streamId);
 
   if (!info)
-    return res.status(404).json({ error: "Ø§Ù„Ø¬Ù„Ø³Ø© ØºÙŠØ± Ù…ÙˆØ¬ÙˆØ¯Ø©" });
+    return res.status(404).json({ error: "Session not found" });
 
   res.json(info);
 });
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-// Ø§Ø³ØªØ®Ø±Ø§Ø¬ ØªØ±Ø¬Ù…Ø© â€” WebVTT
+// Ø§Ø3ØaØ®Ø±Ø§Ø¬ ØaØ±Ø¬Ù...Ø© â€" WebVTT
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
@@ -1802,19 +1862,19 @@ app.get("/vod/subtitle/:id/:trackIndex", async (req, res) => {
     if (!vttPath)
       return res
         .status(404)
-        .json({ error: "Ø§Ù„ØªØ±Ø¬Ù…Ø© ØºÙŠØ± Ù…ØªÙˆÙØ±Ø©" });
+        .json({ error: "Subtitles unavailable" });
 
     res.set({ "Content-Type": "text/vtt", "Access-Control-Allow-Origin": "*" });
 
     fs.createReadStream(vttPath).pipe(res);
   } catch (e) {
-    res.status(500).json({ error: "Ø®Ø·Ø£ ÙÙŠ Ø§Ø³ØªØ®Ø±Ø§Ø¬ Ø§Ù„ØªØ±Ø¬Ù…Ø©" });
+    res.status(500).json({ error: "Subtitle extraction error" });
   }
 });
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-// IPTV VOD API — أفلام ومسلسلات من Xtream
+// IPTV VOD API - أفلام ومسلسلات من Xtream
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
@@ -1980,7 +2040,7 @@ app.get("/api/xtream/vod/search", async (req, res) => {
   }
 });
 
-// VOD Token Proxy — pipe the IPTV stream through cloud server so browsers don't face CORS/mixed-content
+// VOD Token Proxy - pipe the IPTV stream through cloud server so browsers don't face CORS/mixed-content
 
 // Uses keep-alive agents for connection reuse across 100+ concurrent VOD users
 
@@ -2443,15 +2503,15 @@ app.get("/api/lulu/detail", (req, res) => {
 
  * POST /api/stream/vidsrc
 
- * Ø¨Ø« Ø¨Ø§Ø³ØªØ®Ø¯Ø§Ù… TMDB ID â€” Ø¥Ø±Ø¬Ø§Ø¹ Ø±Ø§Ø¨Ø· Embed ÙÙˆØ±ÙŠ Ù„Ù„Ø¹Ø±Ø¶ ÙÙŠ WebView
+ * Ø ̈Ø« Ø ̈Ø§Ø3ØaØ®Ø ̄Ø§Ù... TMDB ID â€" Ø¥Ø±Ø¬Ø§Ø1 Ø±Ø§Ø ̈Ø· Embed ÙÙˆØ±ÙŠ Ù"Ù"Ø1Ø±Ø¶ ÙÙŠ WebView
 
  * body: { tmdbId, type: 'movie'|'tv', season?, episode? }
 
  *
 
- * Ù…Ù„Ø§Ø­Ø¸Ø©: ØªÙ… Ø¥Ù„ØºØ§Ø¡ Ù…Ø­Ø§ÙˆÙ„Ø§Øª Ø§Ù„Ø§Ø³ØªØ®Ø±Ø§Ø¬ (Puppeteer/Scraper) Ù„Ø£Ù†Ù‡Ø§ Ø¨Ø·ÙŠØ¦Ø© ÙˆØªÙØ´Ù„ ØºØ§Ù„Ø¨Ø§Ù‹
+ * Ù...Ù"Ø§Ø­Ø ̧Ø©: ØaÙ... Ø¥Ù"ØoØ§Ø¡ Ù...Ø­Ø§ÙˆÙ"Ø§Øa Ø§Ù"Ø§Ø3ØaØ®Ø±Ø§Ø¬ (Puppeteer/Scraper) Ù"Ø£Ù†Ù‡Ø§ Ø ̈Ø·ÙŠØ¦Ø© ÙˆØaÙØ ́Ù" ØoØ§Ù"Ø ̈Ø§Ù‹
 
- * WebView ÙÙŠ Ø§Ù„ØªØ·Ø¨ÙŠÙ‚ ÙŠØªØ¹Ø§Ù…Ù„ Ù…Ø¹ Ø§Ù„Ø¥Ø¹Ù„Ø§Ù†Ø§Øª ÙˆØ§Ù„ØªØ´ØºÙŠÙ„ Ù…Ø¨Ø§Ø´Ø±Ø©
+ * WebView ÙÙŠ Ø§Ù"ØaØ·Ø ̈ÙŠÙ' ÙŠØaØ1Ø§Ù...Ù" Ù...Ø1 Ø§Ù"Ø¥Ø1Ù"Ø§Ù†Ø§Øa ÙˆØ§Ù"ØaØ ́ØoÙŠÙ" Ù...Ø ̈Ø§Ø ́Ø±Ø©
 
  */
 
@@ -2466,7 +2526,7 @@ app.post(
 
     const episode = type === "tv" ? parseInt(req.body.episode) || 1 : undefined;
 
-    // ملاحظة: لا يوجد فحص لحد الاتصالات هنا — VidSrc embed يذهب للمصادر الخارجية مباشرةً
+    // ملاحظة: لا يوجد فحص لحد الاتصالات هنا - VidSrc embed يذهب للمصادر الخارجية مباشرةً
 
     // ولا يستهلك موارد السيرفر (عكس البث المباشر IPTV)
 
@@ -2490,7 +2550,7 @@ app.post(
         } catch (_) {}
       };
 
-      // ═══ 0. Arabic subtitles — fetch in parallel (Subdl + OpenSubtitles) ═══
+      // ═══ 0. Arabic subtitles - fetch in parallel (Subdl + OpenSubtitles) ═══
 
       const arabicSubsPromise = fetchArabicSubtitles({
         tmdbId,
@@ -2500,7 +2560,7 @@ app.post(
         episode,
       }).catch(() => []);
 
-      // ═══ 1. Consumet — HLS مباشر (بدون إعلانات) ═══
+      // ═══ 1. Consumet - HLS مباشر (بدون إعلانات) ═══
 
       try {
         let englishTitle = req.body.title || "";
@@ -2566,7 +2626,7 @@ app.post(
         console.log(`[Stream] Consumet failed: ${ce.message}`);
       }
 
-      // ═══ 2. Vidlink.pro — HLS مباشر (بدون iframe = بدون إعلانات) ═══
+      // ═══ 2. Vidlink.pro - HLS مباشر (بدون iframe = بدون إعلانات) ═══
 
       try {
         console.log(`[Stream] → Vidlink HLS: ${label}`);
@@ -2616,7 +2676,7 @@ app.post(
       if (stream && stream.embedUrl) {
         const proxiedUrl = `/api/embed-proxy?url=${encodeURIComponent(stream.embedUrl)}`;
         console.log(
-          `[Stream] ✓ Embed proxy: ${stream.provider} — ${stream.embedUrl}`,
+          `[Stream] ✓ Embed proxy: ${stream.provider} - ${stream.embedUrl}`,
         );
 
         await recordHistory();
@@ -2652,7 +2712,7 @@ app.post(
   },
 );
 
-// ═══ Embed HTML Proxy — يدعم vidsrc.icu + يحجب الإعلانات والروابط العشوائية ═══
+// ═══ Embed HTML Proxy - يدعم vidsrc.icu + يحجب الإعلانات والروابط العشوائية ═══
 
 const ALLOWED_EMBED_HOSTS = [
   "vidsrcme.vidsrc.icu",
@@ -2761,7 +2821,7 @@ app.get("/api/embed-proxy", async (req, res) => {
     return el;
   };
 
-  // ═══ 6. حجب شعار المصدر في المشغل — منع النقر بالكامل ═══
+  // ═══ 6. حجب شعار المصدر في المشغل - منع النقر بالكامل ═══
   var logoSelectors=[
     '.jw-icon-logo','.jw-logo','.jw-logo-button','[class*="logo"]','[class*="Logo"]',
     '[class*="brand"]','[class*="Brand"]','[class*="watermark"]','[class*="Watermark"]',
@@ -2781,7 +2841,7 @@ app.get("/api/embed-proxy", async (req, res) => {
           if(el.matches&&el.matches(logoSelectors)){
             e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();return false;
           }
-          // إذا كان الشعار داخل رابط — احجب الرابط أيضاً
+          // إذا كان الشعار داخل رابط - احجب الرابط أيضاً
           if(el.tagName==='A'&&el.querySelector&&el.querySelector(logoSelectors)){
             e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();return false;
           }
@@ -2791,7 +2851,7 @@ app.get("/api/embed-proxy", async (req, res) => {
     },true);
   });
 
-  // ═══ 7. MutationObserver — إزالة إعلانات + تعطيل شعارات ═══
+  // ═══ 7. MutationObserver - إزالة إعلانات + تعطيل شعارات ═══
   var adSelectors='[id*="ad-"],[id*="ads-"],[id*="banner"],[class*="ad-overlay"],[class*="popup-ad"],[class*="overlay-ad"],[class*="ad-banner"],[class*="advertisement"]';
   function cleanPage(){
     try{
@@ -2806,7 +2866,7 @@ app.get("/api/embed-proxy", async (req, res) => {
           f.remove();
         }
       });
-      // تعطيل الشعارات — إزالة href + pointer-events
+      // تعطيل الشعارات - إزالة href + pointer-events
       document.querySelectorAll(logoSelectors).forEach(function(el){
         el.style.pointerEvents='none';
         el.style.cursor='default';
@@ -2874,37 +2934,15 @@ a.jw-logo,a[class*="logo"],a[class*="brand"],a[class*="watermark"] {
   }
 });
 
-// ═══ HLS Proxy session from WebView-extracted URL ═══
+// ═══ proxy-hls — تم الحذف — لا يوجد WebView embed بعد الآن ═══
 
-app.post("/api/stream/proxy-hls", requireAuth, requirePremium, (req, res) => {
-  const { url, referer, streamId } = req.body;
-
-  if (!url) return res.status(400).json({ error: "url Ù…Ø·Ù„ÙˆØ¨" });
-
-  try {
-    const sessionId = hlsProxy.createSession(url, referer || "", []);
-
-    const proxiedUrl = `/free-hls/${sessionId}/master.m3u8`;
-
-    console.log(
-      `[HlsProxy] Client-extracted session: ${sessionId} â€” ${url.substring(0, 80)}`,
-    );
-
-    res.json({ success: true, hlsUrl: proxiedUrl, sessionId });
-  } catch (e) {
-    console.error(`[HlsProxy] proxy-hls error:`, e.message);
-
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-// â•â•â• Ø¬Ù„Ø¨ ØªØ±Ø¬Ù…Ø§Øª Ø¹Ø±Ø¨ÙŠØ© â•â•â•
+// â•â•â• Ø¬Ù"Ø ̈ ØaØ±Ø¬Ù...Ø§Øa Ø1Ø±Ø ̈ÙŠØ© â•â•â•
 
 app.get("/api/subtitles", async (req, res) => {
   const { tmdbId, imdbId, type = "movie", season, episode } = req.query;
 
   if (!tmdbId && !imdbId)
-    return res.status(400).json({ error: "tmdbId Ø£Ùˆ imdbId Ù…Ø·Ù„ÙˆØ¨" });
+    return res.status(400).json({ error: "tmdbId or imdbId required" });
 
   try {
     const subs = await fetchArabicSubtitles({
@@ -2927,7 +2965,7 @@ app.get("/api/subtitles", async (req, res) => {
   }
 });
 
-// â•â•â• Ø¨Ø±ÙˆÙƒØ³ÙŠ ØªØ±Ø¬Ù…Ø§Øª (Ù„ØªØ¬Ø§ÙˆØ² CORS) â•â•â•
+// â•â•â• Ø ̈Ø±ÙˆÙƒØ3ÙŠ ØaØ±Ø¬Ù...Ø§Øa (Ù"ØaØ¬Ø§ÙˆØ2 CORS) â•â•â•
 
 app.get("/api/subtitle-proxy", async (req, res) => {
   const url = req.query.url;
@@ -2960,8 +2998,8 @@ app.get("/api/subtitle-proxy", async (req, res) => {
 
 function langLabel(code) {
   const map = {
-    ar: "Ø§Ù„Ø¹Ø±Ø¨ÙŠØ©",
-    ara: "Ø§Ù„Ø¹Ø±Ø¨ÙŠØ©",
+    ar: "Arabic",
+    ara: "Arabic",
     en: "English",
     eng: "English",
 
@@ -2975,28 +3013,28 @@ function langLabel(code) {
     it: "Italiano",
     ita: "Italiano",
 
-    pt: "PortuguÃªs",
-    por: "PortuguÃªs",
-    tr: "TÃ¼rkÃ§e",
-    tur: "TÃ¼rkÃ§e",
+    pt: "PortuguÃas",
+    por: "PortuguÃas",
+    tr: "TÃ1⁄4rkÃ§e",
+    tur: "TÃ1⁄4rkÃ§e",
 
-    ru: "Ð ÑƒÑÑÐºÐ¸Ð¹",
-    rus: "Ð ÑƒÑÑÐºÐ¸Ð¹",
-    ja: "æ—¥æœ¬èªž",
-    jpn: "æ—¥æœ¬èªž",
+    ru: "Ð ÑƒÑÑÐoÐ ̧Ð1",
+    rus: "Ð ÑƒÑÑÐoÐ ̧Ð1",
+    ja: "æ-¥æœ¬èaž",
+    jpn: "æ-¥æœ¬èaž",
 
-    ko: "í•œêµ­ì–´",
-    kor: "í•œêµ­ì–´",
-    zh: "ä¸­æ–‡",
-    zho: "ä¸­æ–‡",
-    chi: "ä¸­æ–‡",
+    ko: "í•œêμ­ì- ́",
+    kor: "í•œêμ­ì- ́",
+    zh: "ä ̧­æ-‡",
+    zho: "ä ̧­æ-‡",
+    chi: "ä ̧­æ-‡",
 
-    hi: "à¤¹à¤¿à¤¨à¥à¤¦à¥€",
-    hin: "à¤¹à¤¿à¤¨à¥à¤¦à¥€",
-    und: "ØºÙŠØ± Ù…Ø­Ø¯Ø¯",
+    hi: "à¤1à¤¿à¤ ̈à¥à¤¦à¥€",
+    hin: "à¤1à¤¿à¤ ̈à¥à¤¦à¥€",
+    und: "ØoÙŠØ± Ù...Ø­Ø ̄Ø ̄",
   };
 
-  return map[code] || code || "ØºÙŠØ± Ù…Ø­Ø¯Ø¯";
+  return map[code] || code || "ØoÙŠØ± Ù...Ø­Ø ̄Ø ̄";
 }
 
 function normalizeDirectSubtitles(subtitles = []) {
@@ -3209,47 +3247,15 @@ async function buildDirectStreamResponse({
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-// HLS Proxy Routes â€” Ø¨Ø« m3u8 + segments (vidsrc) Ø¨Ø¯ÙˆÙ† Ø¥Ø¹Ù„Ø§Ù†Ø§Øª
+// HLS Proxy Routes â€" Ø ̈Ø« m3u8 + segments (vidsrc) Ø ̈Ø ̄ÙˆÙ† Ø¥Ø1Ù"Ø§Ù†Ø§Øa
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-app.get("/free-hls/:sessionId/master.m3u8", (req, res) => {
-  hlsProxy.proxyPlaylist(req.params.sessionId, "master.m3u8", req, res);
-});
-
-app.get("/free-hls/:sessionId/playlist/:encodedUrl", (req, res) => {
-  const targetUrl = req.params.encodedUrl;
-
-  const session = hlsProxy.getSession(req.params.sessionId);
-
-  if (!session)
-    return res.status(404).json({ error: "Ø¬Ù„Ø³Ø© ØºÙŠØ± Ù…ÙˆØ¬ÙˆØ¯Ø©" });
-
-  // Ø­Ø¯Ù‘Ø« baseUrl Ù„Ù„Ù€ playlist Ø§Ù„ÙØ±Ø¹ÙŠ
-
-  session.baseUrl = hlsProxy._getBaseUrl(targetUrl);
-
-  hlsProxy.proxyPlaylist(req.params.sessionId, targetUrl, req, res);
-});
-
-app.get("/free-hls/:sessionId/seg/:encodedUrl", (req, res) => {
-  const targetUrl = req.params.encodedUrl;
-
-  hlsProxy.proxySegment(req.params.sessionId, targetUrl, req, res);
-});
-
-app.get("/free-hls/:sessionId/sub/:index", (req, res) => {
-  hlsProxy.proxySubtitle(
-    req.params.sessionId,
-    parseInt(req.params.index),
-    req,
-    res,
-  );
-});
+// free-hls endpoints - تم الحذف - كل المحتوى بريميوم فقط
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-// VOD Proxy â€” Ø¨Ø« ØªØ¯Ø±ÙŠØ¬ÙŠ Ù…Ø«Ù„ YouTube (seeking ÙÙˆØ±ÙŠ ÙÙŠ Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª Ø§Ù„Ù…Ø­Ù…Ù„Ø©)
+// VOD Proxy â€" Ø ̈Ø« ØaØ ̄Ø±ÙŠØ¬ÙŠ Ù...Ø«Ù" YouTube (seeking ÙÙˆØ±ÙŠ ÙÙŠ Ø§Ù"Ø ̈ÙŠØ§Ù†Ø§Øa Ø§Ù"Ù...Ø­Ù...Ù"Ø©)
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
@@ -3269,7 +3275,7 @@ app.get("/vod/proxy/:filename", async (req, res) => {
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-// HLS Files â€” ØªÙ‚Ø¯ÙŠÙ… Ù…Ù„ÙØ§Øª Ø§Ù„Ø¨Ø« Ø§Ù„Ù…Ø¨Ø§Ø´Ø±
+// HLS Files â€" ØaÙ'Ø ̄ÙŠÙ... Ù...Ù"ÙØ§Øa Ø§Ù"Ø ̈Ø« Ø§Ù"Ù...Ø ̈Ø§Ø ́Ø±
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
@@ -3374,7 +3380,7 @@ app.get("/hls/vod/:streamId/:file", async (req, res) => {
 
 function serveHlsFile(filePath, fileName, res) {
   if (!fs.existsSync(filePath)) {
-    return res.status(404).json({ error: "Ø§Ù„Ù…Ù„Ù ØºÙŠØ± Ù…ÙˆØ¬ÙˆØ¯" });
+    return res.status(404).json({ error: "File not found" });
   }
 
   let contentType = "application/octet-stream";
@@ -3406,11 +3412,11 @@ function serveHlsFile(filePath, fileName, res) {
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-// xtream_channels table is created in db.init() — no sync db.exec() needed
+// xtream_channels table is created in db.init() - no sync db.exec() needed
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-// Xtream Codes â€” Channel API
+// Xtream Codes â€" Channel API
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
@@ -3531,7 +3537,7 @@ app.get(
 
       const { channel: ch, account } = info;
 
-      // ═══ Connection limit check — once per stream request, not per HLS segment ═══
+      // ═══ Connection limit check - once per stream request, not per HLS segment ═══
       const deviceId = req.query.did || req.headers['x-device-id'] || '';
       const connCheck = await checkConnectionLimit(
         req.user.id,
@@ -3594,20 +3600,28 @@ app.get(
 
  * GET /api/xtream/refresh
 
- * Re-sync channels from Xtream provider (admin only)
+ *
+/**
+ * GET /api/xtream/free-stream/:channelId
+ * تم الحذف - كل المحتوى بريميوم فقط
+ * استخدم /api/xtream/stream/:channelId بدلاً من ذلك
+ */
 
+/**
+ * GET /api/xtream/refresh
+ * Re-sync channels from Xtream provider (admin only)
  */
 
 app.get("/api/xtream/refresh", requireAuth, async (req, res) => {
   const user = req.user;
 
   if (!user || (user.role !== "admin" && !req.user.is_admin)) {
-    return res.status(403).json({ error: "ØºÙŠØ± Ù…ØµØ±Ø­" });
+    return res.status(403).json({ error: "ØoÙŠØ± Ù...ØμØ±Ø­" });
   }
 
   res.json({
     success: true,
-    message: "Ø¬Ø§Ø±Ù Ù…Ø²Ø§Ù…Ù†Ø© Ø§Ù„Ù‚Ù†ÙˆØ§Øª...",
+    message: "Syncing channels...",
   });
 
   syncXtreamChannels(db).catch((e) =>
@@ -3627,7 +3641,7 @@ app.get("/api/xtream/viewers", requireAuth, (req, res) => {
   const user = req.user;
 
   if (!user || (user.role !== "admin" && !req.user.is_admin)) {
-    return res.status(403).json({ error: "ØºÙŠØ± Ù…ØµØ±Ø­" });
+    return res.status(403).json({ error: "ØoÙŠØ± Ù...ØμØ±Ø­" });
   }
 
   const viewers = xtreamProxy.getAllViewers();
@@ -3639,7 +3653,7 @@ app.get("/api/xtream/viewers", requireAuth, (req, res) => {
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-// HLS Reverse Proxy â€” Xtream streams
+// HLS Reverse Proxy â€" Xtream streams
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
@@ -3647,7 +3661,7 @@ app.get("/api/xtream/viewers", requireAuth, (req, res) => {
 
  * GET /proxy/live/:streamId/index.m3u8
 
- * Proxy HLS manifest â€” rewrites segment URLs through our server
+ * Proxy HLS manifest â€" rewrites segment URLs through our server
 
  * Viewer session tracked by ?sid param
 
@@ -3768,7 +3782,7 @@ app.get("/proxy/live/:streamId/index.m3u8", async (req, res) => {
 
  * GET /proxy/live/:streamId/seg/:encodedPath
 
- * Proxy TS segment â€” cached, shared across viewers
+ * Proxy TS segment â€" cached, shared across viewers
 
  */
 
@@ -3819,7 +3833,7 @@ app.get("/proxy/live/:streamId/seg/:encodedPath(*)", async (req, res) => {
       });
       return res.end(cached.buf);
     }
-    // Not cached yet — try to fetch and cache
+    // Not cached yet - try to fetch and cache
     try {
       const result = await xtreamProxy.fetchAndCacheSegment(streamId, baseUrl);
       if (result && result.buf) {
@@ -3955,6 +3969,7 @@ app.get("/api/admin/cloud-status", requireAuth, async (req, res) => {
     liveViewers: xtreamProxy.getTotalViewers() + restreamer.getTotalViewers(),
     memory: Math.round(mem.rss / 1024 / 1024) + "MB",
     url: config.PUBLIC_URL || `http://62.171.153.204:${config.PORT}`,
+    iptvSemaphore: getIptvSemStatus(),
   });
 });
 
@@ -3965,7 +3980,7 @@ app.get("/api/admin/logs", requireAuth, async (req, res) => {
     const rows = await db.prepare("SELECT * FROM admin_logs ORDER BY created_at DESC LIMIT ?").all(limit);
     res.json({ logs: rows || [] });
   } catch {
-    // Table may not exist yet — return PM2-style recent logs
+    // Table may not exist yet - return PM2-style recent logs
     res.json({ logs: [] });
   }
 });
@@ -3987,6 +4002,7 @@ app.get("/api/admin/cloud-status", requireAuth, async (req, res) => {
     liveViewers: xtreamProxy.getTotalViewers() + restreamer.getTotalViewers(),
     memory: Math.round(mem.rss / 1024 / 1024) + "MB",
     url: config.PUBLIC_URL || `http://62.171.153.204:${config.PORT}`,
+    iptvSemaphore: getIptvSemStatus(),
   });
 });
 
@@ -3997,7 +4013,7 @@ app.get("/api/admin/logs", requireAuth, async (req, res) => {
     const rows = await db.prepare("SELECT * FROM admin_logs ORDER BY created_at DESC LIMIT ?").all(limit);
     res.json({ logs: rows || [] });
   } catch {
-    // Table may not exist yet — return PM2-style recent logs
+    // Table may not exist yet - return PM2-style recent logs
     res.json({ logs: [] });
   }
 });
@@ -4604,7 +4620,7 @@ app.post("/api/admin/lulu-upload-config", requireAuth, async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Lulu Uploader Dashboard — إدارة رفع المحتوى إلى LuluStream
+// Lulu Uploader Dashboard - إدارة رفع المحتوى إلى LuluStream
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Serve the dashboard HTML page
@@ -4662,7 +4678,7 @@ app.get('/api/lulu-upload/iptv/categories', requireAuth, async (req, res) => {
     } else {
       // Use first active IPTV account from DB
       const row = await db.prepare("SELECT * FROM iptv_accounts WHERE status = 'active' ORDER BY id ASC LIMIT 1").get();
-      if (!row) return res.status(400).json({ error: 'لا يوجد حساب IPTV نشط — أضف حساباً من تبويب IPTV' });
+      if (!row) return res.status(400).json({ error: 'لا يوجد حساب IPTV نشط - أضف حساباً من تبويب IPTV' });
       const url = new URL(row.server_url);
       account = { host: url.hostname, port: url.port || 8080, username: row.username, password: row.password };
     }
@@ -4792,8 +4808,17 @@ app.post('/api/lulu-upload/jobs', requireAuth, async (req, res) => {
     catName: item.catName || cat_name || 'محتوى',
   }));
 
-  const vpsUrl      = process.env.VPS_URL || config.PUBLIC_URL || `http://localhost:${config.PORT}`;
-  const proxySecret = 'lulu_iptv_proxy_2026';
+  // منع تكرار: إذا يوجد job بنفس الـ cat_name قيد التشغيل أو الانتظار → ارفض
+  const existingJob = await db.prepare(
+    "SELECT id FROM lulu_upload_jobs WHERE cat_name = ? AND status IN ('running', 'queued') LIMIT 1"
+  ).get(cat_name || null);
+  if (existingJob) {
+    return res.status(409).json({ error: `يوجد job نشط بالفعل لـ "${cat_name}" (id: ${existingJob.id})` });
+  }
+
+  // إرسال رابط IPTV المباشر لـ LuluStream بدون proxy (LuluStream تتصل بـ IPTV مباشرة)
+  const vpsUrl      = null;
+  const proxySecret = null;
 
   const job = luluUploader.createJob({
     items       : enrichedItems,
@@ -4909,7 +4934,7 @@ app.post('/api/lulu-upload/sync', requireAuth, async (req, res) => {
   if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
   try {
     const accounts = await db.prepare('SELECT id, api_key, main_folder_id FROM lulu_upload_accounts').all();
-    if (!accounts.length) return res.status(400).json({ error: 'لا يوجد حساب Lulu — أضف حساباً أولاً' });
+    if (!accounts.length) return res.status(400).json({ error: 'لا يوجد حساب Lulu - أضف حساباً أولاً' });
 
     let totalSynced = 0, totalSkipped = 0, totalErrors = 0;
 
@@ -4954,7 +4979,7 @@ app.post('/api/lulu-upload/sync', requireAuth, async (req, res) => {
             const episode = seMatch ? parseInt(seMatch[2]) : 1;
 
             // Find or create parent catalog
-            const showName = title.replace(/\s*[-–]\s*S\d+E\d+.*/i, '').replace(/\s*S\d+E\d+.*/i, '').trim();
+            const showName = title.replace(/\s*[--]\s*S\d+E\d+.*/i, '').replace(/\s*S\d+E\d+.*/i, '').trim();
             let catalogId = null;
             if (showName) {
               const existingCat = await db.prepare("SELECT id FROM lulu_catalog WHERE title ILIKE ? AND vod_type = 'series'").get(showName);
@@ -4981,7 +5006,7 @@ app.post('/api/lulu-upload/sync', requireAuth, async (req, res) => {
               } catch {}
             }
           } else {
-            // Movie — check if already exists in lulu_catalog
+            // Movie - check if already exists in lulu_catalog
             const existing = await db.prepare('SELECT id FROM lulu_catalog WHERE file_code = ?').get(fileCode);
             if (existing) { totalSkipped++; continue; }
 
@@ -5056,7 +5081,7 @@ app.post('/api/lulu-upload/sync', requireAuth, async (req, res) => {
   if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
   try {
     const accounts = await db.prepare('SELECT id, api_key, main_folder_id FROM lulu_upload_accounts').all();
-    if (!accounts.length) return res.status(400).json({ error: 'لا يوجد حساب Lulu — أضف حساباً أولاً' });
+    if (!accounts.length) return res.status(400).json({ error: 'لا يوجد حساب Lulu - أضف حساباً أولاً' });
 
     let totalSynced = 0, totalSkipped = 0, totalErrors = 0;
 
@@ -5120,7 +5145,7 @@ app.post('/api/lulu-upload/sync', requireAuth, async (req, res) => {
             const episode = seMatch ? parseInt(seMatch[2]) : 1;
 
             // Find or create parent catalog
-            const showName = title.replace(/\s*[-–]\s*S\d+E\d+.*/i, '').replace(/\s*S\d+E\d+.*/i, '').trim();
+            const showName = title.replace(/\s*[--]\s*S\d+E\d+.*/i, '').replace(/\s*S\d+E\d+.*/i, '').trim();
             let catalogId = null;
             if (showName) {
               const existingCat = await db.prepare("SELECT id FROM lulu_catalog WHERE title ILIKE ? AND vod_type = 'series'").get(showName);
@@ -5147,7 +5172,7 @@ app.post('/api/lulu-upload/sync', requireAuth, async (req, res) => {
               } catch {}
             }
           } else {
-            // Movie — check if already exists in lulu_catalog
+            // Movie - check if already exists in lulu_catalog
             const existing = await db.prepare('SELECT id FROM lulu_catalog WHERE file_code = ?').get(fileCode);
             if (existing) { totalSkipped++; continue; }
 
@@ -5233,12 +5258,12 @@ app.use((req, res) => {
 app.use((err, req, res, next) => {
   console.error("Server error:", err);
 
-  res.status(500).json({ error: "Ø®Ø·Ø£ Ø¯Ø§Ø®Ù„ÙŠ" });
+  res.status(500).json({ error: "Internal error" });
 });
 
-// â”€â”€â”€ Ø¨Ø¯Ø¡ Ø§Ù„Ø³ÙŠØ±ÙØ± + ØªØ­Ø¯ÙŠØ« ØªÙ„Ù‚Ø§Ø¦ÙŠ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Ø ̈Ø ̄Ø¡ Ø§Ù"Ø3ÙŠØ±ÙØ± + ØaØ­Ø ̄ÙŠØ« ØaÙ"Ù'Ø§Ø¦ÙŠ â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
-// ═══ Graceful error handling — prevent crashes under high concurrency ═══
+// ═══ Graceful error handling - prevent crashes under high concurrency ═══
 
 process.on("uncaughtException", (err) => {
   console.error(
@@ -5269,24 +5294,24 @@ db.init()
       server.timeout = 0; // No timeout for streaming connections
 
       console.log(
-        `\n  â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—`,
+        `\n  â•"â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•-`,
       );
 
-      console.log(`  â•‘   IPTV Cloud Streaming Server v3.0               â•‘`);
+      console.log(`  â•'   IPTV Cloud Streaming Server v3.0               â•'`);
 
       console.log(
-        `  â•‘   Ø¨Ø« Ù…Ø¨Ø§Ø´Ø± + ØªØ­Ù‚Ù‚ JWT + ØªØ­Ø¯ÙŠØ« ØªÙ„Ù‚Ø§Ø¦ÙŠ             â•‘`,
-      );
-
-      console.log(
-        `  â• â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•£`,
+        `  â•'   Ø ̈Ø« Ù...Ø ̈Ø§Ø ́Ø± + ØaØ­Ù'Ù' JWT + ØaØ­Ø ̄ÙŠØ« ØaÙ"Ù'Ø§Ø¦ÙŠ             â•'`,
       );
 
       console.log(
-        `  â•‘   http://localhost:${config.PORT}                         â•‘`,
+        `  â• â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•£`,
       );
 
-      console.log(`  â•‘   DB: PostgreSQL (shared)                       â•‘`);
+      console.log(
+        `  â•'   http://localhost:${config.PORT}                         â•'`,
+      );
+
+      console.log(`  â•'   DB: PostgreSQL (shared)                       â•'`);
 
       console.log(
         `  â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•\n`,
@@ -5319,43 +5344,10 @@ db.init()
         console.error("[Init] Xtream init error:", e.message);
       }
 
-      // ─── Preload xtream channels into FFmpegRestreamer ───
-      // Channels stay running permanently — instant playback for first viewer
-      try {
-        const channels = await db.prepare("SELECT stream_id, name, base_url, account_id FROM xtream_channels WHERE stream_id IS NOT NULL").all();
-        if (channels.length > 0) {
-          console.log(`[Restreamer] ⚡ تحميل مسبق لـ ${channels.length} قناة...`);
-          for (const ch of channels) {
-            const info = await getChannelAccount(db, ch.id || ch.stream_id);
-            const serverUrl = info?.account ? info.account.server_url : (ch.base_url || XTREAM.primary);
-            const username = info?.account ? info.account.username : XTREAM.user;
-            const password = info?.account ? info.account.password : XTREAM.pass;
-            const sourceUrl = `${serverUrl}/live/${username}/${password}/${ch.stream_id}.ts`;
-            restreamer.preloadStream(String(ch.stream_id), sourceUrl, ch.name).catch(() => {});
-          }
-        }
-      } catch (e) {
-        console.error("[Restreamer] Preload error:", e.message);
-      }
-
-      // ─── Preload xtream channels into FFmpegRestreamer ───
-      // Channels stay running permanently — instant playback for first viewer
-      try {
-        const channels = await db.prepare("SELECT stream_id, name, base_url, account_id FROM xtream_channels WHERE stream_id IS NOT NULL").all();
-        if (channels.length > 0) {
-          console.log(`[Restreamer] ⚡ تحميل مسبق لـ ${channels.length} قناة...`);
-          for (const ch of channels) {
-            const info = await getChannelAccount(db, ch.id || ch.stream_id);
-            const serverUrl = info?.account ? info.account.server_url : (ch.base_url || XTREAM.primary);
-            const username = info?.account ? info.account.username : XTREAM.user;
-            const password = info?.account ? info.account.password : XTREAM.pass;
-            const sourceUrl = `${serverUrl}/live/${username}/${password}/${ch.stream_id}.ts`;
-            restreamer.preloadStream(String(ch.stream_id), sourceUrl, ch.name).catch(() => {});
-          }
-        }
-      } catch (e) {
-        console.error("[Restreamer] Preload error:", e.message);
-      }
+      // ─── Preload disabled: لا نشغل القنوات مسبقاً لأن حساب IPTV يسمح باتصال واحد فقط
+      // القنوات تبدأ عند الطلب (on-demand) عبر startStream عند طلب المشاهد
+      // هذا يمنع تعارض الاتصالات مع تحميل VOD (456 Too Many Connections)
+      console.log('[Restreamer] التحميل المسبق معطّل — القنوات تبدأ عند الطلب فقط');
 
       // Sync channels from backend PostgreSQL on startup
       syncChannelsFromBackend(true).catch((e) =>
@@ -5392,12 +5384,12 @@ db.init()
         console.error("[VOD] Pre-warm error:", e.message);
       }
       } else {
-        console.log("[VOD] Skipping pre-warm — no IPTV account configured yet");
+        console.log("[VOD] Skipping pre-warm - no IPTV account configured yet");
       }
     });
 
     const shutdown = async () => {
-      console.log("\n[Server] Ø¥ÙŠÙ‚Ø§Ù...");
+      console.log("\n[Server] Ø¥ÙŠÙ'Ø§Ù...");
 
       streamManager.stop();
 

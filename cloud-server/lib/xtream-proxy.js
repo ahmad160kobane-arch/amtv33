@@ -14,12 +14,13 @@
  */
 
 const { XTREAM } = require('./xtream');
+const { streamingSem } = require('./iptv-connection-manager');
 
 // ─── Constants ──────────────────────────────────────────────
 const UA               = 'VLC/3.0.20 LibVLC/3.0.20';
 const MANIFEST_TIMEOUT = 8000;   // 8s
-const SEGMENT_TIMEOUT  = 15000;  // 15s
-const MANIFEST_TTL     = 6000;   // 6s
+const SEGMENT_TIMEOUT  = 60000;  // 60s — large segments (20MB+) need more time
+const MANIFEST_TTL     = 8000;   // 8s — refresh often to get fresh CDN URLs and trigger prefetch
 const MANIFEST_STALE   = 120000; // 120s
 const COOLDOWN_403     = 10000;  // reduced to 10s so we retry sooner
 const COOLDOWN_ERR     = 4000;   // 4s cooldown for general errors
@@ -70,6 +71,15 @@ class XtreamProxy {
     this._segments = new Map();
     // Segment in-flight: url → Promise (coalescing)
     this._pendingSegments = new Map();
+    // Channel segment cache: streamId → { buf, contentType, ts, segUrl }
+    // Key optimization: cache by channel, not CDN URL — IPTV gives different CDN URLs
+    // for the same content on each manifest refresh. This avoids re-downloading.
+    this._channelSegments = new Map();
+    // Channel segment in-flight: streamId → Promise
+    this._pendingChannelSegments = new Map();
+    // Media sequence counter per channel — incremented on each manifest rewrite
+    // so HLS.js sees new segments and keeps playing live content
+    this._seqCounters = new Map();
     // Viewer sessions: streamId → Map<sessionId, lastSeen>
     this.sessions = new Map();
     // Channel credentials cache: streamId → { user, pass, baseUrl }
@@ -375,6 +385,37 @@ class XtreamProxy {
     return Object.values(this.getAllViewers()).reduce((a, b) => a + b, 0);
   }
 
+  getCachedSegment(streamId) {
+    const cached = this._channelSegments.get(streamId);
+    if (cached && Date.now() - cached.ts < SEG_TTL) {
+      return cached;
+    }
+    return null;
+  }
+
+  async fetchAndCacheSegment(streamId, baseUrl) {
+    if (this._pendingChannelSegments.has(streamId)) {
+      return this._pendingChannelSegments.get(streamId);
+    }
+    const cached = this.getCachedSegment(streamId);
+    if (cached) return cached;
+
+    const creds = await this._resolveCredentials(streamId, baseUrl);
+    if (!creds) throw new Error('No credentials for channel ' + streamId);
+    const segUrl = `${creds.baseUrl}/live/${creds.user}/${creds.pass}/${streamId}.ts`;
+
+    const p = this._fetchSegment([segUrl], segUrl)
+      .then(result => {
+        if (result && result.buf) {
+          this._channelSegments.set(streamId, { buf: result.buf, contentType: result.contentType, ts: Date.now(), segUrl });
+        }
+        return result;
+      })
+      .finally(() => this._pendingChannelSegments.delete(streamId));
+    this._pendingChannelSegments.set(streamId, p);
+    return p;
+  }
+
   // ═══════════ Upstream fetchers ═════════════════════════════
 
   /** Manifest: parallel via Semaphore — uses per-channel credentials */
@@ -395,19 +436,25 @@ class XtreamProxy {
       const srv = credBase || preferredBase;
 
       const url = `${srv}/live/${user}/${pass}/${streamId}.m3u8`;
+
+      // استخدم السيمافور العالمي لمنع اتصالات متزامنة بـ IPTV (max_connections=1)
+      await streamingSem.acquire(`manifest:${streamId}`);
       let lastErr = null;
       try {
         const res = await fetch(url, {
           headers: { 'User-Agent': UA, 'Referer': `${srv}/` },
           signal: AbortSignal.timeout(MANIFEST_TIMEOUT),
         });
-        if (!res.ok) { throw new Error(`HTTP ${res.status} from ${srv}`); }
         const content = await res.text();
+        if (!res.ok && content.trim().startsWith('#EXTM3U')) {
+          console.warn(`[XtreamProxy] Manifest HTTP ${res.status} but has valid M3U8 content for ${streamId} — accepting`);
+        } else if (!res.ok) { throw new Error(`HTTP ${res.status} from ${srv}`); }
         // Capture actual server after 302 redirect (IPTV session token)
         let actualBase = srv;
         try { if (res.url) actualBase = new URL(res.url).origin; } catch {}
         return { content, srv: actualBase, user, pass };
       } catch (e) { lastErr = e; }
+      finally { streamingSem.release(); }
 
       throw lastErr || new Error('IPTV server unreachable');
     });
@@ -458,28 +505,55 @@ class XtreamProxy {
 
   // ─── URL rewriting and Prefetching ───────────────────────────
   _prefetchSegments(streamId, newSegments) {
-    // Only prefetch if there are active viewers to save bandwidth and connection limits
     if (this.getViewerCount(streamId) === 0) return;
 
-    for (const segUrl of newSegments) {
-      const cacheKey = segUrl;
-      // Skip if already in cache or currently downloading
-      if (this._segments.has(cacheKey) || this._pendingSegments.has(cacheKey)) {
-        continue;
-      }
+    if (this._pendingChannelSegments.has(streamId)) return;
 
-      // Initiate background download
-      const p = this._fetchSegment([segUrl], cacheKey)
-        .catch(err => {
-          // Silent catch for prefetch: errors will be handled if user explicitly requests it
-        })
-        .finally(() => this._pendingSegments.delete(cacheKey));
-      
-      this._pendingSegments.set(cacheKey, p);
+    const cached = this._channelSegments.get(streamId);
+    if (cached && Date.now() - cached.ts < SEG_TTL) {
+      return;
     }
+
+    const segUrl = newSegments[0];
+    if (!segUrl) return;
+
+    if (this._segments.has(segUrl) || this._pendingSegments.has(segUrl)) {
+      const existingPromise = this._pendingSegments.has(segUrl) ? this._pendingSegments.get(segUrl) : null;
+      if (existingPromise) {
+        existingPromise.then(result => {
+          if (result && result.buf) {
+            this._channelSegments.set(streamId, { buf: result.buf, contentType: result.contentType, ts: Date.now(), segUrl });
+          }
+        }).catch(() => {}).finally(() => this._pendingChannelSegments.delete(streamId));
+        this._pendingChannelSegments.set(streamId, existingPromise);
+        return;
+      }
+      const segCache = this._segments.get(segUrl);
+      if (segCache && segCache.buf) {
+        this._channelSegments.set(streamId, { buf: segCache.buf, contentType: segCache.contentType, ts: Date.now(), segUrl });
+        return;
+      }
+    }
+
+    const p = this._fetchSegment([segUrl], segUrl)
+      .then(result => {
+        if (result && result.buf) {
+          this._channelSegments.set(streamId, { buf: result.buf, contentType: result.contentType, ts: Date.now(), segUrl });
+          console.log(`[XtreamProxy] Cached segment for channel ${streamId}: ${(result.buf.length / 1024 / 1024).toFixed(1)}MB`);
+        }
+      })
+      .catch(err => {
+        console.warn(`[XtreamProxy] Prefetch failed for ${streamId}: ${err.message}`);
+      })
+      .finally(() => this._pendingChannelSegments.delete(streamId));
+
+    this._pendingChannelSegments.set(streamId, p);
   }
 
   _rewriteManifest(content, streamId, baseUrl, user, pass) {
+    const seq = (this._seqCounters.get(streamId) || 0) + 1;
+    this._seqCounters.set(streamId, seq);
+
     const lines = content.split('\n');
     const rewritten = [];
     const newSegments = [];
@@ -487,27 +561,54 @@ class XtreamProxy {
     const qParams = this._queryParams?.[streamId];
     const qs = qParams ? `did=${encodeURIComponent(qParams.did || '')}${qParams.st ? '&st=' + encodeURIComponent(qParams.st) : ''}` : '';
 
+    let segIndex = 0;
+    let hasDiscontinuity = false;
+    let targetDurationOverridden = false;
     for (const line of lines) {
       const t = line.trim();
       if (!t || t.startsWith('#')) {
+        if (t === '#EXT-X-ENDLIST') continue;
+        if (t.startsWith('#EXT-X-MEDIA-SEQUENCE')) {
+          rewritten.push(`#EXT-X-MEDIA-SEQUENCE:${seq}`);
+          continue;
+        }
+        if (t.startsWith('#EXT-X-TARGETDURATION')) {
+          rewritten.push('#EXT-X-TARGETDURATION:6');
+          targetDurationOverridden = true;
+          continue;
+        }
         rewritten.push(line);
         continue;
+      }
+      if (!targetDurationOverridden) {
+        rewritten.push('#EXT-X-TARGETDURATION:6');
+        targetDurationOverridden = true;
+      }
+      if (!hasDiscontinuity) {
+        hasDiscontinuity = true;
+      } else {
+        rewritten.push('#EXT-X-DISCONTINUITY');
       }
       let abs;
       if (t.startsWith('http'))     abs = t;
       else if (t.startsWith('/'))   abs = `${baseUrl}${t}`;
       else                          abs = (user && pass) ? `${baseUrl}/live/${user}/${pass}/${t}` : `${baseUrl}/${t}`;
-      const enc = encodeURIComponent(abs);
-      
+
+      const segKey = `live_${segIndex}`;
+      segIndex++;
+
       if (t.endsWith('.m3u8') || t.includes('.m3u8?')) {
-        rewritten.push(qs ? `/proxy/live/${streamId}/sub/${enc}?${qs}` : `/proxy/live/${streamId}/sub/${enc}`);
+        rewritten.push(qs ? `/proxy/live/${streamId}/sub/${encodeURIComponent(abs)}?${qs}` : `/proxy/live/${streamId}/sub/${encodeURIComponent(abs)}`);
       } else {
-        rewritten.push(qs ? `/proxy/live/${streamId}/seg/${enc}?${qs}` : `/proxy/live/${streamId}/seg/${enc}`);
+        rewritten.push(qs ? `/proxy/live/${streamId}/seg/${segKey}?${qs}` : `/proxy/live/${streamId}/seg/${segKey}`);
         newSegments.push(abs);
       }
     }
 
-    // Trigger prefetch asynchronously to avoid blocking manifest processing
+    if (!targetDurationOverridden) {
+      rewritten.unshift('#EXT-X-TARGETDURATION:6');
+    }
+
     if (newSegments.length > 0) {
       setTimeout(() => this._prefetchSegments(streamId, newSegments), 0);
     }
@@ -548,19 +649,23 @@ class XtreamProxy {
   }
 
   _evictSegments() {
-    // Evict by count
     while (this._segments.size >= MAX_SEG_CACHE) {
       const oldest = this._segments.keys().next().value;
       const entry = this._segments.get(oldest);
       if (entry && entry.buf) _totalSegBytes -= entry.buf.length;
       this._segments.delete(oldest);
     }
-    // Evict by total memory (hard limit)
     while (_totalSegBytes > MAX_SEG_BYTES && this._segments.size > 0) {
       const oldest = this._segments.keys().next().value;
       const entry = this._segments.get(oldest);
       if (entry && entry.buf) _totalSegBytes -= entry.buf.length;
       this._segments.delete(oldest);
+    }
+    while (_totalSegBytes > MAX_SEG_BYTES && this._channelSegments.size > 0) {
+      const oldest = this._channelSegments.keys().next().value;
+      const entry = this._channelSegments.get(oldest);
+      if (entry && entry.buf) _totalSegBytes -= entry.buf.length;
+      this._channelSegments.delete(oldest);
     }
   }
 
@@ -583,6 +688,14 @@ class XtreamProxy {
       }
     }
 
+    // Expire old channel segments
+    for (const [streamId, v] of this._channelSegments) {
+      if (now - v.ts > SEG_TTL * 2) {
+        if (v.buf) _totalSegBytes -= v.buf.length;
+        this._channelSegments.delete(streamId);
+      }
+    }
+
     // Expire viewer sessions
     for (const [id, map] of this.sessions) {
       for (const [sid, t] of map) { if (now - t > SESSION_TTL) map.delete(sid); }
@@ -593,10 +706,11 @@ class XtreamProxy {
     const viewers = this.getTotalViewers();
     const channels = this._manifests.size;
     const segs = this._segments.size;
+    const chSegs = this._channelSegments.size;
     const segMB = (_totalSegBytes / 1024 / 1024).toFixed(1);
     const heapMB = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(0);
     if (viewers > 0 || channels > 0) {
-      console.log(`[XtreamProxy] Viewers: ${viewers} | Ch: ${channels} | Segs: ${segs}(${segMB}MB) | Heap: ${heapMB}MB | ManifestDL: ${manifestSemaphore.active}/${MAX_MANIFEST_PARALLEL}(q:${manifestSemaphore.pending}) | SegDL: ${segSemaphore.active}/${MAX_SEG_PARALLEL}`);
+      console.log(`[XtreamProxy] Viewers: ${viewers} | Ch: ${channels} | Segs: ${segs}(${segMB}MB) | ChSegs: ${chSegs} | Heap: ${heapMB}MB | ManifestDL: ${manifestSemaphore.active}/${MAX_MANIFEST_PARALLEL}(q:${manifestSemaphore.pending}) | SegDL: ${segSemaphore.active}/${MAX_SEG_PARALLEL}`);
     }
   }
 
