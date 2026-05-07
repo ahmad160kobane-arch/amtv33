@@ -60,7 +60,6 @@ function detectLang(catName = '') {
 
 // ─── Global IPTV Connection Manager ──────────────────────────────────────────
 const { streamingSem, apiSem } = require('./iptv-connection-manager');
-const restreamer = require('./ffmpeg-restreamer');
 
 // ─── LuluStream API ────────────────────────────────────────────────────────────
 
@@ -143,6 +142,29 @@ async function luluCheckCanplay(apiKey, fileCode, maxWaitMs = 600000, intervalMs
 
 function _buildProxyUrl(iptvAccountId, type, streamId, ext) {
   return `http://127.0.0.1:${LOCAL_PORT}/iptv-proxy/${IPTV_PROXY_SECRET}/${iptvAccountId}/${type}/${streamId}.${ext}`;
+}
+
+// رابط البروكسي العام (LuluStream يحتاج رابط إنترنت وليس localhost)
+function _buildPublicProxyUrl(iptvAccountId, type, streamId, ext) {
+  const publicUrl = process.env.PUBLIC_URL || `http://62.171.153.204:${LOCAL_PORT}`;
+  return `${publicUrl}/iptv-proxy/${IPTV_PROXY_SECRET}/${iptvAccountId}/${type}/${streamId}.${ext}`;
+}
+
+// Remote Upload: أرسل رابط لـ LuluStream ليحمّل مباشرة — بدون تحميل محلي
+async function _remoteUpload(apiKey, srcUrl, title, fldId = 0) {
+  const params = { url: srcUrl, title, file_public: '1' };
+  if (fldId) params.fld_id = String(fldId);
+  const p = new URLSearchParams({ key: apiKey, ...params });
+  const url = `https://api.lulustream.com/api/upload/url?${p}`;
+  console.log(`[RemoteUpload] Sending to LuluStream: ${title}`);
+  const res = await httpGet(url, 120000);
+  const data = parseJson(res.body);
+  if (data?.msg?.includes('max URLs limit')) throw new Error('Daily remote upload limit reached');
+  const fc = data?.result?.filecode || data?.result?.file_code
+    || (Array.isArray(data) && (data[0]?.filecode || data[0]?.file_code))
+    || data?.filecode || data?.file_code;
+  if (!fc) throw new Error(`LuluStream remote upload failed: ${res.body.slice(0, 300)}`);
+  return fc;
 }
 
 async function _downloadFile(url, destPath, label) {
@@ -550,53 +572,41 @@ async function _processJob(job) {
     job.current = item.name;
     console.log(`\n[LuluJob] ═══ [${i + 1}/${job.total}] ${title} ═══`);
 
-    // 1) بناء رابط IPTV المباشر من بيانات الـ DB
-    _emitProgress(job, 'downloading', 10);
+    // Remote Upload: LuluStream يحمّل مباشرة من البروكسي العام
+    // لا نحتاج تحميل الملف للسيرفر — لا اتصال IPTV محلي
+    _emitProgress(job, 'remote_upload', 10);
     const ext = item.ext || 'mp4';
     const streamType = item.type === 'episode' ? 'series' : 'movie';
-    const tmpPath = path.join(os.tmpdir(), `lulu_${Date.now()}_${Math.random().toString(36).slice(2)}.mp4`);
 
-    // استخدم البروكسي المحلي (iptv-proxy) بدلاً من الاتصال المباشر بـ IPTV
-    // البروكسي يتحكم بالسيمافور العالمي ويعيد المحاولة عند 456
-    const iptvUrl = _buildProxyUrl(job.iptvAccountId, streamType, item.streamId, ext);
-    console.log(`[Download] Proxy URL: ${iptvUrl.replace(IPTV_PROXY_SECRET, '***')}`);
+    // رابط البروكسي العام (LuluStream يحتاج رابط عام وليس localhost)
+    const publicProxyUrl = _buildPublicProxyUrl(job.iptvAccountId, streamType, item.streamId, ext);
+    console.log(`[RemoteUpload] Public URL: ${publicProxyUrl.replace(IPTV_PROXY_SECRET, '***')}`);
 
-    if (!iptvUrl) {
-      console.log(`[LuluJob] ✗ No IPTV credentials for: ${title}`);
+    if (!publicProxyUrl) {
+      console.log(`[LuluJob] ✗ No IPTV proxy URL for: ${title}`);
       job.failed++;
-      job.results.push({ name: item.name, status: 'error', error: 'no iptv credentials' });
+      job.results.push({ name: item.name, status: 'error', error: 'no proxy url' });
       _updateDBJob(job);
       await sleep(3000);
       continue;
     }
 
     let fileCode = null;
-    let pausedStreamIds = [];
     try {
-      // أوقف البث المباشر مؤقتاً لتحرير اتصال IPTV الوحيد
-      pausedStreamIds = await restreamer.pauseAll();
-
-      await _downloadFile(iptvUrl, tmpPath, title);
-
-      // 2) رفع إلى LuluStream
-      _emitProgress(job, 'uploading', 30);
-      fileCode = await _uploadToLulu(job.apiKey, tmpPath, title, itemFolders[i], pct => _emitProgress(job, 'uploading', 30 + Math.floor(pct * 0.4)));
-      try { fs.unlinkSync(tmpPath); } catch {}
-      console.log(`[LuluJob] ✓ Uploaded: ${title} → ${fileCode}`);
+      // أرسل رابط البروكسي لـ LuluStream ليحمّل مباشرة
+      fileCode = await _remoteUpload(job.apiKey, publicProxyUrl, title, itemFolders[i]);
+      console.log(`[LuluJob] ✓ Remote upload sent: ${title} → ${fileCode}`);
       job.done++;
       job.results.push({ name: item.name, status: 'ok', fileCode, canplay: false });
       _updateDBJob(job);
     } catch (e) {
-      try { fs.unlinkSync(tmpPath); } catch {}
-      console.log(`[LuluJob] ✗ Failed: ${title}: ${e.message}`);
+      console.log(`[LuluJob] ✗ Remote upload failed: ${title}: ${e.message}`);
       job.failed++;
       job.results.push({ name: item.name, status: 'error', error: e.message });
       _emitProgress(job, 'error', 0);
       _updateDBJob(job);
       await sleep(5000);
-    } finally {
-      // استأنف البث المباشر بعد الانتهاء
-      await restreamer.resumeAll(pausedStreamIds);
+      continue;
     }
 
     // 3) finalize في الخلفية (metadata + canplay)
