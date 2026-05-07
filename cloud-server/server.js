@@ -311,7 +311,7 @@ function _iptvProxyRequest(url, headers, maxRedirects, callback) {
     'Connection': 'close', // close فوراً — لا نحتاج keep-alive لأن max_connections=1
     ...headers,
   };
-  const proxyReq = mod.get(url, { headers: reqHeaders, timeout: 600000 }, (iptvRes) => {
+  const proxyReq = mod.get(url, { headers: reqHeaders, timeout: 600000, agent: false }, (iptvRes) => {
     // تتبع redirects (IPTV يعمل redirect دائماً إلى CDN)
     if ([301, 302, 303, 307, 308].includes(iptvRes.statusCode) && iptvRes.headers.location) {
       const redirectUrl = iptvRes.headers.location;
