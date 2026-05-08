@@ -116,7 +116,7 @@ export default function LiveScreen() {
   const renderChannel = useCallback(({ item }: { item: FreeChannel }) => (
     <TouchableOpacity
       style={[styles.card, { width: CARD_W, height: CARD_H }]}
-      onPress={() => router.push({ pathname: '/player', params: { freeChannelId: item.id, title: item.name } })}
+      onPress={() => router.push({ pathname: '/player', params: { premiumChannelId: item.id, title: item.name } })}
       activeOpacity={0.75}
     >
       <View style={[styles.logoBg, { backgroundColor: colors.cardBackground }]}>

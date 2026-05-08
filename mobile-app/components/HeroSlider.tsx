@@ -88,9 +88,9 @@ function HeroSlider({ items, onItemPress }: HeroSliderProps) {
           <Text style={styles.heroTitle} numberOfLines={2}>{item.title}</Text>
 
           {/* Genres */}
-          {item.genres && item.genres.length > 0 && (
+          {item.genres && (Array.isArray(item.genres) ? item.genres : [item.genres]).length > 0 && (
             <Text style={styles.heroGenres} numberOfLines={1}>
-              {item.genres.slice(0, 3).join(' · ')}
+              {(Array.isArray(item.genres) ? item.genres : [item.genres]).slice(0, 3).join(' · ')}
             </Text>
           )}
 
@@ -152,7 +152,7 @@ const styles = StyleSheet.create({
     bottom: 18,
     right: 16,
     left: 16,
-    alignItems: 'flex-start',
+    alignItems: 'flex-end',
   },
   metaPills: {
     flexDirection: 'row',
@@ -190,7 +190,7 @@ const styles = StyleSheet.create({
     textAlign: 'right',
     marginBottom: 14,
   },
-  playBtn: { alignSelf: 'flex-start', borderRadius: 22, overflow: 'hidden' },
+  playBtn: { alignSelf: 'flex-end', borderRadius: 22, overflow: 'hidden' },
   playBtnGradient: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -78,6 +78,8 @@ const { initLuluStream, getLuluStream } = require("./lib/lulustream");
 const luluUploader = require("./lib/lulu-uploader");
 luluUploader.initDB(db);
 
+const proxyManager = require("./lib/proxy-manager");
+
 // ─── PostgreSQL (shared with backend-api) ───────────────────
 
 // db module handles connection + table init in db.init()
@@ -301,7 +303,7 @@ const IPTV_PROXY_SECRET = "lulu_iptv_proxy_2026";
 // ─── Global IPTV Connection Manager ──────────────────────────────────────
 const { streamingSem, apiSem, getStatus: getIptvSemStatus } = require('./lib/iptv-connection-manager');
 
-function _iptvProxyRequest(url, headers, maxRedirects, callback) {
+function _iptvProxyRequest(url, headers, maxRedirects, callback, agent) {
   if (maxRedirects <= 0) return callback(new Error('too many redirects'));
   const isHttps = url.startsWith('https');
   const mod = isHttps ? https : http;
@@ -311,13 +313,14 @@ function _iptvProxyRequest(url, headers, maxRedirects, callback) {
     'Connection': 'close', // close فوراً — لا نحتاج keep-alive لأن max_connections=1
     ...headers,
   };
-  const proxyReq = mod.get(url, { headers: reqHeaders, timeout: 600000, agent: false }, (iptvRes) => {
+  const requestOptions = { headers: reqHeaders, timeout: 600000, agent: agent || false };
+  const proxyReq = mod.get(url, requestOptions, (iptvRes) => {
     // تتبع redirects (IPTV يعمل redirect دائماً إلى CDN)
     if ([301, 302, 303, 307, 308].includes(iptvRes.statusCode) && iptvRes.headers.location) {
       const redirectUrl = iptvRes.headers.location;
       console.log(`[IPTV-PROXY] Redirect ${iptvRes.statusCode} → ${redirectUrl.substring(0, 80)}...`);
       iptvRes.resume(); // drain البيانات
-      return _iptvProxyRequest(redirectUrl, headers, maxRedirects - 1, callback);
+      return _iptvProxyRequest(redirectUrl, headers, maxRedirects - 1, callback, agent);
     }
     callback(null, iptvRes);
   });
@@ -366,24 +369,24 @@ app.head("/iptv-proxy/:secret/:iptvId/:type/:filename", async (req, res) => {
   const id = dotIdx > 0 ? filename.substring(0, dotIdx) : filename;
   const ext = dotIdx > 0 ? filename.substring(dotIdx + 1) : "mp4";
 
-  let iptvBase, iptvUser, iptvPass;
+  let iptvBase, iptvUser, iptvPass, account;
   try {
     const accId = parseInt(iptvId) || 0;
-    let row;
     if (accId > 0) {
-      row = await db.prepare("SELECT server_url, username, password FROM iptv_accounts WHERE id = ? AND status = 'active'").get(accId);
+      account = await db.prepare("SELECT * FROM iptv_accounts WHERE id = ? AND status = 'active'").get(accId);
     }
-    if (!row) {
-      row = await db.prepare("SELECT server_url, username, password FROM iptv_accounts WHERE status = 'active' ORDER BY id ASC LIMIT 1").get();
+    if (!account) {
+      account = await db.prepare("SELECT * FROM iptv_accounts WHERE status = 'active' ORDER BY id ASC LIMIT 1").get();
     }
-    if (!row) return res.status(400).end();
-    const url = new URL(row.server_url);
+    if (!account) return res.status(400).end();
+    const url = new URL(account.server_url);
     iptvBase = `${url.protocol}//${url.hostname}:${url.port || 8080}`;
-    iptvUser = row.username;
-    iptvPass = row.password;
+    iptvUser = account.username;
+    iptvPass = account.password;
   } catch (e) {
     return res.status(500).end();
   }
+  const proxyAgent = proxyManager.createProxyAgent(account);
 
   const urlPath = type === "series"
     ? `/series/${iptvUser}/${iptvPass}/${id}.${ext}`
@@ -458,28 +461,28 @@ app.get("/iptv-proxy/:secret/:iptvId/:type/:filename", async (req, res) => {
   const ext = dotIdx > 0 ? filename.substring(dotIdx + 1) : "mp4";
 
   // جلب بيانات IPTV من القاعدة
-  let iptvBase, iptvUser, iptvPass;
+  let iptvBase, iptvUser, iptvPass, account;
   try {
     const accId = parseInt(iptvId) || 0;
-    let row;
     if (accId > 0) {
-      row = await db.prepare("SELECT server_url, username, password FROM iptv_accounts WHERE id = ? AND status = 'active'").get(accId);
+      account = await db.prepare("SELECT * FROM iptv_accounts WHERE id = ? AND status = 'active'").get(accId);
     }
-    if (!row) {
-      row = await db.prepare("SELECT server_url, username, password FROM iptv_accounts WHERE status = 'active' ORDER BY id ASC LIMIT 1").get();
+    if (!account) {
+      account = await db.prepare("SELECT * FROM iptv_accounts WHERE status = 'active' ORDER BY id ASC LIMIT 1").get();
     }
-    if (!row) {
+    if (!account) {
       console.log("[IPTV-PROXY] لا يوجد حساب IPTV نشط");
       return res.status(400).end("No active IPTV account");
     }
-    const url = new URL(row.server_url);
+    const url = new URL(account.server_url);
     iptvBase = `${url.protocol}//${url.hostname}:${url.port || 8080}`;
-    iptvUser = row.username;
-    iptvPass = row.password;
+    iptvUser = account.username;
+    iptvPass = account.password;
   } catch (e) {
     console.log(`[IPTV-PROXY] DB error: ${e.message}`);
     return res.status(500).end("DB error");
   }
+  const proxyAgent = proxyManager.createProxyAgent(account);
 
   // movie or series
   const urlPath =
@@ -511,7 +514,7 @@ app.get("/iptv-proxy/:secret/:iptvId/:type/:filename", async (req, res) => {
         const proxyReq = _iptvProxyRequest(iptvUrl, reqHeaders, 10, (err, iptvResInner) => {
           if (err) return reject(err);
           resolve(iptvResInner);
-        });
+        }, proxyAgent);
         // إذا ألغى العميل (LuluStream) الطلب، أوقف البروكسي
         req.on('close', () => { try { proxyReq.destroy(); } catch {} });
       });
@@ -4429,6 +4432,51 @@ app.post("/api/admin/iptv-test", requireAuth, async (req, res) => {
   }
 });
 
+// ─── Proxy Management ──────────────────────────────────────
+
+app.get("/api/admin/iptv-accounts/:id/proxy", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  const account = await db.prepare("SELECT id, name, proxy_enabled, proxy_type, proxy_server, proxy_port, proxy_secret, proxy_local_port, proxy_auto_start, is_upload_account FROM iptv_accounts WHERE id = ?").get(req.params.id);
+  if (!account) return res.status(404).json({ error: "الحساب غير موجود" });
+  const status = proxyManager.getProxyStatus(account.id);
+  res.json({ account, proxy_status: status });
+});
+
+app.put("/api/admin/iptv-accounts/:id/proxy", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  const { proxy_enabled, proxy_type, proxy_server, proxy_port, proxy_secret, proxy_local_port, proxy_auto_start } = req.body;
+  await db.prepare("UPDATE iptv_accounts SET proxy_enabled=COALESCE(?,proxy_enabled), proxy_type=COALESCE(?,proxy_type), proxy_server=COALESCE(?,proxy_server), proxy_port=COALESCE(?,proxy_port), proxy_secret=COALESCE(?,proxy_secret), proxy_local_port=COALESCE(?,proxy_local_port), proxy_auto_start=COALESCE(?,proxy_auto_start) WHERE id=?")
+    .run(proxy_enabled !== undefined ? proxy_enabled : null, proxy_type || null, proxy_server || null, proxy_port || null, proxy_secret || null, proxy_local_port || null, proxy_auto_start !== undefined ? proxy_auto_start : null, req.params.id);
+  res.json({ success: true });
+});
+
+app.post("/api/admin/iptv-accounts/:id/proxy/start", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  const account = await db.prepare("SELECT * FROM iptv_accounts WHERE id = ?").get(req.params.id);
+  if (!account) return res.status(404).json({ error: "الحساب غير موجود" });
+  const result = proxyManager.startProxy(account);
+  if (!result.success) return res.status(400).json({ error: result.error });
+  res.json({ success: true, status: proxyManager.getProxyStatus(account.id) });
+});
+
+app.post("/api/admin/iptv-accounts/:id/proxy/stop", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  proxyManager.killProxy(req.params.id);
+  res.json({ success: true });
+});
+
+app.get("/api/admin/proxy-status", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  const accounts = await db.prepare("SELECT id, name, proxy_enabled, proxy_type, proxy_server, proxy_port, proxy_local_port, proxy_auto_start FROM iptv_accounts WHERE proxy_enabled = true").all();
+  const statuses = accounts.map(a => ({
+    account_id: a.id,
+    name: a.name,
+    proxy: a,
+    status: proxyManager.getProxyStatus(a.id),
+  }));
+  res.json({ proxies: statuses });
+});
+
 // ─── Toggle Channel Streaming (start/stop) ───────────────
 
 app.post(
@@ -5319,6 +5367,13 @@ db.init()
         await initXtreamFromDB(db);
       } catch (e) {
         console.error("[Init] Xtream init error:", e.message);
+      }
+
+      // Auto-start proxy processes for accounts with proxy_auto_start=true
+      try {
+        await proxyManager.autoStartProxies(db);
+      } catch (e) {
+        console.error("[Init] Proxy auto-start error:", e.message);
       }
 
       // ─── Preload disabled: لا نشغل القنوات مسبقاً لأن حساب IPTV يسمح باتصال واحد فقط

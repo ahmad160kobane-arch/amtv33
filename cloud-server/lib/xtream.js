@@ -37,15 +37,33 @@ function getCatInfo(rawName) {
   return { name: rawName || 'عام', priority: 99 };
 }
 
+const ProxyAgent = require('proxy-agent');
+const fetch = require('node-fetch');
+
+function buildProxyAgent(account) {
+  if (!account || !account.proxy_enabled || !account.proxy_type || account.proxy_type === 'none') return null;
+  const proxyManager = require('./proxy-manager');
+  const url = proxyManager.buildProxyUrl(account);
+  if (!url) return null;
+  try {
+    return new ProxyAgent(url);
+  } catch (e) {
+    console.error(`[xtream] Failed to create proxy agent for ${url}: ${e.message}`);
+    return null;
+  }
+}
+
 /**
  * API call to an Xtream server with specific credentials
  */
-async function apiCall(baseUrl, username, password, action) {
+async function apiCall(baseUrl, username, password, action, proxyAgent) {
   const u = `${baseUrl}/player_api.php?username=${username}&password=${password}&action=${action}`;
-  const res = await fetch(u, {
+  const options = {
     headers: { 'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20' },
-    signal : AbortSignal.timeout(20000),
-  });
+    timeout : 20000,
+    agent: proxyAgent || undefined,
+  };
+  const res = await fetch(u, options);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
@@ -56,9 +74,10 @@ async function apiCall(baseUrl, username, password, action) {
  */
 async function searchAccountChannels(account, query) {
   const { server_url, username, password } = account;
+  const proxyAgent = buildProxyAgent(account);
   const [categories, streams] = await Promise.all([
-    apiCall(server_url, username, password, 'get_live_categories'),
-    apiCall(server_url, username, password, 'get_live_streams'),
+    apiCall(server_url, username, password, 'get_live_categories', proxyAgent),
+    apiCall(server_url, username, password, 'get_live_streams', proxyAgent),
   ]);
 
   const catById = {};
@@ -148,12 +167,14 @@ async function refreshChannelStream(db, channelId) {
   const info = await getChannelAccount(db, channelId);
   if (!info || !info.account) throw new Error('القناة أو الحساب غير موجود');
   const { channel, account } = info;
+  const proxyAgent = buildProxyAgent(account);
   // Verify the stream is still available
   const testUrl = `${account.server_url}/live/${account.username}/${account.password}/${channel.stream_id}.m3u8`;
   const res = await fetch(testUrl, {
     headers: { 'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20' },
-    signal: AbortSignal.timeout(10000),
+    timeout: 10000,
     redirect: 'follow',
+    agent: proxyAgent || undefined,
   });
   const ok = res.ok || res.status === 302;
   if (!ok) throw new Error(`البث غير متاح — HTTP ${res.status}`);

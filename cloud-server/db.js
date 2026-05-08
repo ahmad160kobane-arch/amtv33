@@ -139,6 +139,16 @@ db.init = async function () {
     CREATE INDEX IF NOT EXISTS idx_xtream_account ON xtream_channels(account_id);
   `);
 
+  // Migration: add proxy columns to iptv_accounts
+  try { await pool.query("ALTER TABLE iptv_accounts ADD COLUMN IF NOT EXISTS proxy_enabled   BOOLEAN DEFAULT false"); } catch(e) {}
+  try { await pool.query("ALTER TABLE iptv_accounts ADD COLUMN IF NOT EXISTS proxy_type      TEXT    DEFAULT ''"); } catch(e) {}
+  try { await pool.query("ALTER TABLE iptv_accounts ADD COLUMN IF NOT EXISTS proxy_server    TEXT    DEFAULT ''"); } catch(e) {}
+  try { await pool.query("ALTER TABLE iptv_accounts ADD COLUMN IF NOT EXISTS proxy_port      INTEGER DEFAULT 0"); } catch(e) {}
+  try { await pool.query("ALTER TABLE iptv_accounts ADD COLUMN IF NOT EXISTS proxy_secret    TEXT    DEFAULT ''"); } catch(e) {}
+  try { await pool.query("ALTER TABLE iptv_accounts ADD COLUMN IF NOT EXISTS proxy_local_port INTEGER DEFAULT 0"); } catch(e) {}
+  try { await pool.query("ALTER TABLE iptv_accounts ADD COLUMN IF NOT EXISTS proxy_auto_start BOOLEAN DEFAULT true"); } catch(e) {}
+  try { await pool.query("ALTER TABLE iptv_accounts ADD COLUMN IF NOT EXISTS is_upload_account BOOLEAN DEFAULT false"); } catch(e) {}
+
   // Migration: add is_streaming column to xtream_channels
   try { await pool.query("ALTER TABLE xtream_channels ADD COLUMN IF NOT EXISTS is_streaming BOOLEAN DEFAULT false"); } catch(e) {}
   // Migration: add is_continuous column for 24/7 channels
@@ -272,6 +282,7 @@ db.init = async function () {
     "ALTER TABLE lulu_catalog ADD COLUMN IF NOT EXISTS imdb_id     TEXT    DEFAULT ''",
     "ALTER TABLE lulu_catalog ADD COLUMN IF NOT EXISTS lulu_fld_id INTEGER DEFAULT 0",
     "ALTER TABLE lulu_catalog ADD COLUMN IF NOT EXISTS updated_at  BIGINT  DEFAULT 0",
+    "ALTER TABLE lulu_catalog ADD COLUMN IF NOT EXISTS lang        TEXT    DEFAULT ''",
   ];
   for (const sql of luluMigrations) {
     try { await pool.query(sql); } catch {}

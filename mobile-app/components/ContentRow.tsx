@@ -11,8 +11,9 @@ import {
   Platform,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { FilmIcon, StarIcon, ChevronIcon } from '@/components/AppIcons';
+import { FilmIcon, StarIcon, ChevronIcon, LockPremiumIcon } from '@/components/AppIcons';
 import { useColorScheme } from '@/hooks/useColorScheme';
+import { useAuth } from '@/context/AuthContext';
 import Colors from '@/constants/Colors';
 
 const { width } = Dimensions.get('window');
@@ -53,11 +54,14 @@ interface CardProps {
 }
 
 const ContentCard = memo(({ item, cardWidth, cardHeight, showBadge, onItemPress, inputBg, textSecondary }: CardProps) => {
+  const { isPremium, loading } = useAuth();
+  const showLock = !isPremium && !loading;
   const ratingVal = item.rating ? parseFloat(item.rating) : 0;
   const scaleAnim = useRef(new Animated.Value(1)).current;
   const [imgError, setImgError] = useState(false);
   const onPressIn = () => Animated.spring(scaleAnim, { toValue: 0.96, useNativeDriver: true, speed: 50, bounciness: 4 }).start();
   const onPressOut = () => Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, speed: 30, bounciness: 6 }).start();
+
   return (
     <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
     <TouchableOpacity
@@ -68,7 +72,12 @@ const ContentCard = memo(({ item, cardWidth, cardHeight, showBadge, onItemPress,
       onPressOut={onPressOut}
     >
       {item.poster && !imgError ? (
-        <Image source={{ uri: item.poster }} style={styles.poster} resizeMode="cover" onError={() => setImgError(true)} />
+        <Image
+          source={{ uri: item.poster }}
+          style={[styles.poster, showLock && styles.posterLocked]}
+          resizeMode="cover"
+          onError={() => setImgError(true)}
+        />
       ) : (
         <View style={[styles.noPoster, { backgroundColor: inputBg }]}>
           <FilmIcon size={28} color={textSecondary} />
@@ -93,6 +102,22 @@ const ContentCard = memo(({ item, cardWidth, cardHeight, showBadge, onItemPress,
         <View style={styles.ratingBadge}>
           <StarIcon size={8} color="#FFB800" />
           <Text style={styles.ratingBadgeText}>{ratingVal.toFixed(1)}</Text>
+        </View>
+      )}
+
+      {/* ─── Lock / Premium Badge ─── */}
+      {showLock && (
+        <View style={styles.lockBadge}>
+          <LockPremiumIcon size={10} color="#FFB800" />
+          <Text style={styles.lockBadgeText}>بريميوم</Text>
+        </View>
+      )}
+
+      {/* ─── Lock Overlay ─── */}
+      {showLock && (
+        <View style={styles.lockOverlay} pointerEvents="none">
+          <LockPremiumIcon size={22} color="#FFB800" />
+          <Text style={styles.lockOverlayText}>اشترك للمشاهدة</Text>
         </View>
       )}
 
@@ -192,6 +217,7 @@ const styles = StyleSheet.create({
     }),
   },
   poster: { width: '100%', height: '100%', position: 'absolute' },
+  posterLocked: { opacity: 0.55 },
   noPoster: { width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center' },
   posterGradient: {
     position: 'absolute',
@@ -222,6 +248,46 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   ratingBadgeText: { fontFamily: Colors.fonts.bold, color: '#FFB800', fontSize: 10 },
+  lockBadge: {
+    position: 'absolute',
+    bottom: 48,
+    left: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: 'rgba(0,0,0,0.78)',
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    borderRadius: 8,
+    zIndex: 5,
+  },
+  lockBadgeText: {
+    fontFamily: Colors.fonts.bold,
+    color: '#FFB800',
+    fontSize: 10,
+    letterSpacing: 0.3,
+  },
+  lockOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderRadius: 14,
+    zIndex: 4,
+  },
+  lockOverlayText: {
+    fontFamily: Colors.fonts.bold,
+    color: '#FFB800',
+    fontSize: 11,
+    marginTop: 4,
+    textShadowColor: 'rgba(0,0,0,0.8)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+  },
   cardBottom: {
     position: 'absolute',
     bottom: 0,
@@ -229,13 +295,14 @@ const styles = StyleSheet.create({
     right: 0,
     padding: 10,
     paddingBottom: 12,
+    zIndex: 6,
   },
   cardTitle: {
     fontFamily: Colors.fonts.bold,
     color: '#fff',
-    fontSize: 12,
+    fontSize: 13,
     textAlign: 'right',
-    lineHeight: 17,
+    lineHeight: 18,
     textShadowColor: 'rgba(0,0,0,0.7)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 4,

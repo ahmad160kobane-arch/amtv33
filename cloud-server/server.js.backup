@@ -1,0 +1,5373 @@
+﻿/**
+
+ * Ø§Ù"Ø3ÙŠØ±ÙØ± Ø§Ù"Ø3Ø­Ø§Ø ̈ÙŠ v3
+
+ *
+
+ * - Ù...ØaØμÙ" Ø ̈Ù'Ø§Ø1Ø ̄Ø© Ø ̈ÙŠØ§Ù†Ø§Øa Ø§Ù"Ø ̈Ø§Ùƒ Ø§Ù†Ø ̄ Ù...Ø ̈Ø§Ø ́Ø±Ø©
+
+ * - ÙŠØaØ­Ù'Ù' Ù...Ù† Ø§Ù"Ù...Ø3ØaØ®Ø ̄Ù... (JWT) Ù'Ø ̈Ù" Ø§Ù"Ø ̈Ø«
+
+ * - ÙŠØ­Ø ̄Ù'Ø« Ø±ÙˆØ§Ø ̈Ø· Ø§Ù"Ø ̈Ø« ØaÙ"Ù'Ø§Ø¦ÙŠØ§Ù‹ Ø1Ù†Ø ̄ Ø§Ù"ØaØ ́ØoÙŠÙ"
+
+ * - ÙŠÙ'Ø ̄Ù... Ø§Ù"Ø ̈Ø« Ù...Ø ̈Ø§Ø ́Ø±Ø© Ù"Ù"ØaØ·Ø ̈ÙŠÙ' (Ø ̈Ø ̄ÙˆÙ† ÙˆØ3ÙŠØ·)
+
+ */
+
+const express = require("express");
+
+const cors = require("cors");
+const cookieParser = require("cookie-parser");
+
+const path = require("path");
+
+const fs = require("fs");
+
+const http = require("http");
+
+const https = require("https");
+
+const jwt = require("jsonwebtoken");
+
+const config = require("./config");
+
+const db = require("./db");
+
+const StreamManager = require("./lib/stream-manager");
+
+const VodProxy = require("./lib/vod-proxy");
+
+const IptvUpdater = require("./lib/iptv-updater");
+
+const { resolveStream } = require("./lib/vidsrc-resolver");
+
+const { resolveVidlinkStream } = require("./lib/vidlink-resolver");
+
+const { resolveConsumetStream } = require("./lib/consumet-resolver");
+
+const { extractStream } = require("./lib/stream-extractor");
+
+const { scrapeEmbedSources } = require("./lib/embed-scraper");
+
+const { puppeteerExtract } = require("./lib/puppeteer-extractor");
+
+const HlsProxy = require("./lib/hls-proxy");
+
+const LiveProxy = require("./lib/live-proxy");
+
+const {
+  XTREAM,
+  searchAccountChannels,
+  addChannelsToDB,
+  getChannelAccount,
+  refreshChannelStream,
+  initXtreamFromDB,
+} = require("./lib/xtream");
+
+const xtreamProxy = require("./lib/xtream-proxy");
+const restreamer = require("./lib/ffmpeg-restreamer");
+
+const vidsrcApi = require("./lib/vidsrc-api"); // DISABLED - replaced by xtream-vod
+
+const xtreamVod = require("./lib/xtream-vod");
+
+const { fetchArabicSubtitles } = require("./lib/subtitle-fetcher");
+
+const { initLuluStream, getLuluStream } = require("./lib/lulustream");
+
+const luluUploader = require("./lib/lulu-uploader");
+luluUploader.initDB(db);
+
+// ─── PostgreSQL (shared with backend-api) ───────────────────
+
+// db module handles connection + table init in db.init()
+
+console.log("[DB] PostgreSQL mode");
+
+const app = express();
+
+const streamManager = new StreamManager();
+
+const vodProxy = new VodProxy();
+
+const hlsProxy = new HlsProxy();
+
+const liveProxy = new LiveProxy();
+
+// ─── HTTP Agents for upstream connections (keep-alive, high concurrency) ───
+
+const upstreamHttpAgent = new http.Agent({
+  keepAlive: true,
+
+  keepAliveMsecs: 30000,
+
+  maxSockets: 80,
+
+  maxFreeSockets: 30,
+
+  timeout: 120000,
+});
+
+const upstreamHttpsAgent = new https.Agent({
+  keepAlive: true,
+
+  keepAliveMsecs: 30000,
+
+  maxSockets: 80,
+
+  maxFreeSockets: 30,
+
+  timeout: 120000,
+
+  rejectUnauthorized: false,
+});
+
+// â"€â"€â"€ Middleware â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+
+app.use(cors({
+  origin: true,
+  credentials: true,
+  allowedHeaders: ['Authorization', 'Content-Type', 'Range', 'Accept'],
+  exposedHeaders: ['Content-Range', 'Content-Length', 'Accept-Ranges'],
+}));
+
+app.use(cookieParser());
+
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+
+// ─── FFmpegRestreamer HLS: auth + premium + connection limit middleware ────
+// Strategy: manifest sets auth cookie → segment reads cookie (HLS players use relative URLs)
+const _restreamerHbCounter = {};
+app.use('/hls/stream_', async (req, res, next) => {
+  const match = req.path.match(/^(\d+)\//) || req.originalUrl.match(/\/stream_(\d+)\//);
+  if (!match) return next();
+  const streamId = match[1];
+  const isManifest = req.path.endsWith('.m3u8');
+  const isSegment = req.path.endsWith('.ts');
+
+  // ─── Segment: lightweight cookie-based auth + heartbeat ───
+  if (isSegment) {
+    let userId = null;
+    let stDid = '';
+    // 1) Cookie (set by manifest request)
+    const cookieName = `hls_st_${streamId}`;
+    const cookieVal = req.cookies?.[cookieName] || req.headers.cookie?.match(new RegExp(`${cookieName}=([^;]+)`))?.[1];
+    if (cookieVal) {
+      try {
+        const decoded = jwt.verify(cookieVal, config.JWT_SECRET);
+        if (decoded.userId && decoded.t === 'stream') { userId = decoded.userId; stDid = decoded.did || ''; }
+      } catch {}
+    }
+    // 2) Bearer header
+    if (!userId) {
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        try {
+          const decoded = jwt.verify(authHeader.slice(7), config.JWT_SECRET);
+          if (decoded.userId) userId = decoded.userId;
+        } catch {}
+      }
+    }
+    // 3) Query param fallback
+    if (!userId && req.query.st) {
+      try {
+        const decoded = jwt.verify(req.query.st, config.JWT_SECRET);
+        if (decoded.userId && decoded.t === 'stream') { userId = decoded.userId; stDid = decoded.did || ''; }
+      } catch {}
+    }
+    if (!userId) {
+      return res.status(401).end();
+    }
+
+    const deviceId = req.query.did || req.headers['x-device-id'] || stDid || '';
+    restreamer.heartbeat(streamId, userId, deviceId);
+
+    // DB heartbeat every 30th segment
+    const hbKey = `hb_${userId}_${streamId}`;
+    _restreamerHbCounter[hbKey] = ((_restreamerHbCounter[hbKey] || 0) + 1) % 30;
+    if (_restreamerHbCounter[hbKey] === 0) {
+      _getUserSessions(userId).then(sessions => {
+        const s = deviceId
+          ? sessions.find(x => x.stream_id === `live_${streamId}` && x.device_id === deviceId)
+          : sessions.find(x => x.stream_id === `live_${streamId}`);
+        if (s) _updateHeartbeat(s.id).catch(() => {});
+      }).catch(() => {});
+    }
+    return next();
+  }
+
+  // ─── Manifest: full auth + set cookie for segments ───
+  if (isManifest) {
+    const deviceId = req.query.did || req.headers['x-device-id'] || '';
+    const authResult = await _validateStreamAuth(req);
+    if (authResult.error === 'subscription_required') {
+      if (!res.headersSent) return res.status(403).json({ error: 'subscription_required', message: 'هذا المحتوى يتطلب اشتراك بريميوم' });
+      return;
+    }
+    if (authResult.error === 'subscription_expired') {
+      if (!res.headersSent) return res.status(403).json({ error: 'subscription_expired', message: 'انتهت صلاحية اشتراكك يرجى التجديد' });
+      return;
+    }
+    if (!authResult.userId) {
+      if (!res.headersSent) return res.status(401).json({ error: 'يجب تسجيل الدخول لمشاهدة البث' });
+      return;
+    }
+    const userId = authResult.userId;
+
+    if (!await _checkRateLimit(userId, 'm3u8')) {
+      if (!res.headersSent) return res.status(429).json({ error: 'تجاوزت حد الطلبات' });
+      return;
+    }
+
+    const connCheck = await checkConnectionLimit(userId, `live_${streamId}`, 'live', deviceId);
+    if (!connCheck.allowed) {
+      if (!res.headersSent) {
+        return res.status(429).json({
+          error: connCheck.error,
+          message: connCheck.message,
+          active: connCheck.active,
+          max: connCheck.max,
+        });
+      }
+      return;
+    }
+
+    // Set auth cookie for segment requests (HLS players use relative URLs without query params)
+    const stToken = req.query.st || jwt.sign(
+      { userId, streamId, t: 'stream', lv: 0, did: deviceId },
+      config.JWT_SECRET,
+      { expiresIn: '8h' },
+    );
+    res.cookie(`hls_st_${streamId}`, stToken, {
+      httpOnly: false,
+      maxAge: 8 * 60 * 60 * 1000,
+      path: `/hls/stream_${streamId}`,
+      sameSite: 'lax',
+    });
+
+    restreamer.heartbeat(streamId, userId, deviceId);
+
+    _getUserSessions(userId).then(sessions => {
+      const s = deviceId
+        ? sessions.find(x => x.stream_id === `live_${streamId}` && x.device_id === deviceId)
+        : sessions.find(x => x.stream_id === `live_${streamId}`);
+      if (s) _updateHeartbeat(s.id).catch(() => {});
+    }).catch(() => {});
+  }
+
+  next();
+});
+
+// ─── Serve FFmpeg-generated HLS files ───────────────────
+app.use('/hls', express.static(path.join(__dirname, 'hls'), {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.m3u8')) {
+      res.set('Content-Type', 'application/vnd.apple.mpegurl');
+      res.set('Cache-Control', 'no-cache, no-store');
+    } else if (filePath.endsWith('.ts')) {
+      res.set('Content-Type', 'video/mp2t');
+      res.set('Cache-Control', 'public, max-age=60');
+    }
+    res.set('Access-Control-Allow-Origin', '*');
+  },
+}));
+
+// Handle JSON parsing errors specifically
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && "body" in err) {
+    console.error("JSON parsing error:", err.message);
+    return res.status(400).json({ error: "بيانات غير صالحة (Invalid JSON)" });
+  }
+  next(err);
+});
+
+// ─── خدمة ملفات الترجمة ────────────────────────────────
+app.use(
+  "/subs",
+  express.static("/root/subs", {
+    setHeaders: (res) => {
+      res.set("Access-Control-Allow-Origin", "*");
+    },
+  }),
+);
+
+// ─── IPTV Pass-through Proxy (لـ LuluStream remote upload) ────────
+// LuluStream لا يستطيع تحميل من IPTV مباشرة (محجوب)
+// هذا البروكسي يمرر البيانات بدون تخزين: IPTV → VPS (pass) → LuluStream
+// يدعم: redirects، HTTPS، Range requests، User-Agent
+const IPTV_PROXY_SECRET = "lulu_iptv_proxy_2026";
+
+function _iptvProxyRequest(url, headers, maxRedirects, callback) {
+  if (maxRedirects <= 0) return callback(new Error('too many redirects'));
+  const isHttps = url.startsWith('https');
+  const mod = isHttps ? https : http;
+  const reqHeaders = {
+    'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20',
+    'Accept': '*/*',
+    'Connection': 'keep-alive',
+    ...headers,
+  };
+  const proxyReq = mod.get(url, { headers: reqHeaders, timeout: 600000 }, (iptvRes) => {
+    // تتبع redirects (IPTV يعمل redirect دائماً إلى CDN)
+    if ([301, 302, 303, 307, 308].includes(iptvRes.statusCode) && iptvRes.headers.location) {
+      const redirectUrl = iptvRes.headers.location;
+      console.log(`[IPTV-PROXY] Redirect ${iptvRes.statusCode} → ${redirectUrl.substring(0, 80)}...`);
+      iptvRes.resume(); // drain البيانات
+      return _iptvProxyRequest(redirectUrl, headers, maxRedirects - 1, callback);
+    }
+    callback(null, iptvRes);
+  });
+  proxyReq.on('error', (e) => callback(e));
+  proxyReq.on('timeout', () => {
+    proxyReq.destroy();
+    callback(new Error('timeout'));
+  });
+  return proxyReq;
+}
+
+// HEAD request - LuluStream يرسل HEAD للتحقق من حجم ونوع الملف قبل التحميل
+app.head("/iptv-proxy/:secret/:iptvId/:type/:filename", async (req, res) => {
+  const { secret, iptvId, type, filename } = req.params;
+  if (secret !== IPTV_PROXY_SECRET) return res.status(403).end();
+  const dotIdx = filename.lastIndexOf(".");
+  const id = dotIdx > 0 ? filename.substring(0, dotIdx) : filename;
+  const ext = dotIdx > 0 ? filename.substring(dotIdx + 1) : "mp4";
+
+  let iptvBase, iptvUser, iptvPass;
+  try {
+    const accId = parseInt(iptvId) || 0;
+    let row;
+    if (accId > 0) {
+      row = await db.prepare("SELECT server_url, username, password FROM iptv_accounts WHERE id = ? AND status = 'active'").get(accId);
+    }
+    if (!row) {
+      row = await db.prepare("SELECT server_url, username, password FROM iptv_accounts WHERE status = 'active' ORDER BY id ASC LIMIT 1").get();
+    }
+    if (!row) return res.status(400).end();
+    const url = new URL(row.server_url);
+    iptvBase = `${url.protocol}//${url.hostname}:${url.port || 8080}`;
+    iptvUser = row.username;
+    iptvPass = row.password;
+  } catch (e) {
+    return res.status(500).end();
+  }
+
+  const urlPath = type === "series"
+    ? `/series/${iptvUser}/${iptvPass}/${id}.${ext}`
+    : `/movie/${iptvUser}/${iptvPass}/${id}.${ext}`;
+  const iptvUrl = `${iptvBase}${urlPath}`;
+
+  const isHttps = iptvUrl.startsWith('https');
+  const mod = isHttps ? https : http;
+  const headReq = mod.request(iptvUrl, {
+    method: 'HEAD',
+    headers: {
+      'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20',
+      'Accept': '*/*',
+    },
+    timeout: 30000,
+  }, (iptvRes) => {
+    // تتبع redirect
+    if ([301, 302, 303, 307, 308].includes(iptvRes.statusCode) && iptvRes.headers.location) {
+      iptvRes.resume();
+      // أعد طلب HEAD على الرابط الجديد
+      const redirectMod = iptvRes.headers.location.startsWith('https') ? https : http;
+      redirectMod.request(iptvRes.headers.location, {
+        method: 'HEAD',
+        headers: { 'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20', 'Accept': '*/*' },
+        timeout: 30000,
+      }, (finalRes) => {
+        finalRes.resume();
+        res.set('Content-Type', finalRes.headers['content-type'] || 'video/mp4');
+        if (finalRes.headers['content-length']) res.set('Content-Length', finalRes.headers['content-length']);
+        if (finalRes.headers['accept-ranges']) res.set('Accept-Ranges', finalRes.headers['accept-ranges']);
+        res.set('Access-Control-Allow-Origin', '*');
+        res.set('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+        res.status(finalRes.statusCode === 200 ? 200 : 502).end();
+      }).on('error', () => res.status(502).end()).end();
+      return;
+    }
+    iptvRes.resume();
+    if (iptvRes.statusCode !== 200) return res.status(502).end();
+    res.set('Content-Type', iptvRes.headers['content-type'] || 'video/mp4');
+    if (iptvRes.headers['content-length']) res.set('Content-Length', iptvRes.headers['content-length']);
+    if (iptvRes.headers['accept-ranges']) res.set('Accept-Ranges', iptvRes.headers['accept-ranges']);
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+    res.status(200).end();
+  });
+  headReq.on('error', () => { if (!res.headersSent) res.status(502).end(); });
+  headReq.on('timeout', () => { headReq.destroy(); if (!res.headersSent) res.status(504).end(); });
+  headReq.end();
+});
+
+app.get("/iptv-proxy/:secret/:iptvId/:type/:filename", async (req, res) => {
+  const { secret, iptvId, type, filename } = req.params;
+  if (secret !== IPTV_PROXY_SECRET) return res.status(403).end("Forbidden");
+  const dotIdx = filename.lastIndexOf(".");
+  const id = dotIdx > 0 ? filename.substring(0, dotIdx) : filename;
+  const ext = dotIdx > 0 ? filename.substring(dotIdx + 1) : "mp4";
+
+  // جلب بيانات IPTV من القاعدة
+  let iptvBase, iptvUser, iptvPass;
+  try {
+    const accId = parseInt(iptvId) || 0;
+    let row;
+    if (accId > 0) {
+      row = await db.prepare("SELECT server_url, username, password FROM iptv_accounts WHERE id = ? AND status = 'active'").get(accId);
+    }
+    if (!row) {
+      row = await db.prepare("SELECT server_url, username, password FROM iptv_accounts WHERE status = 'active' ORDER BY id ASC LIMIT 1").get();
+    }
+    if (!row) {
+      console.log("[IPTV-PROXY] لا يوجد حساب IPTV نشط");
+      return res.status(400).end("No active IPTV account");
+    }
+    const url = new URL(row.server_url);
+    iptvBase = `${url.protocol}//${url.hostname}:${url.port || 8080}`;
+    iptvUser = row.username;
+    iptvPass = row.password;
+  } catch (e) {
+    console.log(`[IPTV-PROXY] DB error: ${e.message}`);
+    return res.status(500).end("DB error");
+  }
+
+  // movie or series
+  const urlPath =
+    type === "series"
+      ? `/series/${iptvUser}/${iptvPass}/${id}.${ext}`
+      : `/movie/${iptvUser}/${iptvPass}/${id}.${ext}`;
+  const iptvUrl = `${iptvBase}${urlPath}`;
+
+  console.log(`[IPTV-PROXY] Streaming ${type} ${id}.${ext} via ${iptvBase}`);
+
+  // بناء headers الطلب (دعم Range من LuluStream)
+  const reqHeaders = {};
+  if (req.headers.range) reqHeaders['Range'] = req.headers.range;
+  if (req.headers['if-range']) reqHeaders['If-Range'] = req.headers['if-range'];
+  reqHeaders['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+  reqHeaders['Referer'] = iptvBase + '/';
+  reqHeaders['Accept'] = 'video/webm,video/mp4,video/*;q=0.9,*/*;q=0.8';
+  reqHeaders['Accept-Language'] = 'en-US,en;q=0.5';
+  reqHeaders['Connection'] = 'keep-alive';
+
+  const proxyReq = _iptvProxyRequest(iptvUrl, reqHeaders, 10, (err, iptvRes) => {
+    if (err) {
+      console.log(`[IPTV-PROXY] Error: ${err.message}`);
+      if (!res.headersSent) res.status(502).end("Proxy error");
+      return;
+    }
+
+    // قبول 200 و 206 (Partial Content)
+    if (iptvRes.statusCode !== 200 && iptvRes.statusCode !== 206) {
+      console.log(`[IPTV-PROXY] IPTV returned ${iptvRes.statusCode}`);
+      iptvRes.resume();
+      if (!res.headersSent) res.status(502).end(`IPTV error: ${iptvRes.statusCode}`);
+      return;
+    }
+
+    // تمرير جميع headers المهمة
+    const headersToForward = ['content-length', 'content-type', 'content-range', 'accept-ranges', 'content-disposition'];
+    for (const h of headersToForward) {
+      if (iptvRes.headers[h]) res.set(h, iptvRes.headers[h]);
+    }
+    // تأكد من وجود content-type
+    if (!res.get('Content-Type')) res.set('Content-Type', 'video/mp4');
+    // دعم CORS لـ LuluStream
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+
+    // إرسال الـ status code الصحيح (206 للـ Range)
+    const status = iptvRes.statusCode === 206 ? 206 : 200;
+    if (!res.headersSent) res.writeHead(status, res.getHeaders());
+
+    console.log(`[IPTV-PROXY] ✓ Streaming ${id}.${ext} status=${iptvRes.statusCode} size=${iptvRes.headers['content-length'] || '?'} range=${req.headers.range || 'none'}`);
+
+    iptvRes.pipe(res);
+    iptvRes.on('error', () => { try { res.end(); } catch {} });
+  });
+
+  req.on('close', () => {
+    try { proxyReq.destroy(); } catch {}
+  });
+});
+
+app.use((req, res, next) => {
+  const start = Date.now();
+
+  res.on("finish", () => {
+    if (
+      !req.path.endsWith(".ts") &&
+      !req.path.endsWith(".m3u8") &&
+      !req.path.endsWith(".vtt") &&
+      !req.path.startsWith("/vod/proxy/")
+    ) {
+      console.log(
+        `${req.method} ${req.path} ${res.statusCode} ${Date.now() - start}ms`,
+      );
+    }
+  });
+
+  next();
+});
+
+// --- User lookup (direct PG - same database as backend) ---
+
+async function _getUserById(userId) {
+  return db
+    .prepare(
+      "SELECT id, username, plan, expires_at, max_connections, role, is_admin, is_blocked, login_version FROM users WHERE id = ?",
+    )
+    .get(userId);
+}
+
+// ─── Login version cache (5s TTL) for single-session enforcement ───
+const _lvCache2 = new Map();
+const LV_CACHE_TTL2 = 5000;
+
+async function _getLoginVersion(userId) {
+  const cached = _lvCache2.get(userId);
+  if (cached && Date.now() - cached.ts < LV_CACHE_TTL2) return cached.lv;
+  const row = await db.prepare('SELECT login_version FROM users WHERE id = ?').get(userId);
+  const lv = row ? Number(row.login_version) || 0 : 0;
+  _lvCache2.set(userId, { lv, ts: Date.now() });
+  return lv;
+}
+
+// ─── Per-user stream rate limiting (in-memory) ───────────────────
+// Prevents abuse: someone sharing their URL to proxy streams through our server
+// Limits are DYNAMIC based on subscription type and max_connections:
+//   - Base limits per stream connection (m3u8: 40/min, seg: 80/min)
+//   - Multiplied by max_connections to allow legitimate multi-device usage
+//   - Admins get unlimited rate
+const _streamRates = new Map();
+const RATE_WINDOW_MS  = 60 * 1000; // 1 minute window
+// Base limits per single stream connection:
+//   m3u8: refreshes every 2-4s → ~15-30/min × safety factor 2 = 40 max
+//   ts segments: 1 per 2-4s → ~15-30/min × safety factor 2.5 = 80 max
+const BASE_RATE_M3U8  = 40;        // base manifest requests per minute per connection
+const BASE_RATE_SEG   = 80;        // base segment requests per minute per connection
+
+// Cache max_connections per user (5s TTL - same as user cache)
+const _rateUserCache = new Map();
+const RATE_USER_CACHE_TTL = 5000;
+
+async function _getRateLimitMax(userId, type) {
+  // Check cache first
+  const cached = _rateUserCache.get(userId);
+  if (cached && Date.now() - cached.ts < RATE_USER_CACHE_TTL) {
+    const maxConn = cached.maxConn;
+    const isAdmin = cached.isAdmin;
+    if (isAdmin) return Infinity; // admins: no rate limit
+    const base = type === 'm3u8' ? BASE_RATE_M3U8 : BASE_RATE_SEG;
+    return base * maxConn;
+  }
+  // Query DB
+  const user = await _getCachedUser(userId);
+  if (!user) return type === 'm3u8' ? BASE_RATE_M3U8 : BASE_RATE_SEG;
+  const maxConn = user.max_connections || 1;
+  const isAdmin = user.is_admin || user.role === 'admin' || user.role === 'agent';
+  _rateUserCache.set(userId, { maxConn, isAdmin, ts: Date.now() });
+  // Prevent unbounded cache growth
+  if (_rateUserCache.size > 500) { const oldest = _rateUserCache.keys().next().value; _rateUserCache.delete(oldest); }
+  if (isAdmin) return Infinity;
+  const base = type === 'm3u8' ? BASE_RATE_M3U8 : BASE_RATE_SEG;
+  return base * maxConn;
+}
+
+async function _checkRateLimit(userId, type) {
+  const max = await _getRateLimitMax(userId, type);
+  if (max === Infinity) return true; // admins bypass
+  const key = `${userId}:${type}`;
+  const now = Date.now();
+  const entry = _streamRates.get(key) || { count: 0, windowStart: now };
+  if (now - entry.windowStart > RATE_WINDOW_MS) {
+    _streamRates.set(key, { count: 1, windowStart: now });
+    return true;
+  }
+  if (entry.count >= max) return false;
+  entry.count++;
+  _streamRates.set(key, entry);
+  return true;
+}
+
+// Cleanup rate limit map every 5 minutes to prevent memory leak
+setInterval(() => {
+  const cutoff = Date.now() - RATE_WINDOW_MS * 2;
+  for (const [key, entry] of _streamRates) {
+    if (entry.windowStart < cutoff) _streamRates.delete(key);
+  }
+  if (_streamRates.size > 10000) _streamRates.clear(); // safety valve
+}, 5 * 60 * 1000);
+
+// --- Middleware: JWT auth (direct PG) ---
+
+async function requireAuth(req, res, next) {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "يجب تسجيل الدخول" });
+  }
+
+  const token = authHeader.split(" ")[1];
+
+  let decoded;
+
+  try {
+    decoded = jwt.verify(token, config.JWT_SECRET);
+  } catch (e) {
+    return res.status(401).json({ error: "رمز الدخول غير صالح" });
+  }
+
+  try {
+    const user = await _getUserById(decoded.userId);
+
+    if (!user) {
+      // User not found in DB - reject (no fallback - security risk)
+      return res.status(401).json({ error: 'المستخدم غير موجود' });
+    }
+
+    if (user.is_blocked)
+      return res.status(403).json({ error: "الحساب محظور" });
+
+    // ─── Single-session enforcement (ALL users including admins) ───
+    // Admins also get single-session enforcement to prevent token sharing
+    const dbLv = Number(user.login_version) || 0;
+    const jwtLv = Number(decoded.lv) || 0;
+    if (dbLv !== jwtLv) {
+      _lvCache2.delete(decoded.userId);
+      return res.status(401).json({
+        error: 'session_invalidated',
+        code: 'SESSION_INVALIDATED',
+        message: 'تم تسجيل الدخول من جهاز آخر. يرجى تسجيل الدخول مجدداً.',
+      });
+    }
+
+    req.user = user;
+    return next();
+  } catch (e) {
+    console.error(`[Auth] DB query error: ${e.message}`);
+    return res.status(503).json({ error: 'خطأ في قاعدة البيانات، حاول مجدداً' });
+  }
+}
+
+// --- Middleware: Premium check ---
+
+function requirePremium(req, res, next) {
+  const user = req.user;
+
+  if (user.is_admin || user.role === "admin" || user.role === "agent")
+    return next();
+
+  if (user.plan !== "premium") {
+    return res
+      .status(403)
+      .json({
+        error: "subscription_required",
+        message: "هذا المحتوى يتطلب اشتراك بريميوم",
+        requiresSubscription: true,
+      });
+  }
+
+  if (user.expires_at && new Date(user.expires_at) < new Date()) {
+    return res
+      .status(403)
+      .json({
+        error: "subscription_expired",
+        message: "انتهت صلاحية اشتراكك يرجى التجديد",
+        requiresSubscription: true,
+      });
+  }
+
+  next();
+}
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// API Ø§Ù"Ø ̈Ø« â€" Ø§Ù"ØaØ·Ø ̈ÙŠÙ' ÙŠØaØμÙ" Ù...Ø ̈Ø§Ø ́Ø±Ø© (Ù...Ø1 JWT)
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+/**
+
+ * POST /api/stream/live/:channelId
+
+ * Ø ̈Ø ̄Ø¡ Ø ̈Ø« Ù'Ù†Ø§Ø© Ù...Ø ̈Ø§Ø ́Ø±Ø©
+
+ */
+
+// ═══ Session / Connection Limit Management ═══════════════════
+
+const SESSION_TIMEOUT = 2 * 60 * 1000; // 2 min - session expires if no heartbeat
+
+const { randomUUID } = require("crypto");
+
+// ─── User data cache - reduce DB pressure under high concurrency ───
+
+const _userCache = new Map();
+
+const USER_CACHE_TTL = 5000; // 5s - short enough to pick up plan changes quickly
+
+async function _getCachedUser(userId) {
+  const cached = _userCache.get(userId);
+
+  if (cached && Date.now() - cached.ts < USER_CACHE_TTL) return cached.data;
+
+  const data = await db
+    .prepare(
+      "SELECT id, plan, expires_at, max_connections, is_admin, role, is_blocked FROM users WHERE id = ?",
+    )
+    .get(userId);
+
+  _userCache.set(userId, { data, ts: Date.now() });
+
+  // Prevent unbounded cache growth
+
+  if (_userCache.size > 500) {
+    const oldest = _userCache.keys().next().value;
+
+    _userCache.delete(oldest);
+  }
+
+  return data;
+}
+
+// ─── Channel sync from backend PostgreSQL ───────────────────
+
+const CHANNEL_SYNC_INTERVAL = 10 * 60 * 1000; // 10 minutes
+
+async function syncChannelsFromBackend(force = false) {
+  try {
+    const rows = await db
+      .prepare(
+        "SELECT id, name, group_name, logo_url, stream_url, is_enabled, sort_order, xtream_id, category FROM channels",
+      )
+      .all();
+
+    console.log(
+      `[Sync] Synced ${rows.length} channels from backend PostgreSQL`,
+    );
+  } catch (e) {
+    console.error("[Sync] Channel sync error:", e.message);
+  }
+}
+
+// ─── Async session helpers (all use PostgreSQL via shared db) ───
+
+async function _cleanExpiredSessions() {
+  return db
+    .prepare("DELETE FROM active_sessions WHERE last_seen < ?")
+    .run(Date.now() - SESSION_TIMEOUT);
+}
+
+async function _getUserSessions(userId) {
+  return db
+    .prepare(
+      "SELECT * FROM active_sessions WHERE user_id = ? ORDER BY started_at ASC",
+    )
+    .all(userId);
+}
+
+async function _getSessionById(sessionId) {
+  return db
+    .prepare("SELECT * FROM active_sessions WHERE id = ?")
+    .get(sessionId);
+}
+
+async function _insertSession(
+  id,
+  userId,
+  streamId,
+  streamType,
+  startedAt,
+  lastSeen,
+  deviceId = '',
+) {
+  return db
+    .prepare(
+      "INSERT INTO active_sessions (id, user_id, stream_id, type, started_at, last_seen, device_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .run(id, userId, streamId, streamType, startedAt, lastSeen, deviceId || '');
+}
+
+async function _deleteSession(sessionId) {
+  return db.prepare("DELETE FROM active_sessions WHERE id = ?").run(sessionId);
+}
+
+async function _deleteSessionByStream(userId, streamId) {
+  return db
+    .prepare("DELETE FROM active_sessions WHERE user_id = ? AND stream_id = ?")
+    .run(userId, streamId);
+}
+
+async function _updateHeartbeat(sessionId) {
+  return db
+    .prepare("UPDATE active_sessions SET last_seen = ? WHERE id = ?")
+    .run(Date.now(), sessionId);
+}
+
+/**
+
+ * checkConnectionLimit - queries the real `users` table (shared PostgreSQL)
+
+ * Returns: { allowed, sessionId, error?, message?, active?, max? }
+
+ */
+
+async function checkConnectionLimit(userId, streamId, streamType, deviceId = '') {
+  // Query with cache (5s TTL) - reduces DB pressure under high concurrency
+
+  const user = await _getCachedUser(userId);
+
+  const maxConn = (user && user.max_connections) || 1;
+
+  const isAdmin =
+    user && (user.is_admin || user.role === "admin" || user.role === "agent");
+
+  // Check subscription validity (auto-expire if needed)
+
+  if (user && !isAdmin) {
+    if (
+      user.plan === "premium" &&
+      user.expires_at &&
+      new Date(user.expires_at) < new Date()
+    ) {
+      await db
+        .prepare(
+          "UPDATE users SET plan = 'free', expires_at = NULL WHERE id = ?",
+        )
+        .run(userId);
+
+      return {
+        allowed: false,
+        error: "subscription_expired",
+        message: "انتهت صلاحية اشتراكك، يرجى التجديد",
+        active: 0,
+        max: 1,
+      };
+    }
+  }
+
+  // Admin: bypass connection limit BUT still track sessions for auditing
+  // (admins can watch multiple streams freely)
+
+  // Clean expired sessions
+  await _cleanExpiredSessions();
+
+  const sessions = await _getUserSessions(userId);
+
+  // ─── KEY FIX: same device reconnecting the same stream → update heartbeat ───
+  // Different device watching same stream is NOT treated as reconnection -
+  // it counts against the connection limit like any new connection.
+  if (deviceId) {
+    const sameDevice = sessions.find(
+      (s) => s.stream_id === streamId && s.device_id === deviceId
+    );
+    if (sameDevice) {
+      await _updateHeartbeat(sameDevice.id);
+      return { allowed: true, sessionId: sameDevice.id };
+    }
+  } else {
+    // No deviceId (old clients): allow reconnection to same stream (legacy behaviour)
+    const existing = sessions.find((s) => s.stream_id === streamId);
+    if (existing) {
+      await _updateHeartbeat(existing.id);
+      return { allowed: true, sessionId: existing.id };
+    }
+  }
+
+  // Check connection limit based on subscription plan
+  if (sessions.length >= maxConn) {
+    // ─── Same device switching channels: replace old session ───
+    // If the same device already has a session for a DIFFERENT stream,
+    // release the old one and allow the new one (user is just changing channels)
+    if (deviceId) {
+      const sameDeviceSession = sessions.find((s) => s.device_id === deviceId);
+      if (sameDeviceSession && sameDeviceSession.stream_id !== streamId) {
+        console.log(`[Session] REPLACE userId=${userId} old=${sameDeviceSession.stream_id} → new=${streamId} deviceId=${deviceId}`);
+        await _deleteSession(sameDeviceSession.id);
+        const sid = randomUUID();
+        await _insertSession(sid, userId, streamId, streamType, Date.now(), Date.now(), deviceId);
+        return { allowed: true, sessionId: sid };
+      }
+    }
+    console.log(`[Session] BLOCKED userId=${userId} streamId=${streamId} active=${sessions.length}/${maxConn} deviceId=${deviceId||'?'}`);
+    return {
+      allowed: false,
+      error: "connection_limit",
+      message: `لقد وصلت للحد الأقصى من الاتصالات المتزامنة (${maxConn}). أغلق بثاً آخر أو قم بترقية اشتراكك.`,
+      active: sessions.length,
+      max: maxConn,
+      sessions: sessions.map((s) => ({
+        id: s.id,
+        stream_id: s.stream_id,
+        type: s.type,
+        started_at: s.started_at,
+      })),
+    };
+  }
+
+  const sid = randomUUID();
+  await _insertSession(sid, userId, streamId, streamType, Date.now(), Date.now(), deviceId);
+  console.log(`[Session] ALLOWED userId=${userId} streamId=${streamId} total=${sessions.length+1}/${maxConn} deviceId=${deviceId||'?'}`);
+  return { allowed: true, sessionId: sid };
+}
+
+async function releaseUserSession(userId, streamId) {
+  await _deleteSessionByStream(userId, streamId);
+}
+
+async function releaseSessionById(sessionId) {
+  await _deleteSession(sessionId);
+}
+
+async function heartbeatSession(sessionId) {
+  await _updateHeartbeat(sessionId);
+}
+
+// Periodic cleanup of expired sessions
+
+setInterval(
+  async () => {
+    try {
+      const removed = await _cleanExpiredSessions();
+
+      if (removed.changes > 0)
+        console.log(`[Sessions] Cleaned ${removed.changes} expired sessions`);
+    } catch (e) {
+      console.error("[Sessions] Cleanup error:", e.message);
+    }
+  },
+  60 * 1000,
+);
+
+// POST /api/session/heartbeat
+
+app.post("/api/session/heartbeat", requireAuth, async (req, res) => {
+  const { sessionId } = req.body;
+
+  if (!sessionId) return res.status(400).json({ error: "sessionId required" });
+
+  const session = await _getSessionById(sessionId);
+
+  if (!session || session.user_id !== req.user.id)
+    return res.status(404).json({ error: "session not found" });
+
+  await heartbeatSession(sessionId);
+
+  res.json({ success: true });
+});
+
+// POST /api/session/release
+
+app.post("/api/session/release", requireAuth, async (req, res) => {
+  const { sessionId, streamId } = req.body;
+
+  if (sessionId) await releaseSessionById(sessionId);
+  else if (streamId) await releaseUserSession(req.user.id, streamId);
+
+  res.json({ success: true });
+});
+
+// GET /api/session/active - user's active sessions with subscription info
+
+app.get("/api/session/active", requireAuth, async (req, res) => {
+  await _cleanExpiredSessions();
+
+  const sessions = await _getUserSessions(req.user.id);
+
+  const user = await db
+    .prepare("SELECT plan, expires_at, max_connections FROM users WHERE id = ?")
+    .get(req.user.id);
+
+  const maxConn = (user && user.max_connections) || 1;
+
+  const plan = (user && user.plan) || "free";
+
+  const expires_at = (user && user.expires_at) || null;
+
+  res.json({
+    sessions,
+    active: sessions.length,
+    max: maxConn,
+    plan,
+    expires_at,
+  });
+});
+
+// POST /api/session/force-release - force release a specific session (for users who hit limit)
+
+app.post("/api/session/force-release", requireAuth, async (req, res) => {
+  const { sessionId } = req.body;
+
+  if (!sessionId) return res.status(400).json({ error: "sessionId مطلوب" });
+
+  const session = await _getSessionById(sessionId);
+
+  if (!session || session.user_id !== req.user.id)
+    return res.status(404).json({ error: "الجلسة غير موجودة" });
+
+  await releaseSessionById(sessionId);
+
+  const remaining = await _getUserSessions(req.user.id);
+
+  res.json({ success: true, active: remaining.length });
+});
+
+// POST /api/session/release-all - release all sessions for user
+
+app.post("/api/session/release-all", requireAuth, async (req, res) => {
+  await db
+    .prepare("DELETE FROM active_sessions WHERE user_id = ?")
+    .run(req.user.id);
+
+  res.json({ success: true, active: 0 });
+});
+
+// GET /api/session/subscription-info - subscription details + session limits
+
+app.get("/api/session/subscription-info", requireAuth, async (req, res) => {
+  const user = await db
+    .prepare(
+      "SELECT plan, expires_at, max_connections, is_admin, role FROM users WHERE id = ?",
+    )
+    .get(req.user.id);
+
+  if (!user) return res.status(404).json({ error: "المستخدم غير موجود" });
+
+  await _cleanExpiredSessions();
+
+  const sessions = await _getUserSessions(req.user.id);
+
+  const isPremium = user.plan === "premium";
+
+  let daysLeft = null;
+
+  if (isPremium && user.expires_at) {
+    const diff = new Date(user.expires_at) - new Date();
+
+    daysLeft = Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
+  }
+
+  // Auto-expire
+
+  if (isPremium && user.expires_at && new Date(user.expires_at) < new Date()) {
+    await db
+      .prepare("UPDATE users SET plan = 'free', expires_at = NULL WHERE id = ?")
+      .run(req.user.id);
+
+    user.plan = "free";
+
+    user.expires_at = null;
+
+    user.max_connections = 1;
+  }
+
+  res.json({
+    plan: user.plan,
+
+    isPremium: user.plan === "premium",
+
+    expires_at: user.expires_at,
+
+    daysLeft,
+
+    max_connections: user.max_connections || 1,
+
+    active_sessions: sessions.length,
+
+    sessions: sessions.map((s) => ({
+      id: s.id,
+      stream_id: s.stream_id,
+      type: s.type,
+
+      started_at: s.started_at,
+      last_seen: s.last_seen,
+    })),
+
+    is_admin: !!(user.is_admin || user.role === "admin"),
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+
+app.post(
+  "/api/stream/live/:channelId",
+  requireAuth,
+  requirePremium,
+  async (req, res) => {
+    const rawId = req.params.channelId;
+
+    // deviceId identifies the physical device - prevents two devices sharing one session
+    const deviceId = req.body.deviceId || req.headers['x-device-id'] || '';
+
+    // ─── Resolve channel first to get the real stream_id for session tracking ───
+    // This ensures POST /api/stream/live and /proxy/live use the same session key
+
+    // Try different ID formats: numeric, xtream_live_N, or accountId_streamId
+    let xtreamStreamId = null;
+    const numMatch = rawId.match(/^xtream_live_(\d+)$/) || rawId.match(/^(\d+)$/);
+    if (numMatch) {
+      xtreamStreamId = numMatch[1];
+    } else {
+      const dbCh = await db
+        .prepare("SELECT stream_id FROM xtream_channels WHERE id = ?")
+        .get(rawId);
+      if (dbCh) xtreamStreamId = String(dbCh.stream_id);
+    }
+
+    if (xtreamStreamId) {
+      const xch = await db
+        .prepare(
+          "SELECT id, name, logo, category, stream_id, base_url, account_id FROM xtream_channels WHERE stream_id = ? OR id = ?",
+        )
+        .get(Number(xtreamStreamId), xtreamStreamId);
+
+      if (xch) {
+        // ═══ Connection limit check - use stream_id (e.g. "live_1017030") ═══
+        const connCheck = await checkConnectionLimit(
+          req.user.id,
+          `live_${xch.stream_id}`,
+          "live",
+          deviceId,
+        );
+
+        if (!connCheck.allowed) {
+          return res
+            .status(429)
+            .json({
+              error: connCheck.error,
+              message: connCheck.message,
+              active: connCheck.active,
+              max: connCheck.max,
+            });
+        }
+
+        // ═══ FFmpegRestreamer: اتصال واحد بـ IPTV، بث HLS محلي ═══
+        const info = await getChannelAccount(db, xch.id);
+        const serverUrl = info?.account ? info.account.server_url : (xch.base_url || XTREAM.primary);
+        const username = info?.account ? info.account.username : XTREAM.user;
+        const password = info?.account ? info.account.password : XTREAM.pass;
+        const sourceUrl = `${serverUrl}/live/${username}/${password}/${xch.stream_id}.ts`;
+
+        try {
+          const result = await restreamer.startStream(
+            String(xch.stream_id),
+            sourceUrl,
+            xch.name,
+            req.user.id,
+            deviceId,
+          );
+
+          const stToken = jwt.sign(
+            { userId: req.user.id, streamId: String(xch.stream_id), t: 'stream', lv: Number(req.user.login_version) || 0, did: deviceId },
+            config.JWT_SECRET,
+            { expiresIn: '8h' },
+          );
+          const hlsUrl = result.hlsUrl + `?st=${stToken}&did=${encodeURIComponent(deviceId)}`;
+
+          return res.json({
+            success: true,
+            hlsUrl,
+            ready: result.ready,
+            streamId: String(xch.stream_id),
+            sessionId: connCheck.sessionId,
+            name: xch.name,
+            logo: xch.logo,
+          });
+        } catch (e) {
+          console.error(`[Restreamer] فشل بدء البث: ${e.message}`);
+          return res.status(500).json({ error: 'فشل بدء البث', message: e.message });
+        }
+      }
+    }
+
+    // ═══ Connection limit check for non-xtream channels ═══
+    const connCheck = await checkConnectionLimit(
+      req.user.id,
+      `live_${rawId}`,
+      "live",
+      deviceId,
+    );
+
+    if (!connCheck.allowed) {
+      return res
+        .status(429)
+        .json({
+          error: connCheck.error,
+          message: connCheck.message,
+          active: connCheck.active,
+          max: connCheck.max,
+        });
+    }
+
+    let ch = await db
+      .prepare(
+        "SELECT id, name, stream_url FROM channels WHERE id = ? AND is_enabled = 1",
+      )
+      .get(rawId);
+
+    // Lazy sync: if channel not found locally, sync from backend PostgreSQL and retry
+
+    if (!ch) {
+      await syncChannelsFromBackend(true);
+
+      ch = await db
+        .prepare(
+          "SELECT id, name, stream_url FROM channels WHERE id = ? AND is_enabled = 1",
+        )
+        .get(rawId);
+    }
+
+    if (!ch) return res.status(404).json({ error: "القناة غير متاحة" });
+
+    if (!ch.stream_url)
+      return res.status(400).json({ error: "القناة بدون رابط بث" });
+
+    // â•â•â• Ø§Ù"ÙˆØ¶Ø1 Ø§Ù"Ø£Ø3Ø§Ø3ÙŠ: Direct Pipe (Ø ̈Ø ̄ÙˆÙ† FFmpeg â€" Ø ̈Ø« ÙÙˆØ±ÙŠ) â•â•â•
+
+    // Ø§Ù"ØaØ·Ø ̈ÙŠÙ' ÙŠØaØμÙ" Ø ̈Ù€ /live-pipe/:channelId Ù...Ø ̈Ø§Ø ́Ø±Ø©
+
+    // Ø§Ù"ÙˆØ¶Ø1 Ø§Ù"Ø§Ø­ØaÙŠØ§Ø·ÙŠ: FFmpeg â†' HLS (Ø¥Ø°Ø§ Ø·Ù"Ø ̈ Ø§Ù"ØaØ·Ø ̈ÙŠÙ' ÙˆØ¶Ø1 HLS)
+
+    const mode = req.body.mode || "pipe"; // 'pipe' Ø£Ùˆ 'hls'
+
+    if (mode === "hls") {
+      const result = await streamManager.requestStream(
+        ch.id,
+        "live",
+        ch.stream_url,
+        ch.name,
+      );
+
+      return res.json({
+        success: true,
+
+        hlsUrl: `/hls/${ch.id}/stream.m3u8`,
+
+        ready: result.ready || false,
+
+        waiting: result.waiting || false,
+
+        streamId: ch.id,
+      });
+    }
+
+    // Direct pipe â€" Ø±Ø§Ø ̈Ø· Ø§Ù"Ø ̈Ø« Ø§Ù"Ù...Ø ̈Ø§Ø ́Ø± Ø ̈Ø ̄ÙˆÙ† FFmpeg
+
+    res.json({
+      success: true,
+
+      vodUrl: `/live-pipe/${ch.id}`,
+
+      ready: true,
+
+      streamId: ch.id,
+    });
+  },
+);
+
+// Xtream Token Redirect - mobile app follows redirect natively via ExoPlayer
+
+app.get(
+  ["/xtream-play/:token", "/xtream-play/:token/index.m3u8"],
+  async (req, res) => {
+    try {
+      const payload = jwt.verify(req.params.token, config.JWT_SECRET);
+
+      if (payload.t !== "xt" || !payload.sid) return res.status(403).end();
+
+      // ─── Verify user session + premium subscription ───
+      if (payload.userId) {
+        const dbLv = await _getLoginVersion(payload.userId);
+        const jwtLv = payload.lv ?? 0;
+        if (jwtLv !== dbLv) return res.status(401).json({ error: 'session_invalidated', message: 'تم تسجيل الدخول من جهاز آخر' });
+        const user = await _getCachedUser(payload.userId);
+        if (!user || user.is_blocked) return res.status(401).end();
+        if (!user.is_admin && user.role !== 'admin' && user.role !== 'agent') {
+          if (user.plan !== 'premium') return res.status(403).json({ error: 'subscription_required', message: 'هذا المحتوى يتطلب اشتراك بريميوم' });
+          if (user.expires_at && new Date(user.expires_at) < new Date()) return res.status(403).json({ error: 'subscription_expired', message: 'انتهت صلاحية اشتراكك يرجى التجديد' });
+        }
+      }
+
+      const realUrl = `${XTREAM.primary}/live/${XTREAM.user}/${XTREAM.pass}/${payload.sid}.m3u8`;
+
+      res.redirect(302, realUrl);
+    } catch (e) {
+      res.status(403).json({ error: "Invalid or expired token" });
+    }
+  },
+);
+
+// Xtream Pipe - redirect to HLS proxy (no persistent connections, multi-channel safe)
+
+app.get("/xtream-pipe/:token", async (req, res) => {
+  try {
+    const payload = jwt.verify(req.params.token, config.JWT_SECRET);
+
+    if (payload.t !== "xt" || !payload.sid) return res.status(403).end();
+
+    // Redirect to FFmpegRestreamer HLS
+    const hlsUrl = `/hls/stream_${payload.sid}/playlist.m3u8`;
+
+    console.log(`[Xtream-pipe] #${payload.sid} → Restreamer HLS`);
+
+    res.redirect(302, hlsUrl);
+  } catch (e) {
+    console.error("[Xtream-pipe] error:", e.message);
+
+    res.status(403).json({ error: "Invalid or expired token" });
+  }
+});
+
+// â•â•â• Direct Live Pipe â€" Ø ̈Ø« Ù...Ø ̈Ø§Ø ́Ø± Ø ̈Ø ̄ÙˆÙ† FFmpeg (pipe) â•â•â•
+
+app.get("/live-pipe/:channelId", requireAuth, requirePremium, async (req, res) => {
+  const rawId = req.params.channelId;
+
+  // Xtream channel proxy - server connects to IPTV source instead of client
+
+  const xtreamPipeMatch = rawId.match(/^xtream_(\d+)$/);
+
+  if (xtreamPipeMatch) {
+    const streamId = xtreamPipeMatch[1];
+
+    const sourceUrl = `${XTREAM.primary}/live/${XTREAM.user}/${XTREAM.pass}/${streamId}.m3u8`;
+
+    console.log(`[LivePipe] Xtream #${streamId} (proxied)`);
+
+    await liveProxy.streamToClient(`xtream_${streamId}`, sourceUrl, req, res);
+
+    return;
+  }
+
+  // Local channels
+  const user = req.user;
+
+  const ch = await db
+    .prepare(
+      "SELECT id, name, stream_url FROM channels WHERE id = ? AND is_enabled = 1",
+    )
+    .get(rawId);
+
+  if (!ch || !ch.stream_url) return res.status(404).end();
+
+  console.log(`[LivePipe] ${ch.name}`);
+
+  await liveProxy.streamToClient(ch.id, ch.stream_url, req, res);
+});
+
+/**
+
+ * POST /api/stream/vod/:id
+
+ * Ø ̈Ø ̄Ø¡ Ø ̈Ø« ÙÙŠÙ"Ù... Ø£Ùˆ Ø­Ù"Ù'Ø©
+
+ * Ø§Ù"Ù...ØμØ ̄Ø±: vidsrc (embed.su / vidlink.pro) Ø1Ø ̈Ø± TMDb ID
+
+ * IPTV ÙÙ'Ø· ÙƒØ§Ø­ØaÙŠØ§Ø·ÙŠ Ø¥Ø°Ø§ Ù"Ø§ ÙŠÙˆØ¬Ø ̄ TMDb ID
+
+ */
+
+app.post(
+  "/api/stream/vod/:id",
+  requireAuth,
+  requirePremium,
+  async (req, res) => {
+    const paramId = decodeURIComponent(req.params.id);
+
+    // ═══ Connection limit check ═══
+
+    const connCheck = await checkConnectionLimit(
+      req.user.id,
+      `vod_${paramId}`,
+      "vod",
+    );
+
+    if (!connCheck.allowed) {
+      return res
+        .status(429)
+        .json({
+          error: connCheck.error,
+          message: connCheck.message,
+          active: connCheck.active,
+          max: connCheck.max,
+        });
+    }
+
+    // Ø ̈Ø­Ø« Ø ̈Ø§Ù"Ù€ id Ø£Ùˆ stream_token - Ø£ÙˆÙ"ÙˆÙŠØ©: episodes Ø«Ù... vod
+
+    let item = null;
+
+    let itemType = "vod";
+
+    let parentVod = null;
+
+    // 1. Ø ̈Ø­Ø« ÙÙŠ episodes Ø ̈Ø§Ù"Ù€ id
+
+    item = await db
+      .prepare(
+        "SELECT id, title, stream_token, container_ext, xtream_id, vod_id, season, episode_num FROM episodes WHERE id = ?",
+      )
+      .get(paramId);
+
+    if (item) {
+      itemType = "episode";
+    }
+
+    // 2. Ø ̈Ø­Ø« ÙÙŠ vod Ø ̈Ø§Ù"Ù€ id
+
+    if (!item) {
+      item = await db
+        .prepare(
+          "SELECT id, title, stream_token, vod_type, xtream_id, container_ext, tmdb_id AS tmdb FROM vod WHERE id = ?",
+        )
+        .get(paramId);
+
+      itemType = "vod";
+    }
+
+    // 3. Ø ̈Ø­Ø« Ø ̈Ø§Ù"Ù€ stream_token
+
+    if (!item) {
+      item = await db
+        .prepare(
+          "SELECT id, title, stream_token, container_ext, xtream_id, vod_id, season, episode_num FROM episodes WHERE stream_token = ?",
+        )
+        .get(paramId);
+
+      if (item) itemType = "episode";
+    }
+
+    if (!item) {
+      item = await db
+        .prepare(
+          "SELECT id, title, stream_token, vod_type, xtream_id, container_ext, tmdb_id AS tmdb FROM vod WHERE stream_token = ?",
+        )
+        .get(paramId);
+
+      if (item) itemType = "vod";
+    }
+
+    if (!item)
+      return res
+        .status(404)
+        .json({ error: "Ø§Ù"Ù...Ø­ØaÙˆÙ‰ ØoÙŠØ± Ù...ÙˆØ¬ÙˆØ ̄" });
+
+    // Ø¥Ø°Ø§ ÙƒØ§Ù† Ù...Ø3Ù"Ø3Ù" → Ø ́ØoÙ'Ù" Ø£ÙˆÙ" Ø­Ù"Ù'Ø© Ø ̈Ø ̄Ù"Ø§Ù‹ Ù...Ù† Ø§Ù"Ù...Ø3Ù"Ø3Ù" Ù†ÙØ3Ù‡
+
+    if (itemType === "vod" && item.vod_type === "series") {
+      parentVod = item;
+
+      const episode = await db
+        .prepare(
+          "SELECT id, title, stream_token, container_ext, xtream_id, vod_id, season, episode_num FROM episodes WHERE vod_id = ? ORDER BY season ASC, episode_num ASC LIMIT 1",
+        )
+        .get(item.id);
+
+      if (episode) {
+        item = episode;
+
+        itemType = "episode";
+      } else {
+        return res
+          .status(400)
+          .json({
+            error:
+              "Ù‡Ø°Ø§ Ø§Ù"Ù...Ø3Ù"Ø3Ù" Ù"Ø§ ÙŠØ­ØaÙˆÙŠ Ø1Ù"Ù‰ Ø­Ù"Ù'Ø§Øa Ø ̈Ø1Ø ̄",
+          });
+      }
+    }
+
+    // ═══ Ø¬Ù"Ø ̈ TMDb ID - Ù"Ù"Ø­Ù"Ù'Ø§Øa Ù†Ø¬Ù"Ø ̈Ù‡ Ù...Ù† Ø§Ù"Ù...Ø3Ù"Ø3Ù" Ø§Ù"Ø£Ø ̈ ═══
+
+    let tmdbId = item.tmdb || null;
+
+    if (!tmdbId && itemType === "episode" && item.vod_id) {
+      const parent =
+        parentVod ||
+        (await db
+          .prepare("SELECT tmdb_id AS tmdb, vod_type FROM vod WHERE id = ?")
+          .get(item.vod_id));
+
+      if (parent) tmdbId = parent.tmdb;
+    }
+
+    // â•â•â• Ø§Ù"Ù...ØμØ ̄Ø± Ø§Ù"Ø£Ø3Ø§Ø3ÙŠ: Ø§Ø3ØaØ®Ø±Ø§Ø¬ Ù...Ø ̈Ø§Ø ́Ø± Ø1Ø ̈Ø± @movie-web/providers â•â•â•
+
+    if (tmdbId) {
+      try {
+        const type = itemType === "episode" ? "tv" : "movie";
+
+        const season = item.season || undefined;
+
+        const episode = item.episode_num || undefined;
+
+        console.log(
+          `[VOD] Extract: tmdb=${tmdbId} type=${type}${type === "tv" ? ` s${season}e${episode}` : ""} â€" ${item.title}`,
+        );
+
+        const extracted = await extractStream({
+          tmdbId,
+          type,
+          title: item.title,
+          releaseYear: 2024,
+
+          season,
+          episode,
+        });
+
+        if (extracted && extracted.url) {
+          console.log(
+            `[VOD] âœ" Direct ${extracted.type}: ${extracted.sourceId} â€" ${extracted.url.substring(0, 80)}`,
+          );
+
+          const directResult = buildDirectResultFromExtracted(extracted);
+
+          recordWatchHistory(req.user.id, item.id, itemType);
+
+          return res.json(
+            await finalizeDirectStream({
+              streamId: item.id,
+
+              directResult,
+            }),
+          );
+        }
+
+        // Ø§Ø­ØaÙŠØ§Ø·: embed URLs
+
+        console.log(`[VOD] Direct extraction failed â€" trying embed resolver`);
+
+        const stream = await resolveStream(tmdbId, type, season, episode);
+
+        if (stream && stream.embedUrl) {
+          res.json({
+            success: true,
+
+            embedUrl: stream.embedUrl,
+
+            provider: stream.provider,
+
+            sources: stream.sources,
+
+            ready: true,
+
+            streamId: item.id,
+          });
+
+          recordWatchHistory(req.user.id, item.id, itemType);
+
+          return;
+        }
+      } catch (e) {
+        console.error(`[VOD] Extract ÙØ ́Ù" â€" ${item.title}:`, e.message);
+
+        // ØaØ§Ø ̈Ø1 Ù"Ù"Ø§Ø­ØaÙŠØ§Ø·ÙŠ IPTV
+      }
+    }
+
+    // â•â•â• Ø§Ø­ØaÙŠØ§Ø·ÙŠ: IPTV (Ø¥Ø°Ø§ Ù"Ø§ ÙŠÙˆØ¬Ø ̄ TMDb ID Ø£Ùˆ ÙØ ́Ù" vidsrc) â•â•â•
+
+    let sourceUrl = item.stream_token;
+
+    if (item.xtream_id) {
+      const cfg = await db
+        .prepare(
+          "SELECT server_url, username, password FROM iptv_config WHERE id = 1",
+        )
+        .get();
+
+      if (cfg && cfg.server_url) {
+        const ext = item.container_ext || "mkv";
+
+        const urlType = itemType === "episode" ? "series" : "movie";
+
+        sourceUrl = `${cfg.server_url}/${urlType}/${cfg.username}/${cfg.password}/${item.xtream_id}.${ext}`;
+      }
+    }
+
+    if (!sourceUrl)
+      return res
+        .status(400)
+        .json({ error: "Ø§Ù"Ù...Ø­ØaÙˆÙ‰ Ø ̈Ø ̄ÙˆÙ† Ø±Ø§Ø ̈Ø· Ø ̈Ø«" });
+
+    const ext = item.container_ext || "mp4";
+
+    try {
+      const result = await vodProxy.initSession(
+        item.id,
+        sourceUrl,
+        item.title,
+        ext,
+      );
+
+      res.json({
+        success: true,
+
+        vodUrl: result.proxyUrl,
+
+        ready: true,
+
+        duration: result.duration || 0,
+
+        contentLength: result.contentLength,
+
+        acceptRanges: result.acceptRanges,
+
+        streamId: item.id,
+      });
+    } catch (e) {
+      console.error(`[VOD] Ø®Ø·Ø£ ØaÙ‡ÙŠØ¦Ø© Ø§Ù"Ø ̈Ø«:`, e.message);
+
+      return res.status(500).json({ error: "Ø®Ø·Ø£ ÙÙŠ ØaÙ‡ÙŠØ¦Ø© Ø§Ù"Ø ̈Ø«" });
+    }
+
+    // Ø3Ø¬Ù'Ù" ÙÙŠ ØaØ§Ø±ÙŠØ® Ø§Ù"Ù...Ø ́Ø§Ù‡Ø ̄Ø©
+
+    recordWatchHistory(req.user.id, item.id, itemType);
+  },
+);
+
+/**
+
+ * POST /api/stream/release/:streamId
+
+ * Ø¥Ù†Ù‡Ø§Ø¡ Ø§Ù"Ù...Ø ́Ø§Ù‡Ø ̄Ø©
+
+ */
+
+app.post("/api/stream/release/:streamId", requireAuth, async (req, res) => {
+  streamManager.releaseStream(req.params.streamId);
+
+  // Remove viewer from restreamer
+  const deviceId = req.body.deviceId || req.headers['x-device-id'] || '';
+  restreamer.removeViewer(req.params.streamId, req.user.id, deviceId);
+
+  vodProxy.releaseSession(req.params.streamId);
+
+  // Release active session for this stream
+
+  await releaseUserSession(req.user.id, `live_${req.params.streamId}`);
+
+  await releaseUserSession(req.user.id, `vod_${req.params.streamId}`);
+
+  await releaseUserSession(req.user.id, req.params.streamId);
+
+  res.json({ success: true });
+});
+
+/**
+
+ * GET /api/stream/ready/:streamId
+
+ * ÙØ­Øμ Ø¬Ù‡ÙˆØ2ÙŠØ© Ø§Ù"Ø ̈Ø« â€" HLS VOD Ø£Ùˆ Live
+
+ */
+
+app.get("/api/stream/ready/:streamId", requireAuth, (req, res) => {
+  const streamId = req.params.streamId;
+
+  // ÙØ­Øμ VOD proxy Ø£ÙˆÙ"Ø§Ù‹
+
+  const session = vodProxy.getSession(streamId);
+
+  if (session) {
+    return res.json({
+      ready: true,
+
+      type: "vod",
+
+      duration: session.duration || 0,
+    });
+  }
+
+  // ÙØ­Øμ Live/HLS stream
+
+  const info = streamManager.getStreamInfo(streamId);
+
+  if (info) {
+    return res.json({ ready: info.ready, type: info.type });
+  }
+
+  res.json({ ready: false });
+});
+
+/**
+
+ * GET /api/stream/info/:streamId
+
+ * Ø¬Ù"Ø ̈ Ù...Ø1Ù"ÙˆÙ...Ø§Øa Ø§Ù"Ø ̈Ø« + Ø§Ù"Ù...Ø ̄Ø© â€" ÙŠÙØ3ØaØ ̄Ø1Ù‰ Ø ̈Ø ́ÙƒÙ" Ø ̄ÙˆØ±ÙŠ Ø­ØaÙ‰ ØaØaÙˆÙØ± Ø§Ù"Ù...Ø ̄Ø©
+
+ */
+
+app.get("/api/stream/info/:streamId", requireAuth, (req, res) => {
+  const streamId = req.params.streamId;
+
+  const info = streamManager.getStreamInfo(streamId);
+
+  const session = vodProxy.getSession(streamId);
+
+  if (!info && !session)
+    return res.status(404).json({ error: "Ø§Ù"Ø¬Ù"Ø3Ø© ØoÙŠØ± Ù...ÙˆØ¬ÙˆØ ̄Ø©" });
+
+  res.json({
+    name: info ? info.name : session ? session.name : "",
+
+    type: info ? info.type : "vod",
+
+    completed: info ? info.completed : false,
+
+    ready: info ? info.ready : true,
+
+    duration: session ? session.duration : 0,
+  });
+});
+
+/**
+
+ * POST /api/stream/seek/:streamId
+
+ * Seeking ÙÙŠ VOD â€" Ø¥Ø1Ø§Ø ̄Ø© Ø ̈Ø ̄Ø¡ FFmpeg Ù...Ù† Ù...ÙˆØ¶Ø1 Ø¬Ø ̄ÙŠØ ̄
+
+ */
+
+app.post("/api/stream/seek/:streamId", requireAuth, async (req, res) => {
+  const { position } = req.body; // Ø ̈Ø§Ù"Ø«ÙˆØ§Ù†ÙŠ
+
+  if (typeof position !== "number" || position < 0) {
+    return res.status(400).json({ error: "Ù...ÙˆØ¶Ø1 ØoÙŠØ± ØμØ­ÙŠØ­" });
+  }
+
+  try {
+    const result = await streamManager.seekVodStream(
+      req.params.streamId,
+      position,
+    );
+
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// Ù...Ø1Ù"ÙˆÙ...Ø§Øa Ø§Ù"ÙˆØ3Ø§Ø¦Ø· â€" Ø§Ù"Ø¬ÙˆØ ̄Ø© + Ø§Ù"ØaØ±Ø¬Ù...Ø© + Ø§Ù"ØμÙˆØa
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+app.get("/api/stream/media-info/:streamId", requireAuth, (req, res) => {
+  const info = vodProxy.getMediaInfo(req.params.streamId);
+
+  if (!info)
+    return res.status(404).json({ error: "Ø§Ù"Ø¬Ù"Ø3Ø© ØoÙŠØ± Ù...ÙˆØ¬ÙˆØ ̄Ø©" });
+
+  res.json(info);
+});
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// Ø§Ø3ØaØ®Ø±Ø§Ø¬ ØaØ±Ø¬Ù...Ø© â€" WebVTT
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+app.get("/vod/subtitle/:id/:trackIndex", async (req, res) => {
+  try {
+    const vttPath = await vodProxy.extractSubtitle(
+      req.params.id,
+      parseInt(req.params.trackIndex),
+    );
+
+    if (!vttPath)
+      return res
+        .status(404)
+        .json({ error: "Ø§Ù"ØaØ±Ø¬Ù...Ø© ØoÙŠØ± Ù...ØaÙˆÙØ±Ø©" });
+
+    res.set({ "Content-Type": "text/vtt", "Access-Control-Allow-Origin": "*" });
+
+    fs.createReadStream(vttPath).pipe(res);
+  } catch (e) {
+    res.status(500).json({ error: "Ø®Ø·Ø£ ÙÙŠ Ø§Ø3ØaØ®Ø±Ø§Ø¬ Ø§Ù"ØaØ±Ø¬Ù...Ø©" });
+  }
+});
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// IPTV VOD API - أفلام ومسلسلات من Xtream
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+app.get("/api/xtream/vod/home", async (req, res) => {
+  try {
+    const data = await xtreamVod.getHome();
+
+    res.json(data);
+  } catch (e) {
+    console.error("[VOD] home:", e.message);
+
+    res.status(500).json({ error: "فشل جلب البيانات" });
+  }
+});
+
+app.get("/api/xtream/vod/categories", async (req, res) => {
+  try {
+    res.json(await xtreamVod.getVodCategories());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/xtream/vod/categories-with-movies", async (req, res) => {
+  try {
+    const perCategory = parseInt(req.query.per_category) || 12;
+
+    const maxCategories = parseInt(req.query.max_categories) || 40;
+
+    const filter = req.query.filter || "";
+
+    const data = await xtreamVod.getVodByCategory({
+      perCategory,
+      maxCategories,
+      filter,
+    });
+
+    res.json(data);
+  } catch (e) {
+    console.error("[categories-with-movies]", e.message);
+
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/xtream/vod/streams", async (req, res) => {
+  try {
+    const { category_id, page, limit, search } = req.query;
+
+    const data = await xtreamVod.getVodStreams({
+      categoryId: category_id,
+
+      page: parseInt(page) || 1,
+
+      limit: parseInt(limit) || 20,
+
+      search: search || undefined,
+    });
+
+    res.json(data);
+  } catch (e) {
+    console.error("[VOD] streams:", e.message);
+
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/xtream/vod/info/:vodId", async (req, res) => {
+  try {
+    const data = await xtreamVod.getVodInfo(req.params.vodId);
+
+    res.json(data);
+  } catch (e) {
+    console.error("[VOD] info:", e.message);
+
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/xtream/vod/stream/:vodId", (req, res) => {
+  try {
+    const info = { id: req.params.vodId, ext: req.query.ext || "mp4" };
+
+    const token = jwt.sign(
+      { sid: info.id, ext: info.ext, t: "vod" },
+      config.JWT_SECRET,
+      { expiresIn: "6h" },
+    );
+
+    res.json({ success: true, streamUrl: `/vod-play/${token}/stream.mp4` });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/xtream/series/categories", async (req, res) => {
+  try {
+    res.json(await xtreamVod.getSeriesCategories());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/xtream/series/list", async (req, res) => {
+  try {
+    const { category_id, page, limit, search } = req.query;
+
+    const data = await xtreamVod.getSeriesList({
+      categoryId: category_id,
+
+      page: parseInt(page) || 1,
+
+      limit: parseInt(limit) || 20,
+
+      search: search || undefined,
+    });
+
+    res.json(data);
+  } catch (e) {
+    console.error("[Series] list:", e.message);
+
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/xtream/series/info/:seriesId", async (req, res) => {
+  try {
+    const data = await xtreamVod.getSeriesInfo(req.params.seriesId);
+
+    res.json(data);
+  } catch (e) {
+    console.error("[Series] info:", e.message);
+
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/xtream/series/stream/:episodeId", (req, res) => {
+  try {
+    const token = jwt.sign(
+      { sid: req.params.episodeId, ext: req.query.ext || "mp4", t: "ser" },
+
+      config.JWT_SECRET,
+
+      { expiresIn: "6h" },
+    );
+
+    res.json({ success: true, streamUrl: `/vod-play/${token}/stream.mp4` });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/xtream/vod/search", async (req, res) => {
+  try {
+    const { q, page } = req.query;
+
+    const data = await xtreamVod.search(q || "", parseInt(page) || 1);
+
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// VOD Token Proxy - pipe the IPTV stream through cloud server so browsers don't face CORS/mixed-content
+
+// Uses keep-alive agents for connection reuse across 100+ concurrent VOD users
+
+app.get(["/vod-play/:token", "/vod-play/:token/stream.mp4"], (req, res) => {
+  try {
+    const payload = jwt.verify(req.params.token, config.JWT_SECRET);
+
+    if (!payload.sid || !["vod", "ser"].includes(payload.t))
+      return res.status(403).end();
+
+    const ext = payload.ext || "mp4";
+
+    const vodPath =
+      payload.t === "ser"
+        ? `series/${XTREAM.user}/${XTREAM.pass}/${payload.sid}.${ext}`
+        : `movie/${XTREAM.user}/${XTREAM.pass}/${payload.sid}.${ext}`;
+
+    const upstreamUrl = `${XTREAM.primary}/${vodPath}`;
+
+    const parsed = new URL(upstreamUrl);
+
+    const isHttps = parsed.protocol === "https:";
+
+    const httpMod = isHttps ? https : http;
+
+    const agent = isHttps ? upstreamHttpsAgent : upstreamHttpAgent;
+
+    const reqHeaders = {
+      "User-Agent": "VLC/3.0.20 LibVLC/3.0.20",
+
+      Accept: "*/*",
+
+      Connection: "keep-alive",
+    };
+
+    if (req.headers.range) reqHeaders["Range"] = req.headers.range;
+
+    const proxyReq = httpMod.get(
+      upstreamUrl,
+      {
+        headers: reqHeaders,
+
+        agent,
+
+        timeout: 60000,
+      },
+      (upRes) => {
+        // Follow redirects
+
+        if (
+          upRes.statusCode >= 300 &&
+          upRes.statusCode < 400 &&
+          upRes.headers.location
+        ) {
+          upRes.resume();
+
+          const redirectUrl = upRes.headers.location;
+
+          const rParsed = new URL(redirectUrl);
+
+          const rHttps = rParsed.protocol === "https:";
+
+          const rMod = rHttps ? https : http;
+
+          const rAgent = rHttps ? upstreamHttpsAgent : upstreamHttpAgent;
+
+          const rReq = rMod.get(
+            redirectUrl,
+            { headers: reqHeaders, agent: rAgent, timeout: 60000 },
+            (rRes) => {
+              _pipeVodResponse(rRes, req, res);
+            },
+          );
+
+          rReq.on("error", (e) => {
+            if (!res.headersSent) res.status(502).end();
+          });
+
+          rReq.on("timeout", () => {
+            rReq.destroy();
+            if (!res.headersSent) res.status(504).end();
+          });
+
+          return;
+        }
+
+        _pipeVodResponse(upRes, req, res);
+      },
+    );
+
+    proxyReq.on("error", (e) => {
+      console.error("[VOD-play] proxy error:", e.message);
+
+      if (!res.headersSent) res.status(502).end();
+    });
+
+    proxyReq.on("timeout", () => {
+      proxyReq.destroy();
+
+      if (!res.headersSent) res.status(504).end();
+    });
+  } catch (e) {
+    console.error("[VOD-play] token error:", e.message);
+
+    if (!res.headersSent)
+      res.status(403).json({ error: "Invalid or expired token" });
+  }
+});
+
+function _pipeVodResponse(upRes, req, res) {
+  if (upRes.statusCode !== 200 && upRes.statusCode !== 206) {
+    upRes.resume();
+
+    if (!res.headersSent) res.status(upRes.statusCode || 502).end();
+
+    return;
+  }
+
+  if (!res.headersSent) {
+    res.status(upRes.statusCode);
+
+    res.set("Content-Type", upRes.headers["content-type"] || "video/mp4");
+
+    res.set("Accept-Ranges", "bytes");
+
+    res.set("Access-Control-Allow-Origin", "*");
+
+    res.set(
+      "Access-Control-Expose-Headers",
+      "Content-Range, Content-Length, Accept-Ranges",
+    );
+
+    if (upRes.headers["content-length"])
+      res.set("Content-Length", upRes.headers["content-length"]);
+
+    if (upRes.headers["content-range"])
+      res.set("Content-Range", upRes.headers["content-range"]);
+  }
+
+  upRes.pipe(res);
+
+  upRes.on("error", () => {
+    try {
+      res.end();
+    } catch {}
+  });
+
+  req.on("close", () => {
+    upRes.destroy();
+  });
+}
+
+// ═══════════════════════════════════════════════════════
+
+// VidSrc/TMDB Content API
+
+// ═══════════════════════════════════════════════════════
+
+app.get("/api/vidsrc/home", async (req, res) => {
+  try {
+    const data = await vidsrcApi.getHome();
+
+    res.json(data);
+  } catch (e) {
+    console.error("[vidsrc/home]", e.message);
+
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/vidsrc/browse", async (req, res) => {
+  try {
+    const { type, page = 1, category = "popular" } = req.query;
+
+    const data = await vidsrcApi.browse({
+      type,
+      page: parseInt(page),
+      category,
+    });
+
+    res.json(data);
+  } catch (e) {
+    console.error("[vidsrc/browse]", e.message);
+
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/vidsrc/search", async (req, res) => {
+  try {
+    const { q, page = 1 } = req.query;
+
+    if (!q) return res.json({ items: [], hasMore: false });
+
+    const data = await vidsrcApi.search(q, parseInt(page));
+
+    res.json(data);
+  } catch (e) {
+    console.error("[vidsrc/search]", e.message);
+
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/vidsrc/detail/:type/:id", async (req, res) => {
+  try {
+    const { type, id } = req.params;
+
+    const tmdbId = id.startsWith("tmdb_") ? id.replace("tmdb_", "") : id;
+
+    const data = await vidsrcApi.getDetail(tmdbId, type);
+
+    if (!data) return res.status(404).json({ error: "not found" });
+
+    res.json(data);
+  } catch (e) {
+    console.error("[vidsrc/detail]", e.message);
+
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/vidsrc/episodes", async (req, res) => {
+  try {
+    const { page = 1 } = req.query;
+
+    const data = await vidsrcApi.getLatestEpisodes(parseInt(page));
+
+    res.json({ items: data, hasMore: false });
+  } catch (e) {
+    console.error("[vidsrc/episodes]", e.message);
+
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── LuluStream: رابط HLS للمحتوى المرفوع ──────────────────────────────────
+const LULU_KEY = "258176jfw9e96irnxai2fm";
+const LULU_PROGRESS_PATH = "/root/lulu_progress.json";
+let _luluProgress = null;
+let _luluProgressTs = 0;
+const _luluCanplayCache = new Map(); // fileCode → { canplay, ts }
+
+function getLuluProgress() {
+  const now = Date.now();
+  if (!_luluProgress || now - _luluProgressTs > 60000) {
+    try {
+      _luluProgress = JSON.parse(fs.readFileSync(LULU_PROGRESS_PATH, "utf8"));
+    } catch {
+      _luluProgress = { uploaded: {}, failed: {} };
+    }
+    _luluProgressTs = now;
+  }
+  return _luluProgress;
+}
+
+async function checkLuluCanplay(fileCode) {
+  const cached = _luluCanplayCache.get(fileCode);
+  if (cached && Date.now() - cached.ts < 5 * 60 * 1000) return cached.canplay;
+  try {
+    const r = await fetch(
+      `https://api.lulustream.com/api/file/info?key=${LULU_KEY}&file_code=${fileCode}`,
+      { signal: AbortSignal.timeout(8000) },
+    );
+    const d = await r.json();
+    const canplay = d?.result?.[0]?.canplay === 1;
+    _luluCanplayCache.set(fileCode, { canplay, ts: Date.now() });
+    return canplay;
+  } catch {
+    return false;
+  }
+}
+
+app.get("/api/lulu/stream", async (req, res) => {
+  const { type, id, ep_id } = req.query;
+  const prog = getLuluProgress();
+  let entry = null;
+  if (type === "movie" && id) entry = prog.uploaded[`movie_${id}`];
+  else if (type === "series" && ep_id) entry = prog.uploaded[`series_${ep_id}`];
+  if (!entry) return res.json({ available: false });
+
+  const fc = entry.fileCode;
+  const canplay = await checkLuluCanplay(fc);
+  if (!canplay) return res.json({ available: false, reason: "encoding" });
+
+  res.json({
+    available: true,
+    fileCode: fc,
+    hlsUrl: `https://luluvdo.com/hls/${fc}/master.m3u8`,
+    embedUrl: `https://lulustream.com/e/${fc}`,
+    title: entry.title,
+  });
+});
+
+// ─── LuluStream: بناء قائمة الأفلام من progress.json ─────────────────────
+function buildLuluMovieItem(streamId, entry) {
+  return {
+    id: streamId,
+    title: entry.title || "",
+    poster: entry.poster || "",
+    year: entry.year || "",
+    genre: entry.genre || "",
+    rating: entry.rating || "",
+    lang: entry.lang || "",
+    cat: entry.cat || "",
+    vod_type: "movie",
+  };
+}
+
+function buildLuluSeriesMap(prog) {
+  const showMap = {};
+  for (const [k, v] of Object.entries(prog.uploaded)) {
+    if (!k.startsWith("series_")) continue;
+    const show = v.show || v.title || k;
+    if (!showMap[show]) {
+      showMap[show] = {
+        id: "lulu:" + encodeURIComponent(show),
+        title: show,
+        poster: v.poster || "",
+        genre: v.genre || "",
+        rating: v.rating || "",
+        lang: v.lang || "",
+        vod_type: "series",
+        ts: v.ts || 0,
+        episodeCount: 0,
+      };
+    }
+    showMap[show].episodeCount = (showMap[show].episodeCount || 0) + 1;
+    if ((v.ts || 0) > showMap[show].ts) {
+      showMap[show].ts = v.ts;
+      showMap[show].poster = v.poster || showMap[show].poster;
+    }
+  }
+  return Object.values(showMap);
+}
+
+// GET /api/lulu/home
+app.get("/api/lulu/home", (req, res) => {
+  const prog = getLuluProgress();
+  const movies = Object.entries(prog.uploaded)
+    .filter(([k]) => k.startsWith("movie_"))
+    .sort(([, a], [, b]) => (b.ts || 0) - (a.ts || 0))
+    .slice(0, 24)
+    .map(([k, v]) => buildLuluMovieItem(k.replace("movie_", ""), v));
+  const series = buildLuluSeriesMap(prog)
+    .sort((a, b) => (b.ts || 0) - (a.ts || 0))
+    .slice(0, 24);
+  res.json({ latestMovies: movies, latestSeries: series });
+});
+
+// GET /api/lulu/list?type=movie|series&page=1&search=&cat=
+app.get("/api/lulu/list", (req, res) => {
+  const { type = "movie", page = "1", search = "", cat = "" } = req.query;
+  const prog = getLuluProgress();
+  const pg = Math.max(1, parseInt(page));
+  const limit = 24;
+  const q = String(search).toLowerCase();
+
+  let items = [];
+  if (type === "movie") {
+    items = Object.entries(prog.uploaded)
+      .filter(([k]) => k.startsWith("movie_"))
+      .map(([k, v]) => buildLuluMovieItem(k.replace("movie_", ""), v));
+    if (q) items = items.filter((i) => i.title.toLowerCase().includes(q));
+    if (cat) items = items.filter((i) => i.cat === cat);
+    items.sort((a, b) => 0); // preserve insertion order (newest first from sync)
+  } else {
+    items = buildLuluSeriesMap(prog).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    if (q) items = items.filter((i) => i.title.toLowerCase().includes(q));
+  }
+
+  const total = items.length;
+  res.json({
+    items: items.slice((pg - 1) * limit, pg * limit),
+    page: pg,
+    total,
+    hasMore: pg * limit < total,
+  });
+});
+
+// GET /api/lulu/detail?type=movie&id={stream_id}
+// GET /api/lulu/detail?type=series&show={encoded_show_name}
+app.get("/api/lulu/detail", (req, res) => {
+  const { type, id, show } = req.query;
+  const prog = getLuluProgress();
+
+  if (type === "movie" && id) {
+    const entry = prog.uploaded[`movie_${id}`];
+    if (!entry) return res.status(404).json({ error: "not found" });
+    const fc = entry.fileCode;
+    return res.json({
+      id,
+      title: entry.title,
+      poster: entry.poster || "",
+      backdrop: entry.poster || "",
+      year: entry.year || "",
+      genre: entry.genre || "",
+      rating: entry.rating || "",
+      lang: entry.lang || "",
+      cat: entry.cat || "",
+      vod_type: "movie",
+      fileCode: fc,
+      hlsUrl: `https://luluvdo.com/hls/${fc}/master.m3u8`,
+      embedUrl: `https://lulustream.com/e/${fc}`,
+      subtitleUrls: entry.subtitleUrls || null,
+    });
+  }
+
+  if (type === "series" && show) {
+    const showName = decodeURIComponent(String(show));
+    const epEntries = Object.entries(prog.uploaded).filter(
+      ([k, v]) => k.startsWith("series_") && (v.show || "") === showName,
+    );
+    if (!epEntries.length) return res.status(404).json({ error: "not found" });
+
+    const first = epEntries[0][1];
+    const seasonMap = {};
+    for (const [k, v] of epEntries) {
+      const s = String(v.season || 1);
+      if (!seasonMap[s]) seasonMap[s] = [];
+      const fc = v.fileCode;
+      seasonMap[s].push({
+        id: k.replace("series_", ""),
+        episode: v.ep || 1,
+        season: Number(s),
+        title: v.title || `الحلقة ${v.ep}`,
+        fileCode: fc,
+        hlsUrl: `https://luluvdo.com/hls/${fc}/master.m3u8`,
+        embedUrl: `https://lulustream.com/e/${fc}`,
+        subtitleUrls: v.subtitleUrls || null,
+        ext: "mp4",
+      });
+    }
+    const seasons = Object.entries(seasonMap)
+      .sort(([a], [b]) => Number(a) - Number(b))
+      .map(([s, eps]) => ({
+        season: Number(s),
+        episodes: eps.sort((a, b) => a.episode - b.episode),
+      }));
+
+    return res.json({
+      id: showName,
+      title: showName,
+      vod_type: "series",
+      poster: first.poster || "",
+      backdrop: first.poster || "",
+      genre: first.genre || "",
+      rating: first.rating || "",
+      lang: first.lang || "",
+      subtitleUrls: first.subtitleUrls || null,
+      seasons,
+      episodes: seasons.flatMap((s) => s.episodes),
+    });
+  }
+
+  res.status(400).json({ error: "invalid params" });
+});
+
+/**
+
+ * POST /api/stream/vidsrc
+
+ * Ø ̈Ø« Ø ̈Ø§Ø3ØaØ®Ø ̄Ø§Ù... TMDB ID â€" Ø¥Ø±Ø¬Ø§Ø1 Ø±Ø§Ø ̈Ø· Embed ÙÙˆØ±ÙŠ Ù"Ù"Ø1Ø±Ø¶ ÙÙŠ WebView
+
+ * body: { tmdbId, type: 'movie'|'tv', season?, episode? }
+
+ *
+
+ * Ù...Ù"Ø§Ø­Ø ̧Ø©: ØaÙ... Ø¥Ù"ØoØ§Ø¡ Ù...Ø­Ø§ÙˆÙ"Ø§Øa Ø§Ù"Ø§Ø3ØaØ®Ø±Ø§Ø¬ (Puppeteer/Scraper) Ù"Ø£Ù†Ù‡Ø§ Ø ̈Ø·ÙŠØ¦Ø© ÙˆØaÙØ ́Ù" ØoØ§Ù"Ø ̈Ø§Ù‹
+
+ * WebView ÙÙŠ Ø§Ù"ØaØ·Ø ̈ÙŠÙ' ÙŠØaØ1Ø§Ù...Ù" Ù...Ø1 Ø§Ù"Ø¥Ø1Ù"Ø§Ù†Ø§Øa ÙˆØ§Ù"ØaØ ́ØoÙŠÙ" Ù...Ø ̈Ø§Ø ́Ø±Ø©
+
+ */
+
+app.post(
+  "/api/stream/vidsrc",
+  requireAuth,
+  requirePremium,
+  async (req, res) => {
+    const { tmdbId, imdbId, type = "movie" } = req.body;
+
+    const season = type === "tv" ? parseInt(req.body.season) || 1 : undefined;
+
+    const episode = type === "tv" ? parseInt(req.body.episode) || 1 : undefined;
+
+    // ملاحظة: لا يوجد فحص لحد الاتصالات هنا - VidSrc embed يذهب للمصادر الخارجية مباشرةً
+
+    // ولا يستهلك موارد السيرفر (عكس البث المباشر IPTV)
+
+    if (!tmdbId) return res.status(400).json({ error: "tmdbId مطلوب" });
+
+    const streamId = `vidsrc_${type}_${tmdbId}${type === "tv" ? `_s${season}e${episode}` : ""}`;
+
+    const label = `tmdb=${tmdbId} type=${type}${type === "tv" ? ` s${season}e${episode}` : ""}`;
+
+    try {
+      const { randomUUID } = require("crypto");
+
+      const recordHistory = async () => {
+        try {
+          await db
+            .prepare(
+              "INSERT INTO watch_history (id, user_id, item_id, item_type) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            )
+
+            .run(randomUUID(), req.user.id, tmdbId, "vod");
+        } catch (_) {}
+      };
+
+      // ═══ 0. Arabic subtitles - fetch in parallel (Subdl + OpenSubtitles) ═══
+
+      const arabicSubsPromise = fetchArabicSubtitles({
+        tmdbId,
+        imdbId,
+        type,
+        season,
+        episode,
+      }).catch(() => []);
+
+      // ═══ 1. Consumet - HLS مباشر (بدون إعلانات) ═══
+
+      try {
+        let englishTitle = req.body.title || "";
+
+        let year;
+
+        try {
+          const meta = await vidsrcApi.getDetail(tmdbId, type);
+
+          if (meta) {
+            englishTitle = meta.original_title || meta.title || englishTitle;
+
+            year = meta.year;
+          }
+        } catch (_) {}
+
+        if (englishTitle) {
+          console.log(`[Stream] → Consumet: "${englishTitle}" (${type})`);
+
+          const consumet = await resolveConsumetStream({
+            tmdbId,
+            title: englishTitle,
+            type,
+            year,
+            season,
+            episode,
+          });
+
+          if (consumet && consumet.url) {
+            console.log(`[Stream] ✓ HLS via ${consumet.provider}`);
+
+            await recordHistory();
+
+            const arabicSubs = await arabicSubsPromise;
+
+            // Arabic subs first, then provider subs (English etc.)
+
+            const allSubs = [
+              ...arabicSubs,
+
+              ...(consumet.subtitles || []).map((s) => ({
+                ...s,
+                label: s.language,
+              })),
+            ];
+
+            return res.json({
+              success: true,
+              streamId,
+              ready: true,
+
+              hlsUrl: consumet.url,
+
+              provider: consumet.provider,
+
+              headers: consumet.headers || {},
+
+              subtitles: allSubs,
+            });
+          }
+        }
+      } catch (ce) {
+        console.log(`[Stream] Consumet failed: ${ce.message}`);
+      }
+
+      // ═══ 2. Vidlink.pro - HLS مباشر (بدون iframe = بدون إعلانات) ═══
+
+      try {
+        console.log(`[Stream] → Vidlink HLS: ${label}`);
+
+        const vidlink = await resolveVidlinkStream(
+          tmdbId,
+          type,
+          season,
+          episode,
+        );
+
+        if (vidlink && vidlink.hlsUrl) {
+          console.log(`[Stream] ✓ Vidlink HLS found`);
+
+          await recordHistory();
+
+          const arabicSubs = await arabicSubsPromise;
+
+          const allSubs = [...arabicSubs, ...(vidlink.subtitles || [])];
+
+          return res.json({
+            success: true,
+            streamId,
+            ready: true,
+
+            hlsUrl: vidlink.hlsUrl,
+
+            provider: "vidlink",
+
+            subtitles: allSubs,
+          });
+        }
+      } catch (ve) {
+        console.log(`[Stream] Vidlink failed: ${ve.message}`);
+      }
+
+      // ═══ 3. Fallback: Embed URLs ═══
+
+      console.log(`[Stream] → Embed fallback: ${label}`);
+
+      const [stream, arabicSubs] = await Promise.all([
+        resolveStream(tmdbId, type, season, episode, imdbId),
+
+        arabicSubsPromise,
+      ]);
+
+      if (stream && stream.embedUrl) {
+        const proxiedUrl = `/api/embed-proxy?url=${encodeURIComponent(stream.embedUrl)}`;
+        console.log(
+          `[Stream] ✓ Embed proxy: ${stream.provider} - ${stream.embedUrl}`,
+        );
+
+        await recordHistory();
+
+        return res.json({
+          success: true,
+          streamId,
+          ready: true,
+
+          embedUrl: proxiedUrl,
+
+          provider: stream.provider,
+
+          sources: (stream.sources || []).map((s) => ({
+            ...s,
+            url: `/api/embed-proxy?url=${encodeURIComponent(s.url)}`,
+          })),
+
+          allEmbedUrls: (stream.allEmbedUrls || []).map(
+            (u) => `/api/embed-proxy?url=${encodeURIComponent(u)}`,
+          ),
+
+          subtitles: arabicSubs,
+        });
+      }
+
+      return res
+        .status(404)
+        .json({ success: false, error: "لا توجد مصادر بث متاحة" });
+    } catch (e) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  },
+);
+
+// ═══ Embed HTML Proxy - يدعم vidsrc.icu + يحجب الإعلانات والروابط العشوائية ═══
+
+const ALLOWED_EMBED_HOSTS = [
+  "vidsrcme.vidsrc.icu",
+  "vidsrc.icu",
+  "www.vidsrc.icu",
+  "vidsrc-embed.ru",
+  "www.vidsrc-embed.ru",
+  "2embed.cc",
+  "www.2embed.cc",
+  "vidlink.pro",
+  "www.vidlink.pro",
+];
+
+app.get("/api/embed-proxy", async (req, res) => {
+  const rawUrl = req.query.url;
+
+  if (!rawUrl) return res.status(400).end();
+
+  const targetUrl = decodeURIComponent(rawUrl);
+
+  let parsedTarget;
+  try {
+    parsedTarget = new URL(targetUrl);
+  } catch {
+    return res.status(400).end();
+  }
+  if (!ALLOWED_EMBED_HOSTS.includes(parsedTarget.hostname))
+    return res.status(403).end();
+
+  try {
+    const response = await fetch(targetUrl, {
+      signal: AbortSignal.timeout(12000),
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        Accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        Connection: "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "iframe",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "cross-site",
+        Referer: "https://vidsrc.icu/",
+        Origin: "https://vidsrc.icu",
+        "Cache-Control": "no-cache",
+      },
+      redirect: "follow",
+    });
+
+    let html = await response.text();
+
+    const baseHref = `${parsedTarget.protocol}//${parsedTarget.host}/`;
+    const inject = `<base href="${baseHref}">
+<script>
+(function(){
+  // ═══ 1. حجب window.open بالكامل ═══
+  var _noop = function(){ return {focus:function(){},blur:function(){},close:function(){},closed:true,document:{write:function(){},body:{}},location:{href:''}}; };
+  try{ Object.defineProperty(window,'open',{value:_noop,writable:false,configurable:false}); }catch(e){ window.open=_noop; }
+
+  // ═══ 2. حجب كل النقرات على روابط إعلانية ═══
+  document.addEventListener('click',function(e){
+    var el=e.target;
+    while(el&&el!==document.body){
+      if(el.tagName==='A'){
+        var href=el.getAttribute('href')||'';
+        var tgt=el.getAttribute('target')||'';
+        var rel=el.getAttribute('rel')||'';
+        // حجب أي رابط يفتح نافذة جديدة أو رابط خارجي مشبوه
+        if(tgt==='_blank'||rel.indexOf('noopener')!==-1||href.indexOf('javascript:')===0||
+           href.indexOf('//ad')!==-1||href.indexOf('click')!==-1||href.indexOf('track')!==-1){
+          e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();return false;
+        }
+      }
+      el=el.parentElement;
+    }
+  },true);
+
+  // ═══ 3. حجب mousedown/pointerdown (بعض الإعلانات تستخدمه بدل click) ═══
+  ['mousedown','pointerdown','auxclick'].forEach(function(evt){
+    document.addEventListener(evt,function(e){
+      var el=e.target;
+      while(el&&el!==document.body){
+        if(el.tagName==='A'&&(el.getAttribute('target')==='_blank')){
+          e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();return false;
+        }
+        el=el.parentElement;
+      }
+    },true);
+  });
+
+  // ═══ 4. إعادة التركيز عند سرقته ═══
+  window.addEventListener('blur',function(){setTimeout(function(){try{window.focus();}catch(e){}},100);});
+
+  // ═══ 5. حجب إنشاء iframe إعلانية ═══
+  var _origCreate = document.createElement.bind(document);
+  document.createElement = function(tag){
+    var el = _origCreate(tag);
+    if(tag.toLowerCase()==='a'){
+      setTimeout(function(){
+        if(el.target==='_blank') el.target='_self';
+        if(el.rel&&el.rel.indexOf('noopener')!==-1) el.removeAttribute('rel');
+      },0);
+    }
+    return el;
+  };
+
+  // ═══ 6. حجب شعار المصدر في المشغل - منع النقر بالكامل ═══
+  var logoSelectors=[
+    '.jw-icon-logo','.jw-logo','.jw-logo-button','[class*="logo"]','[class*="Logo"]',
+    '[class*="brand"]','[class*="Brand"]','[class*="watermark"]','[class*="Watermark"]',
+    '.plyr__logo','.vjs-logo','.vjs-watermark','[class*="provider"]',
+    '[aria-label*="logo"]','[title*="logo"]','[title*="Logo"]',
+    'a[class*="logo"]','a[class*="brand"]','a > img[class*="logo"]',
+    '[class*="source-tag"]','[class*="branding"]'
+  ].join(',');
+
+  // حجب النقر على أي شعار أو عنصر يحتوي شعار
+  ['click','mousedown','pointerdown','touchstart'].forEach(function(evt){
+    document.addEventListener(evt,function(e){
+      var el=e.target;
+      // فحص العنصر وكل أبائه
+      while(el&&el!==document.body){
+        try{
+          if(el.matches&&el.matches(logoSelectors)){
+            e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();return false;
+          }
+          // إذا كان الشعار داخل رابط - احجب الرابط أيضاً
+          if(el.tagName==='A'&&el.querySelector&&el.querySelector(logoSelectors)){
+            e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();return false;
+          }
+        }catch(x){}
+        el=el.parentElement;
+      }
+    },true);
+  });
+
+  // ═══ 7. MutationObserver - إزالة إعلانات + تعطيل شعارات ═══
+  var adSelectors='[id*="ad-"],[id*="ads-"],[id*="banner"],[class*="ad-overlay"],[class*="popup-ad"],[class*="overlay-ad"],[class*="ad-banner"],[class*="advertisement"]';
+  function cleanPage(){
+    try{
+      // إزالة عناصر إعلانية
+      document.querySelectorAll(adSelectors).forEach(function(el){
+        if(el.closest('video')||el.closest('[class*="player"]')) return;
+        el.remove();
+      });
+      document.querySelectorAll('iframe').forEach(function(f){
+        var s=f.src||'';
+        if(s.indexOf('ads')!==-1||s.indexOf('doubleclick')!==-1||s.indexOf('googlesyndication')!==-1||s.indexOf('popunder')!==-1){
+          f.remove();
+        }
+      });
+      // تعطيل الشعارات - إزالة href + pointer-events
+      document.querySelectorAll(logoSelectors).forEach(function(el){
+        el.style.pointerEvents='none';
+        el.style.cursor='default';
+        if(el.tagName==='A'){el.removeAttribute('href');el.removeAttribute('target');}
+        var parentA=el.closest('a');
+        if(parentA){parentA.removeAttribute('href');parentA.removeAttribute('target');parentA.style.pointerEvents='none';}
+        el.onclick=function(e){e.preventDefault();e.stopPropagation();return false;};
+      });
+    }catch(e){}
+  }
+  if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',cleanPage);}else{cleanPage();}
+  try{
+    new MutationObserver(function(){cleanPage();}).observe(document.documentElement,{childList:true,subtree:true});
+  }catch(e){}
+
+  // ═══ 8. حجب beforeunload (منع إعادة التوجيه) ═══
+  window.addEventListener('beforeunload',function(e){e.preventDefault();e.returnValue='';},true);
+})();
+</script>
+<style>
+/* إخفاء عناصر الإعلانات */
+[id*="ad-"],[id*="ads-"],[id*="banner"],[class*="ad-banner"],
+[class*="advertisement"],[class*="overlay-ad"],[class*="popup-ad"],
+[class*="ad-overlay"],[class*="popunder"],[class*="pop-up"],
+iframe[src*="ads"],iframe[src*="doubleclick"],
+iframe[src*="googlesyndication"],iframe[src*="popunder"] {
+  display:none!important;visibility:hidden!important;
+  pointer-events:none!important;width:0!important;height:0!important;overflow:hidden!important;
+}
+/* تعطيل شعار المصدر في المشغل */
+.jw-icon-logo,.jw-logo,.jw-logo-button,
+.plyr__logo,.vjs-logo,.vjs-watermark,
+[class*="watermark"],[class*="Watermark"],
+[class*="branding"],[class*="source-tag"],
+[class*="provider-logo"] {
+  pointer-events:none!important;
+  cursor:default!important;
+}
+.jw-icon-logo a,.jw-logo a,[class*="logo"] a,[class*="brand"] a,
+a.jw-logo,a[class*="logo"],a[class*="brand"],a[class*="watermark"] {
+  pointer-events:none!important;
+  cursor:default!important;
+}
+</style>`;
+
+    if (html.includes("<head>")) {
+      html = html.replace("<head>", "<head>" + inject);
+    } else if (html.includes("<html")) {
+      html = html.replace(/<html[^>]*>/, (m) => m + inject);
+    } else {
+      html = inject + html;
+    }
+
+    res.removeHeader("X-Frame-Options");
+
+    res.removeHeader("Content-Security-Policy");
+
+    res.set("Content-Type", "text/html; charset=utf-8");
+
+    res.send(html);
+  } catch (e) {
+    console.error("[EmbedProxy]", e.message);
+
+    res.status(502).send("<html><body></body></html>");
+  }
+});
+
+// ═══ proxy-hls — تم الحذف — لا يوجد WebView embed بعد الآن ═══
+
+// â•â•â• Ø¬Ù"Ø ̈ ØaØ±Ø¬Ù...Ø§Øa Ø1Ø±Ø ̈ÙŠØ© â•â•â•
+
+app.get("/api/subtitles", async (req, res) => {
+  const { tmdbId, imdbId, type = "movie", season, episode } = req.query;
+
+  if (!tmdbId && !imdbId)
+    return res.status(400).json({ error: "tmdbId Ø£Ùˆ imdbId Ù...Ø·Ù"ÙˆØ ̈" });
+
+  try {
+    const subs = await fetchArabicSubtitles({
+      tmdbId: tmdbId || "",
+
+      imdbId: imdbId || "",
+
+      type: type === "tv" ? "tv" : "movie",
+
+      season: season ? parseInt(season) : undefined,
+
+      episode: episode ? parseInt(episode) : undefined,
+    });
+
+    res.json({ success: true, subtitles: subs });
+  } catch (e) {
+    console.error("[Subtitles] Error:", e.message);
+
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// â•â•â• Ø ̈Ø±ÙˆÙƒØ3ÙŠ ØaØ±Ø¬Ù...Ø§Øa (Ù"ØaØ¬Ø§ÙˆØ2 CORS) â•â•â•
+
+app.get("/api/subtitle-proxy", async (req, res) => {
+  const url = req.query.url;
+
+  if (!url) return res.status(400).send("url required");
+
+  try {
+    const r = await fetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/124.0.0.0 Mobile Safari/537.36",
+      },
+    });
+
+    if (!r.ok) return res.status(r.status).send("Subtitle fetch failed");
+
+    const ct = r.headers.get("content-type") || "text/plain";
+
+    res.set("Content-Type", ct);
+
+    res.set("Access-Control-Allow-Origin", "*");
+
+    const buf = Buffer.from(await r.arrayBuffer());
+
+    res.send(buf);
+  } catch (e) {
+    res.status(500).send(e.message);
+  }
+});
+
+function langLabel(code) {
+  const map = {
+    ar: "Ø§Ù"Ø1Ø±Ø ̈ÙŠØ©",
+    ara: "Ø§Ù"Ø1Ø±Ø ̈ÙŠØ©",
+    en: "English",
+    eng: "English",
+
+    fr: "FranÃ§ais",
+    fre: "FranÃ§ais",
+    de: "Deutsch",
+    ger: "Deutsch",
+
+    es: "EspaÃ±ol",
+    spa: "EspaÃ±ol",
+    it: "Italiano",
+    ita: "Italiano",
+
+    pt: "PortuguÃas",
+    por: "PortuguÃas",
+    tr: "TÃ1⁄4rkÃ§e",
+    tur: "TÃ1⁄4rkÃ§e",
+
+    ru: "Ð ÑƒÑÑÐoÐ ̧Ð1",
+    rus: "Ð ÑƒÑÑÐoÐ ̧Ð1",
+    ja: "æ-¥æœ¬èaž",
+    jpn: "æ-¥æœ¬èaž",
+
+    ko: "í•œêμ­ì- ́",
+    kor: "í•œêμ­ì- ́",
+    zh: "ä ̧­æ-‡",
+    zho: "ä ̧­æ-‡",
+    chi: "ä ̧­æ-‡",
+
+    hi: "à¤1à¤¿à¤ ̈à¥à¤¦à¥€",
+    hin: "à¤1à¤¿à¤ ̈à¥à¤¦à¥€",
+    und: "ØoÙŠØ± Ù...Ø­Ø ̄Ø ̄",
+  };
+
+  return map[code] || code || "ØoÙŠØ± Ù...Ø­Ø ̄Ø ̄";
+}
+
+function normalizeDirectSubtitles(subtitles = []) {
+  return subtitles
+
+    .filter((sub) => sub && sub.url)
+
+    .map((sub) => ({
+      language: sub.language || "und",
+
+      label: sub.label || langLabel(sub.language || "und"),
+
+      url: sub.url,
+
+      type: sub.type || "vtt",
+    }));
+}
+
+function buildDirectResultFromExtracted(extracted, referer = "") {
+  return {
+    provider: extracted.sourceId || extracted.provider || "unknown",
+
+    url: extracted.url,
+
+    type: extracted.type || "mp4",
+
+    referer: referer || "",
+
+    qualities: extracted.qualities || {},
+
+    headers: extracted.headers || {},
+
+    subtitles: normalizeDirectSubtitles(
+      extracted.captions || extracted.subtitles || [],
+    ),
+  };
+}
+
+async function finalizeDirectStream({ streamId, directResult }) {
+  const normalizedResult = {
+    provider: directResult.provider || "unknown",
+
+    url: directResult.url,
+
+    type: directResult.type || "mp4",
+
+    referer: directResult.referer || "",
+
+    headers: directResult.headers || {},
+
+    qualities: directResult.qualities || {},
+
+    subtitles: normalizeDirectSubtitles(directResult.subtitles || []),
+  };
+
+  if (
+    normalizedResult.type === "hls" &&
+    Object.keys(normalizedResult.qualities).length === 0
+  ) {
+    normalizedResult.qualities = await buildHlsQualities(
+      normalizedResult.url,
+      normalizedResult.referer || "",
+    );
+  }
+
+  if (Object.keys(normalizedResult.qualities).length === 0) {
+    normalizedResult.qualities = {
+      auto: { url: normalizedResult.url, type: normalizedResult.type || "mp4" },
+    };
+  }
+
+  return buildDirectStreamResponse({ streamId, ...normalizedResult });
+}
+
+async function recordWatchHistory(userId, itemId, itemType) {
+  try {
+    await db
+      .prepare(
+        "INSERT INTO watch_history (id, user_id, item_id, item_type) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+      )
+
+      .run(randomUUID(), userId, itemId, itemType);
+  } catch {}
+}
+
+async function buildHlsQualities(streamUrl, referer = "") {
+  const qualities = {
+    auto: { url: streamUrl, type: "hls" },
+  };
+
+  try {
+    const body = await hlsProxy._fetch(streamUrl, referer);
+
+    const text = body.toString("utf8");
+
+    if (!text.includes("#EXT-X-STREAM-INF")) return qualities;
+
+    const lines = text.split(/\r?\n/);
+
+    const baseUrl = hlsProxy._getBaseUrl(streamUrl);
+
+    for (let i = 0; i < lines.length; i += 1) {
+      const infoLine = (lines[i] || "").trim();
+
+      if (!infoLine.startsWith("#EXT-X-STREAM-INF")) continue;
+
+      let playlistLine = "";
+
+      for (let j = i + 1; j < lines.length; j += 1) {
+        const candidate = (lines[j] || "").trim();
+
+        if (!candidate) continue;
+
+        if (candidate.startsWith("#")) continue;
+
+        playlistLine = candidate;
+
+        i = j;
+
+        break;
+      }
+
+      if (!playlistLine) continue;
+
+      const resolutionMatch = infoLine.match(/RESOLUTION=\d+x(\d+)/i);
+
+      if (!resolutionMatch) continue;
+
+      const key = resolutionMatch[1];
+
+      const fullUrl = hlsProxy._resolveUrl(baseUrl, playlistLine);
+
+      qualities[key] = {
+        url: fullUrl,
+
+        type: "hls",
+      };
+    }
+  } catch (e) {
+    console.log(`[Stream] HLS quality parse failed: ${e.message}`);
+  }
+
+  return qualities;
+}
+
+function resolvePlaybackHeaders(headers = {}, referer = "") {
+  const resolvedHeaders =
+    headers && Object.keys(headers).length > 0 ? { ...headers } : {};
+
+  if (Object.keys(resolvedHeaders).length === 0 && referer) {
+    try {
+      resolvedHeaders.Referer = referer;
+
+      resolvedHeaders.Origin = new URL(referer).origin;
+    } catch {
+      resolvedHeaders.Referer = referer;
+    }
+  }
+
+  return resolvedHeaders;
+}
+
+async function buildDirectStreamResponse({
+  streamId,
+  provider,
+  url,
+  type,
+  referer = "",
+  subtitles = [],
+  qualities = {},
+  headers = {},
+}) {
+  const normalizedSubs = subtitles.map((sub) => ({
+    language: sub.language || "und",
+
+    label: sub.label || langLabel(sub.language || "und"),
+
+    url: sub.url,
+
+    type: sub.type || "vtt",
+  }));
+
+  const resolvedHeaders = resolvePlaybackHeaders(headers, referer);
+
+  const resolvedQualities =
+    qualities && Object.keys(qualities).length > 0
+      ? qualities
+      : type === "hls"
+        ? await buildHlsQualities(url, referer)
+        : { auto: { url, type: type || "mp4" } };
+
+  return {
+    success: true,
+
+    streamId,
+
+    ready: true,
+
+    provider,
+
+    ...(type === "hls" ? { hlsUrl: url } : { vodUrl: url }),
+
+    qualities: resolvedQualities,
+
+    subtitles: normalizedSubs,
+
+    headers: resolvedHeaders,
+  };
+}
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// HLS Proxy Routes â€" Ø ̈Ø« m3u8 + segments (vidsrc) Ø ̈Ø ̄ÙˆÙ† Ø¥Ø1Ù"Ø§Ù†Ø§Øa
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// free-hls endpoints - تم الحذف - كل المحتوى بريميوم فقط
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// VOD Proxy â€" Ø ̈Ø« ØaØ ̄Ø±ÙŠØ¬ÙŠ Ù...Ø«Ù" YouTube (seeking ÙÙˆØ±ÙŠ ÙÙŠ Ø§Ù"Ø ̈ÙŠØ§Ù†Ø§Øa Ø§Ù"Ù...Ø­Ù...Ù"Ø©)
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+app.get("/vod/proxy/:filename", async (req, res) => {
+  // ─── Auth + premium check ───
+  const authResult = await _validateStreamAuth(req);
+  if (authResult.error === 'subscription_required') return res.status(403).json({ error: 'subscription_required', message: 'هذا المحتوى يتطلب اشتراك بريميوم' });
+  if (authResult.error === 'subscription_expired') return res.status(403).json({ error: 'subscription_expired', message: 'انتهت صلاحية اشتراكك يرجى التجديد' });
+  if (!authResult.userId) return res.status(401).json({ error: 'يجب تسجيل الدخول' });
+
+  const filename = req.params.filename;
+
+  const id = filename.replace(/\.[^.]+$/, "");
+
+  vodProxy.proxyRequest(id, req, res);
+});
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// HLS Files â€" ØaÙ'Ø ̄ÙŠÙ... Ù...Ù"ÙØ§Øa Ø§Ù"Ø ̈Ø« Ø§Ù"Ù...Ø ̈Ø§Ø ́Ø±
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+app.get("/hls/:streamId/:file", async (req, res) => {
+  const isManifest = req.params.file.endsWith('.m3u8');
+  const isSegment = req.params.file.endsWith('.ts');
+
+  // ─── Segments: JWT-only (no DB) for zero-latency delivery ───
+  if (isSegment) {
+    let userId = null;
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      try { const d = jwt.verify(authHeader.slice(7), config.JWT_SECRET); if (d.userId) userId = d.userId; } catch {}
+    }
+    if (!userId && req.query.st) {
+      try { const d = jwt.verify(req.query.st, config.JWT_SECRET); if (d.userId && d.t === 'stream') userId = d.userId; } catch {}
+    }
+    if (!userId) return res.status(401).end();
+
+    const hbKey = `hb2_${userId}_${req.params.streamId}`;
+    if (!_hls2HbCounter) var _hls2HbCounter = {};
+    _hls2HbCounter[hbKey] = ((_hls2HbCounter[hbKey] || 0) + 1) % 30;
+    if (_hls2HbCounter[hbKey] === 0) {
+      const deviceId = req.query.did || req.headers['x-device-id'] || '';
+      const streamKey = `live_${req.params.streamId}`;
+      _getUserSessions(userId).then(sessions => {
+        const s = deviceId
+          ? sessions.find(x => x.stream_id === streamKey && x.device_id === deviceId)
+          : sessions.find(x => x.stream_id === streamKey);
+        if (s) _updateHeartbeat(s.id).catch(() => {});
+      }).catch(() => {});
+    }
+
+    serveHlsFile(
+      path.join(config.HLS_DIR, req.params.streamId, req.params.file),
+      req.params.file,
+      res,
+    );
+    return;
+  }
+
+  // ─── Manifest: full auth + premium + connection limit ───
+  const authResult = await _validateStreamAuth(req);
+  if (authResult.error === 'subscription_required') return res.status(403).json({ error: 'subscription_required', message: 'هذا المحتوى يتطلب اشتراك بريميوم' });
+  if (authResult.error === 'subscription_expired') return res.status(403).json({ error: 'subscription_expired', message: 'انتهت صلاحية اشتراكك يرجى التجديد' });
+  if (!authResult.userId) return res.status(401).json({ error: 'session_invalidated', message: 'تم تسجيل الدخول من جهاز آخر' });
+  const userId = authResult.userId;
+  if (!await _checkRateLimit(userId, 'm3u8')) return res.status(429).end();
+
+  const deviceId = req.query.did || req.headers['x-device-id'] || '';
+  const streamKey = `live_${req.params.streamId}`;
+  _getUserSessions(userId).then(sessions => {
+    const s = deviceId
+      ? sessions.find(x => x.stream_id === streamKey && x.device_id === deviceId)
+      : sessions.find(x => x.stream_id === streamKey);
+    if (s) _updateHeartbeat(s.id).catch(() => {});
+  }).catch(() => {});
+
+  serveHlsFile(
+    path.join(config.HLS_DIR, req.params.streamId, req.params.file),
+    req.params.file,
+    res,
+  );
+});
+
+app.get("/hls/vod/:streamId/:file", async (req, res) => {
+  const isSegment = req.params.file.endsWith('.ts');
+
+  // ─── Segments: JWT-only (no DB) ───
+  if (isSegment) {
+    let userId = null;
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      try { const d = jwt.verify(authHeader.slice(7), config.JWT_SECRET); if (d.userId) userId = d.userId; } catch {}
+    }
+    if (!userId && req.query.st) {
+      try { const d = jwt.verify(req.query.st, config.JWT_SECRET); if (d.userId && d.t === 'stream') userId = d.userId; } catch {}
+    }
+    if (!userId) return res.status(401).end();
+
+    serveHlsFile(
+      path.join(config.HLS_DIR, "vod", req.params.streamId, req.params.file),
+      req.params.file,
+      res,
+    );
+    return;
+  }
+
+  // ─── Manifest: full auth ───
+  const authResult = await _validateStreamAuth(req);
+  if (authResult.error === 'subscription_required') return res.status(403).json({ error: 'subscription_required', message: 'هذا المحتوى يتطلب اشتراك بريميوم' });
+  if (authResult.error === 'subscription_expired') return res.status(403).json({ error: 'subscription_expired', message: 'انتهت صلاحية اشتراكك يرجى التجديد' });
+  if (!authResult.userId) return res.status(401).json({ error: 'يجب تسجيل الدخول' });
+  if (!await _checkRateLimit(authResult.userId, 'm3u8')) return res.status(429).end();
+
+  serveHlsFile(
+    path.join(config.HLS_DIR, "vod", req.params.streamId, req.params.file),
+    req.params.file,
+    res,
+  );
+});
+
+function serveHlsFile(filePath, fileName, res) {
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: "Ø§Ù"Ù...Ù"Ù ØoÙŠØ± Ù...ÙˆØ¬ÙˆØ ̄" });
+  }
+
+  let contentType = "application/octet-stream";
+
+  if (fileName.endsWith(".m3u8")) contentType = "application/vnd.apple.mpegurl";
+  else if (fileName.endsWith(".ts")) contentType = "video/MP2T";
+  else if (fileName.endsWith(".vtt")) contentType = "text/vtt";
+
+  res.set({
+    "Content-Type": contentType,
+
+    "Access-Control-Allow-Origin": "*",
+
+    "Cache-Control": fileName.endsWith(".ts")
+      ? "public, max-age=3600"
+      : "no-cache, no-store",
+  });
+
+  const stat = fs.statSync(filePath);
+
+  res.set("Content-Length", stat.size);
+
+  fs.createReadStream(filePath).pipe(res);
+}
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// Xtream Channels DB
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// xtream_channels table is created in db.init() - no sync db.exec() needed
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// Xtream Codes â€" Channel API
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+/**
+
+ * GET /api/xtream/channels
+
+ * List channels with optional category/search filter + pagination
+
+ * Iraqi channels first, then sorted by priority
+
+ */
+
+app.get("/api/xtream/channels", async (req, res) => {
+  try {
+    const { category, search, limit, offset } = req.query;
+
+    const lim = Math.min(parseInt(limit) || 50, 200);
+
+    const off = parseInt(offset) || 0;
+
+    let where = [];
+
+    let params = [];
+
+    if (category) {
+      where.push("category = ?");
+      params.push(category);
+    }
+
+    if (search) {
+      where.push("name ILIKE ?");
+      params.push(`%${search}%`);
+    }
+
+    const whereStr = where.length ? "WHERE " + where.join(" AND ") : "";
+
+    const totalRow = await db
+      .prepare(`SELECT COUNT(*) as c FROM xtream_channels ${whereStr}`)
+      .get(...params);
+
+    const total = totalRow ? totalRow.c : 0;
+
+    const rows = await db
+      .prepare(
+        `
+
+      SELECT id, name, logo, category, stream_id, epg_id, sort_order, base_url
+
+      FROM xtream_channels ${whereStr}
+
+      ORDER BY
+
+        CASE WHEN name ILIKE '%عراق%' OR name ILIKE '%iraq%' THEN 0 ELSE 1 END,
+
+        sort_order,
+
+        name
+
+      LIMIT ${lim} OFFSET ${off}
+
+    `,
+      )
+      .all(...params);
+
+    const channels = rows.map((r) => ({
+      id: r.id,
+
+      name: r.name,
+
+      logo: r.logo,
+
+      category: r.category,
+
+      streamId: r.stream_id,
+    }));
+
+    const catRows = await db
+      .prepare(
+        "SELECT DISTINCT category, MIN(sort_order) as p FROM xtream_channels GROUP BY category ORDER BY p",
+      )
+      .all();
+
+    const categories = catRows.map((r) => r.category);
+
+    res.json({
+      success: true,
+      channels,
+      total,
+      hasMore: off + lim < total,
+      categories,
+    });
+  } catch (e) {
+    console.error("[Xtream] channels error:", e.message);
+
+    res.status(500).json({ error: "فشل جلب القنوات" });
+  }
+});
+
+/**
+ * GET /api/xtream/stream/:channelId
+ *
+ * Starts FFmpeg+HLS stream for a channel using its own IPTV account
+ *
+ * StreamManager handles on-demand streaming with auto-stop on idle
+ */
+app.get(
+  "/api/xtream/stream/:channelId",
+  requireAuth,
+  requirePremium,
+  async (req, res) => {
+    try {
+      // Get channel + its IPTV account credentials
+      const info = await getChannelAccount(db, req.params.channelId);
+
+      if (!info || !info.channel)
+        return res.status(404).json({ error: "channel not found" });
+
+      const { channel: ch, account } = info;
+
+      // ═══ Connection limit check - once per stream request, not per HLS segment ═══
+      const deviceId = req.query.did || req.headers['x-device-id'] || '';
+      const connCheck = await checkConnectionLimit(
+        req.user.id,
+        `live_${ch.stream_id}`,
+        'live',
+        deviceId,
+      );
+      if (!connCheck.allowed) {
+        return res.status(429).json({
+          error: connCheck.error,
+          message: connCheck.message,
+          active: connCheck.active,
+          max: connCheck.max,
+        });
+      }
+
+      // Build source URL from channel's own IPTV account
+      const serverUrl = account
+        ? account.server_url
+        : ch.base_url || XTREAM.primary;
+      const username = account ? account.username : XTREAM.user;
+      const password = account ? account.password : XTREAM.pass;
+      const sourceUrl = `${serverUrl}/live/${username}/${password}/${ch.stream_id}.ts`;
+      const streamId = String(ch.stream_id);
+
+      // ═══ FFmpegRestreamer: اتصال واحد بـ IPTV، بث HLS محلي ═══
+      const result = await restreamer.startStream(
+        streamId,
+        sourceUrl,
+        ch.name,
+        req.user.id,
+        deviceId,
+      );
+
+      const stToken = jwt.sign(
+        { userId: req.user.id, streamId, t: 'stream', lv: Number(req.user.login_version) || 0, did: deviceId },
+        config.JWT_SECRET,
+        { expiresIn: '8h' },
+      );
+      const hlsUrl = result.hlsUrl + `?st=${stToken}&did=${encodeURIComponent(deviceId)}`;
+
+      res.json({
+        success: true,
+        name: ch.name,
+        logo: ch.logo,
+        category: ch.category,
+        hlsUrl,
+        ready: result.ready,
+        streamId: ch.stream_id,
+      });
+    } catch (e) {
+      console.error("[Xtream] stream error:", e.message);
+
+      res.status(500).json({ error: "فشل جلب رابط البث" });
+    }
+  },
+);
+
+/**
+
+ * GET /api/xtream/refresh
+
+ *
+/**
+ * GET /api/xtream/free-stream/:channelId
+ * تم الحذف - كل المحتوى بريميوم فقط
+ * استخدم /api/xtream/stream/:channelId بدلاً من ذلك
+ */
+
+/**
+ * GET /api/xtream/refresh
+ * Re-sync channels from Xtream provider (admin only)
+ */
+
+app.get("/api/xtream/refresh", requireAuth, async (req, res) => {
+  const user = req.user;
+
+  if (!user || (user.role !== "admin" && !req.user.is_admin)) {
+    return res.status(403).json({ error: "ØoÙŠØ± Ù...ØμØ±Ø­" });
+  }
+
+  res.json({
+    success: true,
+    message: "Ø¬Ø§Ø±Ù Ù...Ø2Ø§Ù...Ù†Ø© Ø§Ù"Ù'Ù†ÙˆØ§Øa...",
+  });
+
+  syncXtreamChannels(db).catch((e) =>
+    console.error("[Xtream] Refresh error:", e.message),
+  );
+});
+
+/**
+
+ * GET /api/xtream/viewers
+
+ * Active viewer counts per channel (admin)
+
+ */
+
+app.get("/api/xtream/viewers", requireAuth, (req, res) => {
+  const user = req.user;
+
+  if (!user || (user.role !== "admin" && !req.user.is_admin)) {
+    return res.status(403).json({ error: "ØoÙŠØ± Ù...ØμØ±Ø­" });
+  }
+
+  const viewers = xtreamProxy.getAllViewers();
+
+  const total = xtreamProxy.getTotalViewers();
+
+  res.json({ success: true, viewers, total });
+});
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// HLS Reverse Proxy â€" Xtream streams
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+/**
+
+ * GET /proxy/live/:streamId/index.m3u8
+
+ * Proxy HLS manifest â€" rewrites segment URLs through our server
+
+ * Viewer session tracked by ?sid param
+
+ */
+
+
+// ─── Stream Auth Helper ── validates Bearer token OR ?st= stream token ────
+// Prevents unauthenticated access to /proxy/live/* and /hls/* endpoints
+// Also enforces premium subscription check
+// Returns { userId } on success, or { error: 'auth'|'subscription_required'|'subscription_expired' } on failure
+async function _validateStreamAuth(req) {
+  let userId = null;
+  // 1. Try Authorization header (HLS.js sends this via xhrSetup in browser)
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    try {
+      const decoded = jwt.verify(authHeader.slice(7), config.JWT_SECRET);
+      if (decoded.userId) {
+        const jwtLv = Number(decoded.lv) || 0;
+        const dbLv = await _getLoginVersion(decoded.userId);
+        if (jwtLv !== dbLv) return { error: 'auth' };
+        userId = decoded.userId;
+      }
+    } catch {}
+  }
+  // 2. Try ?st= stream token (for native players / mobile where custom headers are difficult)
+  if (!userId && req.query.st) {
+    try {
+      const decoded = jwt.verify(req.query.st, config.JWT_SECRET);
+      if (decoded.userId && decoded.t === 'stream') {
+        const jwtLv = Number(decoded.lv) || 0;
+        const dbLv = await _getLoginVersion(decoded.userId);
+        if (jwtLv !== dbLv) return { error: 'auth' };
+        userId = decoded.userId;
+      }
+    } catch {}
+  }
+  if (!userId) return { error: 'auth' };
+
+  // ─── Premium subscription check ───
+  const user = await _getCachedUser(userId);
+  if (!user) return { error: 'auth' };
+  if (user.is_blocked) return { error: 'auth' };
+  // Admins/agents always allowed
+  if (user.is_admin || user.role === 'admin' || user.role === 'agent') return { userId };
+  // Check premium plan
+  if (user.plan !== 'premium') return { error: 'subscription_required' };
+  // Check expiry
+  if (user.expires_at && new Date(user.expires_at) < new Date()) return { error: 'subscription_expired' };
+
+  return { userId };
+}
+
+app.get("/proxy/live/:streamId/index.m3u8", async (req, res) => {
+  const { streamId } = req.params;
+
+  // ─── Auth + premium check ───
+  const authResult = await _validateStreamAuth(req);
+  if (authResult.error === 'subscription_required') return res.status(403).json({ error: 'subscription_required', message: 'هذا المحتوى يتطلب اشتراك بريميوم' });
+  if (authResult.error === 'subscription_expired') return res.status(403).json({ error: 'subscription_expired', message: 'انتهت صلاحية اشتراكك يرجى التجديد' });
+  if (!authResult.userId) return res.status(401).json({ error: 'يجب تسجيل الدخول لمشاهدة البث' });
+  const userId = authResult.userId;
+  // ─── Connection limit check on manifest (first HLS request per device) ───
+  // deviceId comes from ?did= query param (set by LivePlayer)
+  const deviceId = req.query.did || req.headers['x-device-id'] || '';
+  const connCheck = await checkConnectionLimit(userId, `live_${streamId}`, 'live', deviceId);
+  if (!connCheck.allowed) {
+    return res.status(429).json({
+      error: connCheck.error,
+      message: connCheck.message,
+      active: connCheck.active,
+      max: connCheck.max,
+    });
+  }
+  // ─── Rate limit (manifest requests) ───
+  if (!await _checkRateLimit(userId, 'm3u8')) {
+    return res.status(429).json({ error: 'تجاوزت حد الطلبات - يرجى الانتظار لحظة' });
+  }
+
+  const sessionId = req.query.sid || userId || req.ip || "anon";
+
+  let baseUrl = XTREAM.primary;
+
+  try {
+    if (req.query.base) baseUrl = decodeURIComponent(req.query.base);
+  } catch {}
+
+  const manifestQueryParams = {
+    did: req.query.did || req.headers['x-device-id'] || '',
+    st: req.query.st || '',
+  };
+
+  try {
+    const manifest = await xtreamProxy.getManifest(
+      streamId,
+      baseUrl,
+      sessionId,
+      manifestQueryParams,
+    );
+
+    res.set({
+      "Content-Type": "application/vnd.apple.mpegurl",
+
+      "Cache-Control": "no-cache, no-store",
+
+      "Access-Control-Allow-Origin": "*",
+    });
+
+    res.send(manifest);
+  } catch (e) {
+    console.error(`[Proxy] Manifest ${streamId}: ${e.message}`);
+
+    res.status(502).json({ error: "البث غير متاح حالياً" });
+  }
+});
+
+/**
+
+ * GET /proxy/live/:streamId/seg/:encodedPath
+
+ * Proxy TS segment â€" cached, shared across viewers
+
+ */
+
+app.get("/proxy/live/:streamId/seg/:encodedPath(*)", async (req, res) => {
+  const { streamId, encodedPath } = req.params;
+
+  // ─── Auth + premium check ───
+  const authResult = await _validateStreamAuth(req);
+  if (authResult.error === 'subscription_required') return res.status(403).json({ error: 'subscription_required', message: 'هذا المحتوى يتطلب اشتراك بريميوم' });
+  if (authResult.error === 'subscription_expired') return res.status(403).json({ error: 'subscription_expired', message: 'انتهت صلاحية اشتراكك يرجى التجديد' });
+  if (!authResult.userId) return res.status(401).json({ error: 'session_invalidated', message: 'تم تسجيل الدخول من جهاز آخر' });
+  const userId = authResult.userId;
+  // ─── Rate limit (segment requests) ───
+  if (!await _checkRateLimit(userId, 'seg')) return res.status(429).end();
+
+  // ─── Lightweight heartbeat on segments (every 10th request to avoid DB spam) ───
+  const segKey = `hb_${userId}_${streamId}`;
+  if (!_segHbCounter) var _segHbCounter = {};
+  _segHbCounter[segKey] = ((_segHbCounter[segKey] || 0) + 1) % 10;
+  if (_segHbCounter[segKey] === 0) {
+    const hbDeviceId = req.query.did || req.headers['x-device-id'] || '';
+    _getUserSessions(userId).then(sessions => {
+      const s = hbDeviceId
+        ? sessions.find(x => x.stream_id === `live_${streamId}` && x.device_id === hbDeviceId)
+        : sessions.find(x => x.stream_id === `live_${streamId}`);
+      if (s) _updateHeartbeat(s.id).catch(() => {});
+    }).catch(() => {});
+  }
+
+  const sessionId = req.query.sid || userId || req.ip || "anon";
+
+  let baseUrl = XTREAM.primary;
+
+  try {
+    if (req.query.base) baseUrl = decodeURIComponent(req.query.base);
+  } catch {}
+
+  // ─── Channel segment cache: serve from memory (instant) ───
+  // When encodedPath starts with "live_", it's a channel-cached segment
+  if (encodedPath.startsWith('live_')) {
+    const cached = xtreamProxy.getCachedSegment(streamId);
+    if (cached && cached.buf) {
+      res.set({
+        "Content-Type": cached.contentType || 'video/mp2t',
+        "Cache-Control": "public, max-age=60",
+        "Access-Control-Allow-Origin": "*",
+        "Content-Length": cached.buf.length,
+      });
+      return res.end(cached.buf);
+    }
+    // Not cached yet - try to fetch and cache
+    try {
+      const result = await xtreamProxy.fetchAndCacheSegment(streamId, baseUrl);
+      if (result && result.buf) {
+        res.set({
+          "Content-Type": result.contentType || 'video/mp2t',
+          "Cache-Control": "public, max-age=60",
+          "Access-Control-Allow-Origin": "*",
+          "Content-Length": result.buf.length,
+        });
+        return res.end(result.buf);
+      }
+    } catch (e) {
+      console.error(`[Proxy] Channel segment cache miss+fetch failed ${streamId}: ${e.message}`);
+    }
+    // Fall through to CDN streaming if cache fetch fails
+  }
+
+  try {
+    let decoded;
+    try { decoded = decodeURIComponent(encodedPath); } catch { decoded = encodedPath; }
+
+    let segUrl;
+    if (decoded.startsWith('http')) {
+      segUrl = decoded;
+    } else if (decoded.startsWith('/')) {
+      segUrl = `${baseUrl}${decoded}`;
+    } else {
+      const creds = await xtreamProxy._resolveCredentials(streamId, baseUrl);
+      segUrl = (creds?.user && creds?.pass)
+        ? `${baseUrl}/live/${creds.user}/${creds.pass}/${decoded}`
+        : `${baseUrl}/${decoded}`;
+    }
+
+    const upstreamMod = segUrl.startsWith('https') ? https : http;
+    const upstream = upstreamMod.request(segUrl, { headers: { 'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20', 'Connection': 'keep-alive' } }, (upRes) => {
+      if (upRes.statusCode >= 300 && upRes.statusCode < 400 && upRes.headers.location) {
+        const redirectUrl = new URL(upRes.headers.location, segUrl).href;
+        const redirectMod = redirectUrl.startsWith('https') ? https : http;
+        const redirectReq = redirectMod.request(redirectUrl, { headers: { 'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20', 'Connection': 'keep-alive' } }, (redirectRes) => {
+          res.set({
+            "Content-Type": redirectRes.headers['content-type'] || 'video/mp2t',
+            "Cache-Control": "public, max-age=60",
+            "Access-Control-Allow-Origin": "*",
+          });
+          redirectRes.pipe(res);
+          redirectRes.on('error', () => res.status(502).end());
+        });
+        redirectReq.on('error', () => res.status(502).end());
+        redirectReq.setTimeout(60000, () => { redirectReq.destroy(); res.status(504).end(); });
+        redirectReq.end();
+        return;
+      }
+      res.set({
+        "Content-Type": upRes.headers['content-type'] || 'video/mp2t',
+        "Cache-Control": "public, max-age=60",
+        "Access-Control-Allow-Origin": "*",
+      });
+      upRes.pipe(res);
+      upRes.on('error', () => res.status(502).end());
+    });
+    upstream.on('error', (e) => {
+      console.error(`[Proxy] Segment ${streamId} stream error: ${e.message}`);
+      if (!res.headersSent) res.status(502).end();
+    });
+    upstream.setTimeout(60000, () => { upstream.destroy(); if (!res.headersSent) res.status(504).end(); });
+    upstream.end();
+  } catch (e) {
+    console.error(`[Proxy] Segment ${streamId}: ${e.message}`);
+
+    res.status(502).end();
+  }
+});
+
+/**
+
+ * GET /proxy/live/:streamId/sub/:encodedUrl
+
+ * Proxy sub-manifest (quality variants)
+
+ */
+
+app.get("/proxy/live/:streamId/sub/:encodedUrl(*)", async (req, res) => {
+  const { streamId, encodedUrl } = req.params;
+
+  const sessionId = req.query.sid || req.ip || "anon";
+
+  const subQueryParams = {
+    did: req.query.did || req.headers['x-device-id'] || '',
+    st: req.query.st || '',
+  };
+  if (subQueryParams.did || subQueryParams.st) {
+    xtreamProxy._queryParams = xtreamProxy._queryParams || {};
+    xtreamProxy._queryParams[streamId] = subQueryParams;
+  }
+
+  try {
+    const manifest = await xtreamProxy.getSubManifest(
+      streamId,
+      encodedUrl,
+      sessionId,
+    );
+
+    res.set({
+      "Content-Type": "application/vnd.apple.mpegurl",
+
+      "Cache-Control": "no-cache, no-store",
+
+      "Access-Control-Allow-Origin": "*",
+    });
+
+    res.send(manifest);
+  } catch (e) {
+    console.error(`[Proxy] Sub-manifest ${streamId}: ${e.message}`);
+
+    res.status(502).end();
+  }
+});
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// Health + Admin
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// ─── Admin: Cloud Status & Logs ──────────────────────────────
+app.get("/api/admin/cloud-status", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  const mem = process.memoryUsage();
+  res.json({
+    online: true,
+    uptime: Math.floor(process.uptime()),
+    activeStreams: streamManager.getActiveStreams().length + restreamer.getActiveStreams().length,
+    liveViewers: xtreamProxy.getTotalViewers() + restreamer.getTotalViewers(),
+    memory: Math.round(mem.rss / 1024 / 1024) + "MB",
+    url: config.PUBLIC_URL || `http://62.171.153.204:${config.PORT}`,
+  });
+});
+
+app.get("/api/admin/logs", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+  try {
+    const rows = await db.prepare("SELECT * FROM admin_logs ORDER BY created_at DESC LIMIT ?").all(limit);
+    res.json({ logs: rows || [] });
+  } catch {
+    // Table may not exist yet - return PM2-style recent logs
+    res.json({ logs: [] });
+  }
+});
+
+app.delete("/api/admin/logs", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  try { await db.prepare("DELETE FROM admin_logs").run(); } catch {}
+  res.json({ success: true });
+});
+
+// ─── Admin: Cloud Status & Logs ──────────────────────────────
+app.get("/api/admin/cloud-status", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  const mem = process.memoryUsage();
+  res.json({
+    online: true,
+    uptime: Math.floor(process.uptime()),
+    activeStreams: streamManager.getActiveStreams().length + restreamer.getActiveStreams().length,
+    liveViewers: xtreamProxy.getTotalViewers() + restreamer.getTotalViewers(),
+    memory: Math.round(mem.rss / 1024 / 1024) + "MB",
+    url: config.PUBLIC_URL || `http://62.171.153.204:${config.PORT}`,
+  });
+});
+
+app.get("/api/admin/logs", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+  try {
+    const rows = await db.prepare("SELECT * FROM admin_logs ORDER BY created_at DESC LIMIT ?").all(limit);
+    res.json({ logs: rows || [] });
+  } catch {
+    // Table may not exist yet - return PM2-style recent logs
+    res.json({ logs: [] });
+  }
+});
+
+app.delete("/api/admin/logs", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  try { await db.prepare("DELETE FROM admin_logs").run(); } catch {}
+  res.json({ success: true });
+});
+
+app.get("/health", (req, res) => {
+  const mem = process.memoryUsage();
+
+  res.json({
+    status: "ok",
+
+    uptime: Math.floor(process.uptime()),
+
+    activeStreams: streamManager.getActiveStreams().length + restreamer.getActiveStreams().length,
+
+    liveViewers: xtreamProxy.getTotalViewers() + restreamer.getTotalViewers(),
+
+    liveChannels: Object.keys(xtreamProxy.getAllViewers()).length + restreamer.getActiveStreams().length,
+
+    vodSessions: vodProxy.getActiveSessions().length,
+
+    hlsSessions: hlsProxy.sessions.size,
+
+    memory: {
+      heapUsed: Math.round(mem.heapUsed / 1024 / 1024) + "MB",
+
+      heapTotal: Math.round(mem.heapTotal / 1024 / 1024) + "MB",
+
+      rss: Math.round(mem.rss / 1024 / 1024) + "MB",
+    },
+  });
+});
+
+app.get("/api/stream/status", requireAuth, (req, res) => {
+  res.json({ streams: streamManager.getActiveStreams() });
+});
+
+app.get("/", (req, res) => {
+  res.json({
+    name: "IPTV Cloud Streaming Server",
+
+    version: "3.0.0",
+
+    endpoints: {
+      stream_live: "POST /api/stream/live/:channelId (JWT)",
+
+      stream_vod: "POST /api/stream/vod/:id (JWT)",
+
+      stream_seek: "POST /api/stream/seek/:streamId (JWT)",
+
+      stream_info: "GET /api/stream/info/:streamId (JWT)",
+
+      stream_release: "POST /api/stream/release/:streamId (JWT)",
+
+      stream_ready: "GET /api/stream/ready/:streamId (JWT)",
+
+      hls_live: "/hls/:streamId/stream.m3u8",
+
+      hls_vod: "/hls/vod/:streamId/stream.m3u8",
+
+      health: "/health",
+
+      sessions: "GET /api/session/active (JWT)",
+
+      session_info: "GET /api/session/subscription-info (JWT)",
+    },
+  });
+});
+
+// ═══ Admin Session Management API ═══════════════════════════
+
+app.get("/api/admin/sessions", requireAuth, async (req, res) => {
+  if (!req.user.is_admin && req.user.role !== "admin") {
+    return res.status(403).json({ error: "admin required" });
+  }
+
+  await _cleanExpiredSessions();
+
+  const sessions = await db
+    .prepare(
+      `
+
+    SELECT s.*, u.username, u.plan, u.max_connections
+
+    FROM active_sessions s
+
+    LEFT JOIN users u ON s.user_id = u.id
+
+    ORDER BY s.started_at DESC
+
+  `,
+    )
+    .all();
+
+  const totalUsers = new Set(sessions.map((s) => s.user_id)).size;
+
+  res.json({ sessions, total: sessions.length, totalUsers });
+});
+
+app.post("/api/admin/sessions/kill", requireAuth, async (req, res) => {
+  if (!req.user.is_admin && req.user.role !== "admin") {
+    return res.status(403).json({ error: "admin required" });
+  }
+
+  const { sessionId } = req.body;
+
+  if (!sessionId) return res.status(400).json({ error: "sessionId required" });
+
+  await _deleteSession(sessionId);
+
+  res.json({ success: true });
+});
+
+app.post("/api/admin/sessions/kill-user", requireAuth, async (req, res) => {
+  if (!req.user.is_admin && req.user.role !== "admin") {
+    return res.status(403).json({ error: "admin required" });
+  }
+
+  const { userId } = req.body;
+
+  if (!userId) return res.status(400).json({ error: "userId required" });
+
+  await db.prepare("DELETE FROM active_sessions WHERE user_id = ?").run(userId);
+
+  res.json({ success: true });
+});
+
+app.post("/api/admin/sessions/kill-all", requireAuth, async (req, res) => {
+  if (!req.user.is_admin && req.user.role !== "admin") {
+    return res.status(403).json({ error: "admin required" });
+  }
+
+  await db.prepare("DELETE FROM active_sessions").run();
+
+  res.json({ success: true });
+});
+
+app.get("/api/admin/sessions/stats", requireAuth, async (req, res) => {
+  if (!req.user.is_admin && req.user.role !== "admin") {
+    return res.status(403).json({ error: "admin required" });
+  }
+
+  await _cleanExpiredSessions();
+
+  const total = await db
+    .prepare("SELECT COUNT(*) as c FROM active_sessions")
+    .get();
+
+  const byType = await db
+    .prepare("SELECT type, COUNT(*) as c FROM active_sessions GROUP BY type")
+    .all();
+
+  const byUser = await db
+    .prepare(
+      `
+
+    SELECT s.user_id, u.username, u.plan, u.max_connections, COUNT(*) as active_count
+
+    FROM active_sessions s
+
+    LEFT JOIN users u ON s.user_id = u.id
+
+    GROUP BY s.user_id
+
+    ORDER BY active_count DESC
+
+  `,
+    )
+    .all();
+
+  const overLimit = byUser.filter(
+    (u) => u.active_count > (u.max_connections || 1),
+  );
+
+  res.json({
+    total: total.c,
+
+    byType: byType.reduce((acc, r) => {
+      acc[r.type] = r.c;
+      return acc;
+    }, {}),
+
+    byUser,
+
+    overLimit,
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Admin IPTV Multi-Account API (runs on cloud-server directly)
+// ═══════════════════════════════════════════════════════════════
+
+function _isAdmin(req) {
+  return req.user && (req.user.is_admin || req.user.role === "admin");
+}
+
+// ─── IPTV Accounts CRUD ──────────────────────────────────────
+
+app.get("/api/admin/iptv-accounts", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  const accounts = await db
+    .prepare(
+      "SELECT id, name, server_url, username, password, max_connections, status, created_at FROM iptv_accounts ORDER BY id",
+    )
+    .all();
+  // Count channels per account
+  for (const acc of accounts) {
+    const row = await db
+      .prepare("SELECT COUNT(*) as c FROM xtream_channels WHERE account_id = ?")
+      .get(acc.id);
+    acc.channel_count = row ? row.c : 0;
+  }
+  res.json({ accounts });
+});
+
+app.post("/api/admin/iptv-accounts", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  const { name, server_url, username, password, max_connections } = req.body;
+  if (!server_url || !username || !password)
+    return res
+      .status(400)
+      .json({ error: "server_url, username, password مطلوبة" });
+  // Verify account works
+  try {
+    const { apiCall } = require("./lib/xtream");
+    const info = await apiCall(
+      server_url,
+      username,
+      password,
+      "get_live_categories",
+    );
+    if (!Array.isArray(info)) throw new Error("Invalid response");
+  } catch (e) {
+    return res
+      .status(400)
+      .json({ error: "فشل الاتصال بالسيرفر: " + e.message });
+  }
+  const result = await db
+    .prepare(
+      "INSERT INTO iptv_accounts (name, server_url, username, password, max_connections, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
+    )
+    .get(
+      name || "",
+      server_url,
+      username,
+      password,
+      max_connections || 1,
+      "active",
+      Date.now(),
+    );
+  res.json({ success: true, id: result.id });
+});
+
+app.put("/api/admin/iptv-accounts/:id", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  const { name, server_url, username, password, max_connections, status } =
+    req.body;
+  await db
+    .prepare(
+      "UPDATE iptv_accounts SET name=COALESCE(?,name), server_url=COALESCE(?,server_url), username=COALESCE(?,username), password=COALESCE(?,password), max_connections=COALESCE(?,max_connections), status=COALESCE(?,status) WHERE id=?",
+    )
+    .run(
+      name || null,
+      server_url || null,
+      username || null,
+      password || null,
+      max_connections || null,
+      status || null,
+      req.params.id,
+    );
+  res.json({ success: true });
+});
+
+app.delete("/api/admin/iptv-accounts/:id", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  const accId = req.params.id;
+  // Delete channels linked to this account
+  await db
+    .prepare("DELETE FROM xtream_channels WHERE account_id = ?")
+    .run(accId);
+  await db.prepare("DELETE FROM iptv_accounts WHERE id = ?").run(accId);
+  res.json({ success: true });
+});
+
+// ─── Channel Search (within a specific IPTV account) ─────────
+
+app.get("/api/admin/iptv-search", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  const { account_id, q } = req.query;
+  if (!account_id) return res.status(400).json({ error: "account_id مطلوب" });
+  if (!q || q.length < 2)
+    return res.status(400).json({ error: "أدخل حرفين على الأقل" });
+  const account = await db
+    .prepare("SELECT * FROM iptv_accounts WHERE id = ?")
+    .get(account_id);
+  if (!account) return res.status(404).json({ error: "الحساب غير موجود" });
+  try {
+    const result = await searchAccountChannels(account, q);
+    res.json({ channels: result.channels.slice(0, 200), total: result.total });
+  } catch (e) {
+    res.status(500).json({ error: "فشل البحث: " + e.message });
+  }
+});
+
+// ─── Add Channels (from search results, linked to account) ───
+
+app.post("/api/admin/iptv-add-channels", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  const { account_id, channels } = req.body;
+  if (!account_id || !channels || !channels.length)
+    return res.status(400).json({ error: "account_id و channels مطلوبة" });
+  const account = await db
+    .prepare("SELECT * FROM iptv_accounts WHERE id = ?")
+    .get(account_id);
+  if (!account) return res.status(404).json({ error: "الحساب غير موجود" });
+  try {
+    const result = await addChannelsToDB(db, account, channels);
+    res.json({ success: true, added: result.added });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Cloud Channel Management ────────────────────────────────
+
+app.get("/api/admin/cloud-channels", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  const rows = await db
+    .prepare(
+      `
+    SELECT c.*, a.name as account_name, a.server_url as account_server
+    FROM xtream_channels c
+    LEFT JOIN iptv_accounts a ON c.account_id = a.id
+    ORDER BY c.sort_order, c.name
+  `,
+    )
+    .all();
+  res.json({ channels: rows });
+});
+
+app.delete("/api/admin/cloud-channels/:id", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  await db
+    .prepare("DELETE FROM xtream_channels WHERE id = ?")
+    .run(req.params.id);
+  // Clear cached credentials
+  xtreamProxy._channelCreds.delete(req.params.id);
+  res.json({ success: true });
+});
+
+app.delete("/api/admin/cloud-channels", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  await db.prepare("DELETE FROM xtream_channels").run();
+  xtreamProxy._channelCreds.clear();
+  res.json({ success: true });
+});
+
+// ─── Refresh Channel Stream (re-verify with IPTV) ────────────
+
+app.post("/api/admin/channel-refresh/:id", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  try {
+    const result = await refreshChannelStream(db, req.params.id);
+    // Clear proxy cache so next request fetches fresh
+    xtreamProxy._manifests.delete(result.streamId?.toString());
+    xtreamProxy._channelCreds.delete(req.params.id);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Test IPTV Account Connection ────────────────────────────
+
+app.post("/api/admin/iptv-test", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  const { server_url, username, password } = req.body;
+  if (!server_url || !username || !password)
+    return res.status(400).json({ error: "بيانات الاتصال مطلوبة" });
+  try {
+    const { apiCall } = require("./lib/xtream");
+    const cats = await apiCall(
+      server_url,
+      username,
+      password,
+      "get_live_categories",
+    );
+    const streams = await apiCall(
+      server_url,
+      username,
+      password,
+      "get_live_streams",
+    );
+    res.json({
+      success: true,
+      categories: Array.isArray(cats) ? cats.length : 0,
+      channels: Array.isArray(streams) ? streams.length : 0,
+    });
+  } catch (e) {
+    res.json({ success: false, error: e.message });
+  }
+});
+
+// ─── Toggle Channel Streaming (start/stop) ───────────────
+
+app.post(
+  "/api/admin/channel-toggle-stream/:id",
+  requireAuth,
+  async (req, res) => {
+    if (!_isAdmin(req))
+      return res.status(403).json({ error: "admin required" });
+    const channelId = req.params.id;
+    const { streaming } = req.body;
+    const isStreaming = !!streaming;
+
+    // If starting stream, just confirm channel is linked to an IPTV account.
+    // Actual playback errors are logged by the HLS proxy (xtream-proxy.js) at runtime.
+    if (isStreaming) {
+      const info = await getChannelAccount(db, channelId);
+      if (!info || !info.account) {
+        return res.status(400).json({ error: "القناة غير مرتبطة بحساب IPTV" });
+      }
+    }
+
+    await db
+      .prepare("UPDATE xtream_channels SET is_streaming = ? WHERE id = ?")
+      .run(isStreaming, channelId);
+    // Clear proxy cache
+    xtreamProxy._channelCreds.delete(channelId);
+    res.json({ success: true, is_streaming: isStreaming });
+  },
+);
+
+// ─── Batch Toggle Streaming for all channels of an account ─
+
+app.post(
+  "/api/admin/account-toggle-stream/:accountId",
+  requireAuth,
+  async (req, res) => {
+    if (!_isAdmin(req))
+      return res.status(403).json({ error: "admin required" });
+    const { streaming } = req.body;
+    await db
+      .prepare(
+        "UPDATE xtream_channels SET is_streaming = ? WHERE account_id = ?",
+      )
+      .run(!!streaming, req.params.accountId);
+    res.json({ success: true });
+  },
+);
+
+// ─── Stream Error Log APIs ────────────────────────────────
+
+app.get("/api/admin/stream-errors", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+  const rows = await db
+    .prepare(
+      "SELECT * FROM stream_errors ORDER BY created_at DESC LIMIT " + limit,
+    )
+    .all();
+  res.json({ errors: rows });
+});
+
+app.delete("/api/admin/stream-errors", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  await db.prepare("DELETE FROM stream_errors").run();
+  res.json({ success: true });
+});
+
+// ─── Log stream error helper (used internally) ────────────
+async function logStreamError(
+  accountId,
+  channelId,
+  channelName,
+  errorType,
+  message,
+) {
+  try {
+    await db
+      .prepare(
+        "INSERT INTO stream_errors (account_id, channel_id, channel_name, error_type, message, created_at) VALUES (?,?,?,?,?,?)",
+      )
+      .run(
+        accountId || 0,
+        channelId || "",
+        channelName || "",
+        errorType || "unknown",
+        message || "",
+        Date.now(),
+      );
+    // Keep only last 1000 errors
+    await db
+      .prepare(
+        "DELETE FROM stream_errors WHERE id NOT IN (SELECT id FROM stream_errors ORDER BY created_at DESC LIMIT 1000)",
+      )
+      .run();
+  } catch (e) {
+    console.error("[StreamErrors] Log error:", e.message);
+  }
+}
+
+// ─── IPTV Content Stats & DB Browsing ──────────────────────
+app.get("/api/admin/iptv-content/stats", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  try {
+    const [accounts, channels, streaming] = await Promise.all([
+      db.prepare("SELECT COUNT(*) as c FROM iptv_accounts WHERE status = 'active'").get(),
+      db.prepare("SELECT COUNT(*) as c FROM xtream_channels").get(),
+      db.prepare("SELECT COUNT(*) as c FROM xtream_channels WHERE is_streaming = true").get(),
+    ]);
+    let movies = 0, seriesCount = 0, episodesCount = 0;
+    try { const r = await db.prepare("SELECT COUNT(*) as c FROM vod WHERE vod_type = 'movie'").get(); movies = r?.c || 0; } catch {}
+    try { const r = await db.prepare("SELECT COUNT(*) as c FROM vod WHERE vod_type = 'series'").get(); seriesCount = r?.c || 0; } catch {}
+    try { const r = await db.prepare("SELECT COUNT(*) as c FROM episodes").get(); episodesCount = r?.c || 0; } catch {}
+    res.json({
+      accounts: accounts?.c || 0,
+      channels: channels?.c || 0,
+      streaming: streaming?.c || 0,
+      movies,
+      series: seriesCount,
+      episodes: episodesCount,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/admin/iptv-content/vod", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  const { page, limit, search } = req.query;
+  const p = parseInt(page) || 1;
+  const l = Math.min(parseInt(limit) || 30, 100);
+  const offset = (p - 1) * l;
+  try {
+    let where = "WHERE vod_type = 'movie'";
+    const params = [];
+    if (search) { where += " AND title ILIKE ?"; params.push(`%${search}%`); }
+    const totalRow = await db.prepare(`SELECT COUNT(*) as c FROM vod ${where}`).get(...params);
+    const total = totalRow?.c || 0;
+    const items = await db.prepare(`SELECT id, title, stream_token, container_ext, xtream_id, tmdb_id FROM vod ${where} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...params, l, offset);
+    res.json({ items, page: p, total, hasMore: offset + l < total });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/admin/iptv-content/series", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  const { page, limit, search } = req.query;
+  const p = parseInt(page) || 1;
+  const l = Math.min(parseInt(limit) || 30, 100);
+  const offset = (p - 1) * l;
+  try {
+    let where = "WHERE vod_type = 'series'";
+    const params = [];
+    if (search) { where += " AND title ILIKE ?"; params.push(`%${search}%`); }
+    const totalRow = await db.prepare(`SELECT COUNT(*) as c FROM vod ${where}`).get(...params);
+    const total = totalRow?.c || 0;
+    const items = await db.prepare(`SELECT id, title, stream_token, xtream_id, tmdb_id FROM vod ${where} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...params, l, offset);
+    for (const item of items) {
+      try {
+        const epCount = await db.prepare("SELECT COUNT(*) as c FROM episodes WHERE vod_id = ?").get(item.id);
+        item.episode_count = epCount?.c || 0;
+      } catch { item.episode_count = 0; }
+    }
+    res.json({ items, page: p, total, hasMore: offset + l < total });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/admin/iptv-content/series/:vodId/episodes", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  try {
+    const episodes = await db.prepare("SELECT id, title, stream_token, container_ext, xtream_id, season, episode_num FROM episodes WHERE vod_id = ? ORDER BY season ASC, episode_num ASC").all(req.params.vodId);
+    const vod = await db.prepare("SELECT id, title, tmdb_id FROM vod WHERE id = ?").get(req.params.vodId);
+    res.json({ vod, episodes });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ─── Lulu Upload Config (content type management) ──────────
+app.get("/api/admin/lulu-upload-config", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  try {
+    let config = {};
+    try {
+      const row = await db.prepare("SELECT value FROM admin_settings WHERE key = 'lulu_upload_config'").get();
+      if (row) config = JSON.parse(row.value);
+    } catch {}
+    const luluAccounts = await db.prepare("SELECT id, name FROM lulu_upload_accounts ORDER BY id").all();
+    const iptvAccounts = await db.prepare("SELECT id, name, server_url FROM iptv_accounts WHERE status = 'active' ORDER BY id").all();
+    res.json({ config, luluAccounts, iptvAccounts });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post("/api/admin/lulu-upload-config", requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
+  try {
+    const config = req.body;
+    await db.prepare("CREATE TABLE IF NOT EXISTS admin_settings (key TEXT PRIMARY KEY, value TEXT)").run();
+    await db.prepare("INSERT INTO admin_settings (key, value) VALUES ('lulu_upload_config', ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value").run(JSON.stringify(config));
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Lulu Uploader Dashboard - إدارة رفع المحتوى إلى LuluStream
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Serve the dashboard HTML page
+app.get('/lulu-uploader', requireAuth, (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  const htmlPath = path.join(__dirname, 'public', 'lulu-uploader.html');
+  if (fs.existsSync(htmlPath)) return res.sendFile(htmlPath);
+  res.status(404).send('Dashboard not found');
+});
+
+// ── Lulu Accounts CRUD ────────────────────────────────────────────────────────
+app.get('/api/lulu-upload/accounts', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  const rows = await db.prepare('SELECT id, name, api_key, main_folder_id, created_at FROM lulu_upload_accounts ORDER BY id DESC').all();
+  // Mask API key for display
+  const masked = rows.map(r => ({ ...r, api_key_masked: r.api_key.slice(0, 8) + '...' }));
+  res.json({ accounts: masked });
+});
+
+app.post('/api/lulu-upload/accounts', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  const { name, api_key, main_folder_id } = req.body;
+  if (!api_key) return res.status(400).json({ error: 'api_key مطلوب' });
+  // Verify the key is valid
+  try {
+    const info = await luluUploader.luluGetAccountInfo(api_key);
+    if (!info) return res.status(400).json({ error: 'مفتاح API غير صالح' });
+  } catch (e) {
+    return res.status(400).json({ error: `فشل التحقق: ${e.message}` });
+  }
+  await db.prepare('INSERT INTO lulu_upload_accounts (name, api_key, main_folder_id, created_at) VALUES (?,?,?,?)').run(
+    name || 'حساب Lulu', api_key, main_folder_id || 0, Date.now()
+  );
+  res.json({ success: true });
+});
+
+app.delete('/api/lulu-upload/accounts/:id', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  await db.prepare('DELETE FROM lulu_upload_accounts WHERE id = ?').run(req.params.id);
+  res.json({ success: true });
+});
+
+// ── IPTV Browsing ─────────────────────────────────────────────────────────────
+// Get all categories (VOD + Series) from IPTV account
+app.get('/api/lulu-upload/iptv/categories', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  const { iptv_id } = req.query;
+  try {
+    let account;
+    if (iptv_id) {
+      const row = await db.prepare('SELECT * FROM iptv_accounts WHERE id = ?').get(iptv_id);
+      if (!row) return res.status(404).json({ error: 'حساب IPTV غير موجود' });
+      const url = new URL(row.server_url);
+      account = { host: url.hostname, port: url.port || 8080, username: row.username, password: row.password };
+    } else {
+      // Use first active IPTV account from DB
+      const row = await db.prepare("SELECT * FROM iptv_accounts WHERE status = 'active' ORDER BY id ASC LIMIT 1").get();
+      if (!row) return res.status(400).json({ error: 'لا يوجد حساب IPTV نشط - أضف حساباً من تبويب IPTV' });
+      const url = new URL(row.server_url);
+      account = { host: url.hostname, port: url.port || 8080, username: row.username, password: row.password };
+    }
+    const [vodCats, seriesCats] = await Promise.all([
+      luluUploader.getVodCategories(account),
+      luluUploader.getSeriesCategories(account),
+    ]);
+    res.json({
+      vod   : (Array.isArray(vodCats)    ? vodCats    : []).map(c => ({ id: c.category_id, name: c.category_name })),
+      series: (Array.isArray(seriesCats) ? seriesCats : []).map(c => ({ id: c.category_id, name: c.category_name })),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get content inside a category
+app.get('/api/lulu-upload/iptv/content', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  const { iptv_id, cat_id, type, search, series_id } = req.query;
+  try {
+    let account;
+    if (iptv_id) {
+      const row = await db.prepare('SELECT * FROM iptv_accounts WHERE id = ?').get(iptv_id);
+      if (!row) return res.status(404).json({ error: 'حساب IPTV غير موجود' });
+      const url = new URL(row.server_url);
+      account = { host: url.hostname, port: url.port || 8080, username: row.username, password: row.password };
+    } else {
+      const row = await db.prepare("SELECT * FROM iptv_accounts WHERE status = 'active' ORDER BY id ASC LIMIT 1").get();
+      if (!row) return res.status(400).json({ error: 'لا يوجد حساب IPTV نشط' });
+      const url = new URL(row.server_url);
+      account = { host: url.hostname, port: url.port || 8080, username: row.username, password: row.password };
+    }
+
+    if (type === 'series' && series_id) {
+      // Fetch episodes of a specific series
+      const info = await luluUploader.getSeriesInfo(account, series_id);
+      const meta = info?.info || {};
+      const episodes = info?.episodes || {};
+      const items = [];
+      for (const [season, eps] of Object.entries(episodes)) {
+        for (const ep of (eps || [])) {
+          items.push({
+            streamId : ep.id,
+            name     : `${meta.name || 'Series'} - S${String(season).padStart(2,'0')}E${String(ep.episode_num).padStart(2,'0')}${ep.title ? ` - ${ep.title}` : ''}`,
+            ext      : ep.container_extension || 'mp4',
+            type     : 'episode',
+            showName : meta.name || '',
+            season   : Number(season),
+            ep       : ep.episode_num,
+            year     : meta.releaseDate ? String(meta.releaseDate).slice(0,4) : '',
+            seriesId : series_id,
+            poster   : meta.cover || '',
+          });
+        }
+      }
+      return res.json({ items, seriesInfo: { name: meta.name, poster: meta.cover, genre: meta.genre, rating: meta.rating } });
+    }
+
+    if (type === 'series') {
+      // List of series in a category
+      const list = await luluUploader.getSeriesList(account, cat_id);
+      let items = (Array.isArray(list) ? list : []).map(s => ({
+        streamId : s.series_id,
+        name     : s.name,
+        poster   : s.cover,
+        type     : 'series',
+        genre    : s.genre,
+        year     : s.releaseDate ? String(s.releaseDate).slice(0,4) : '',
+      }));
+      if (search) {
+        const q = search.toLowerCase();
+        items = items.filter(i => i.name.toLowerCase().includes(q));
+      }
+      return res.json({ items });
+    }
+
+    // VOD movies
+    const streams = await luluUploader.getVodStreams(account, cat_id);
+    let items = (Array.isArray(streams) ? streams : []).map(s => ({
+      streamId : s.stream_id,
+      name     : s.name,
+      poster   : s.stream_icon,
+      ext      : s.container_extension || 'mp4',
+      type     : 'movie',
+      year     : s.releasedate ? String(s.releasedate).slice(0,4) : '',
+    }));
+    if (search) {
+      const q = search.toLowerCase();
+      items = items.filter(i => i.name.toLowerCase().includes(q));
+    }
+    res.json({ items });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Upload Jobs ───────────────────────────────────────────────────────────────
+app.post('/api/lulu-upload/jobs', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  const { items, lulu_account_id, iptv_id, type, cat_name } = req.body;
+  if (!items || !items.length)           return res.status(400).json({ error: 'items مطلوبة' });
+  if (!lulu_account_id)                  return res.status(400).json({ error: 'lulu_account_id مطلوب' });
+
+  const luluAcc = await db.prepare('SELECT * FROM lulu_upload_accounts WHERE id = ?').get(lulu_account_id);
+  if (!luluAcc) return res.status(404).json({ error: 'حساب Lulu غير موجود' });
+
+  // Determine IPTV account credentials
+  let iptvAccount;
+  if (iptv_id) {
+    const row = await db.prepare('SELECT * FROM iptv_accounts WHERE id = ?').get(iptv_id);
+    if (!row) return res.status(404).json({ error: 'حساب IPTV غير موجود' });
+    const url = new URL(row.server_url);
+    iptvAccount = { host: url.hostname, port: url.port || 8080, username: row.username, password: row.password };
+  } else {
+    iptvAccount = {
+      host    : process.env.IPTV_HOST || 'myhand.org',
+      port    : process.env.IPTV_PORT || 8080,
+      username: process.env.IPTV_USER || '3302196097',
+      password: process.env.IPTV_PASS || '2474044847',
+    };
+  }
+
+  // Tag each item with catName if not provided
+  const enrichedItems = items.map(item => ({
+    ...item,
+    catName: item.catName || cat_name || 'محتوى',
+  }));
+
+  // منع تكرار: إذا يوجد job بنفس الـ cat_name قيد التشغيل أو الانتظار → ارفض
+  const existingJob = await db.prepare(
+    "SELECT id FROM lulu_upload_jobs WHERE cat_name = ? AND status IN ('running', 'queued') LIMIT 1"
+  ).get(cat_name || null);
+  if (existingJob) {
+    return res.status(409).json({ error: `يوجد job نشط بالفعل لـ "${cat_name}" (id: ${existingJob.id})` });
+  }
+
+  const vpsUrl      = process.env.VPS_URL || config.PUBLIC_URL || `http://62.171.153.204:${config.PORT}`;
+  const proxySecret = 'lulu_iptv_proxy_2026';
+
+  const job = luluUploader.createJob({
+    items       : enrichedItems,
+    account     : iptvAccount,
+    apiKey      : luluAcc.api_key,
+    vpsUrl,
+    proxySecret,
+    mainFolderId: luluAcc.main_folder_id || 0,
+    type        : type || 'vod',
+    luluAccountId: lulu_account_id,
+    iptvAccountId: iptv_id || 0,
+  });
+
+  res.json({ success: true, jobId: job.id });
+});
+
+app.get('/api/lulu-upload/jobs', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  res.json({ jobs: luluUploader.getJobsSummary() });
+});
+
+app.get('/api/lulu-upload/jobs/:id', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  const job = luluUploader.getJobDetail(req.params.id);
+  if (!job) return res.status(404).json({ error: 'job not found' });
+  res.json(job);
+});
+
+app.delete('/api/lulu-upload/jobs/:id', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  luluUploader.cancelJob(req.params.id);
+  res.json({ success: true });
+});
+
+// ── SSE: Real-time upload progress ───────────────────────────────────────────
+app.get('/api/lulu-upload/progress', async (req, res) => {
+  // Auth via query param (EventSource can't set headers)
+  const token = req.query.token || '';
+  if (!token) return res.status(401).json({ error: 'auth required' });
+  try {
+    const decoded = jwt.verify(token, config.JWT_SECRET);
+    const user = await _getUserById(decoded.userId);
+    if (!user || (!user.is_admin && user.role !== 'admin')) return res.status(403).json({ error: 'admin required' });
+  } catch { return res.status(401).json({ error: 'invalid token' }); }
+  res.set({
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
+  luluUploader.addSSEClient(res);
+  req.on('close', () => { /* cleanup handled inside addSSEClient */ });
+});
+
+// ── Lulu folders (for picking main folder) ────────────────────────────────────
+app.get('/api/lulu-upload/folders', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  const { lulu_account_id, parent_id } = req.query;
+  if (!lulu_account_id) return res.status(400).json({ error: 'lulu_account_id مطلوب' });
+  const acc = await db.prepare('SELECT api_key FROM lulu_upload_accounts WHERE id = ?').get(lulu_account_id);
+  if (!acc) return res.status(404).json({ error: 'حساب Lulu غير موجود' });
+  try {
+    const folders = await luluUploader.luluListFolders(acc.api_key, parent_id || 0);
+    res.json({ folders });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── IPTV accounts list (for dropdown) ────────────────────────────────────────
+app.get('/api/lulu-upload/iptv-accounts', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  const rows = await db.prepare('SELECT id, name, server_url FROM iptv_accounts WHERE status = ? ORDER BY id').all('active');
+  res.json({ accounts: rows });
+});
+
+// ── Uploaded files (from PG) ─────────────────────────────────────────────────
+app.get('/api/lulu-upload/files', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  const { type, cat_name, search, page, limit } = req.query;
+  const p = parseInt(page) || 1;
+  const l = Math.min(parseInt(limit) || 50, 200);
+  const offset = (p - 1) * l;
+  try {
+    let where = "WHERE 1=1";
+    const params = [];
+    if (type) { where += " AND type = ?"; params.push(type); }
+    if (cat_name) { where += " AND cat_name ILIKE ?"; params.push(`%${cat_name}%`); }
+    if (search) { where += " AND title ILIKE ?"; params.push(`%${search}%`); }
+    const totalRow = await db.prepare(`SELECT COUNT(*) as c FROM lulu_uploaded_files ${where}`).get(...params);
+    const total = totalRow?.c || 0;
+    const files = await db.prepare(`SELECT * FROM lulu_uploaded_files ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(...params, l, offset);
+    res.json({ files, page: p, total, hasMore: offset + l < total });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/lulu-upload/files/stats', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  try {
+    const [total, movies, episodes, failed] = await Promise.all([
+      db.prepare("SELECT COUNT(*) as c FROM lulu_uploaded_files WHERE status = 'ok'").get(),
+      db.prepare("SELECT COUNT(*) as c FROM lulu_uploaded_files WHERE status = 'ok' AND type = 'movie'").get(),
+      db.prepare("SELECT COUNT(*) as c FROM lulu_uploaded_files WHERE status = 'ok' AND type = 'episode'").get(),
+      db.prepare("SELECT COUNT(*) as c FROM lulu_uploaded_files WHERE status = 'error'").get(),
+    ]);
+    res.json({ total: total?.c || 0, movies: movies?.c || 0, episodes: episodes?.c || 0, failed: failed?.c || 0 });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Sync LuluStream files → lulu_catalog + lulu_episodes ──────────────────
+app.post('/api/lulu-upload/sync', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  try {
+    const accounts = await db.prepare('SELECT id, api_key, main_folder_id FROM lulu_upload_accounts').all();
+    if (!accounts.length) return res.status(400).json({ error: 'لا يوجد حساب Lulu - أضف حساباً أولاً' });
+
+    let totalSynced = 0, totalSkipped = 0, totalErrors = 0;
+
+    for (const acc of accounts) {
+      const lulu = new (require('./lib/lulustream').LuluStreamAPI)(acc.api_key);
+      let page = 1;
+      const perPage = 200;
+      let hasMore = true;
+
+      while (hasMore) {
+        let files;
+        try {
+          files = await lulu.listFiles(page, perPage, acc.main_folder_id || undefined);
+        } catch (e) {
+          console.error('[LuluSync] listFiles error:', e.message);
+          totalErrors++;
+          break;
+        }
+
+        const list = Array.isArray(files) ? files : (files?.files || files?.result || []);
+        if (!list.length) { hasMore = false; break; }
+
+        for (const f of list) {
+          const fileCode = f.file_code || f.filecode || f.code || '';
+          if (!fileCode) { totalSkipped++; continue; }
+
+          const title = f.file_title || f.title || f.name || '';
+          const canplay = f.status === 'active' || f.canplay === 1 || f.canplay === true;
+          const embedUrl = `https://lulustream.com/e/${fileCode}`;
+
+          // Determine type: episode if title has S01E01 pattern or folder structure
+          const isEpisode = /S\d+E\d+/i.test(title) || /حلقة|episode/i.test(title);
+
+          if (isEpisode) {
+            // Try to find parent catalog by folder name or show name
+            const existing = await db.prepare('SELECT id FROM lulu_episodes WHERE file_code = ?').get(fileCode);
+            if (existing) { totalSkipped++; continue; }
+
+            // Parse season/episode from title
+            const seMatch = title.match(/S(\d+)\s*E(\d+)/i);
+            const season = seMatch ? parseInt(seMatch[1]) : 1;
+            const episode = seMatch ? parseInt(seMatch[2]) : 1;
+
+            // Find or create parent catalog
+            const showName = title.replace(/\s*[--]\s*S\d+E\d+.*/i, '').replace(/\s*S\d+E\d+.*/i, '').trim();
+            let catalogId = null;
+            if (showName) {
+              const existingCat = await db.prepare("SELECT id FROM lulu_catalog WHERE title ILIKE ? AND vod_type = 'series'").get(showName);
+              if (existingCat) {
+                catalogId = existingCat.id;
+              } else {
+                // Create new series catalog entry
+                const newCat = await db.prepare(
+                  "INSERT INTO lulu_catalog (id, title, vod_type, file_code, embed_url, canplay, episode_count, uploaded_at) VALUES (?, ?, 'series', ?, ?, ?, 0, ?) RETURNING id"
+                ).get(String(Date.now()) + String(Math.random()).slice(2,6), showName, '', '', false, Date.now());
+                catalogId = newCat?.id;
+              }
+            }
+
+            if (catalogId) {
+              await db.prepare(
+                "INSERT INTO lulu_episodes (id, catalog_id, season, episode, title, file_code, embed_url, canplay) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+              ).run(
+                fileCode, catalogId, season, episode, title, fileCode, embedUrl, canplay
+              );
+              // Update episode_count on parent
+              try {
+                await db.prepare("UPDATE lulu_catalog SET episode_count = (SELECT COUNT(*) FROM lulu_episodes WHERE catalog_id = ?) WHERE id = ?").run(catalogId, catalogId);
+              } catch {}
+            }
+          } else {
+            // Movie - check if already exists in lulu_catalog
+            const existing = await db.prepare('SELECT id FROM lulu_catalog WHERE file_code = ?').get(fileCode);
+            if (existing) { totalSkipped++; continue; }
+
+            const catId = String(Date.now()) + String(Math.random()).slice(2,6);
+            await db.prepare(
+              "INSERT INTO lulu_catalog (id, title, vod_type, file_code, embed_url, canplay, episode_count, uploaded_at) VALUES (?, ?, 'movie', ?, ?, ?, 0, ?)"
+            ).run(catId, title || 'بدون عنوان', fileCode, embedUrl, canplay, Date.now());
+          }
+
+          // Also update lulu_uploaded_files for tracking
+          const existingFile = await db.prepare('SELECT id FROM lulu_uploaded_files WHERE file_code = ?').get(fileCode);
+          if (!existingFile) {
+            await db.prepare(
+              "INSERT INTO lulu_uploaded_files (file_code, title, original_name, type, cat_name, lulu_account_id, folder_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            ).run(
+              fileCode, title, title,
+              isEpisode ? 'episode' : 'movie',
+              f.fld_name || '', acc.id, f.fld_id || 0,
+              canplay ? 'ok' : 'processing',
+              f.uploaded || Date.now()
+            );
+          }
+
+          totalSynced++;
+        }
+
+        if (list.length < perPage) { hasMore = false; }
+        else { page++; }
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
+
+    res.json({ success: true, synced: totalSynced, skipped: totalSkipped, errors: totalErrors });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── DB Content (from lulu_catalog + lulu_episodes) ──────────────────────────
+app.get('/api/lulu-upload/db-content', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  const { type, search, page, limit } = req.query;
+  const p = parseInt(page) || 1;
+  const l = Math.min(parseInt(limit) || 50, 200);
+  const offset = (p - 1) * l;
+  try {
+    let where = "WHERE 1=1";
+    const params = [];
+    if (type && type !== 'all') { where += " AND vod_type = ?"; params.push(type); }
+    if (search) { where += " AND (title ILIKE ? OR genres ILIKE ?)"; params.push(`%${search}%`, `%${search}%`); }
+    const totalRow = await db.prepare(`SELECT COUNT(*) as c FROM lulu_catalog ${where}`).get(...params);
+    const total = totalRow?.c || 0;
+    const items = await db.prepare(
+      `SELECT id, title, vod_type as type, poster, year, rating, genres, file_code, canplay, episode_count, uploaded_at as created_at FROM lulu_catalog ${where} ORDER BY uploaded_at DESC NULLS LAST LIMIT ? OFFSET ?`
+    ).all(...params, l, offset);
+    // Add embed_url for each item
+    for (const item of items) {
+      item.embed_url = item.file_code ? `https://lulustream.com/e/${item.file_code}` : '';
+      if (item.type === 'series' && item.episode_count > 0) {
+        try {
+          const eps = await db.prepare('SELECT id, season, episode, title, file_code, canplay FROM lulu_episodes WHERE catalog_id = ? ORDER BY season, episode').all(item.id);
+          item.episodes = eps;
+        } catch { item.episodes = []; }
+      }
+    }
+    res.json({ items, page: p, total, hasMore: offset + l < total });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Sync LuluStream files → lulu_catalog + lulu_episodes ──────────────────
+app.post('/api/lulu-upload/sync', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  try {
+    const accounts = await db.prepare('SELECT id, api_key, main_folder_id FROM lulu_upload_accounts').all();
+    if (!accounts.length) return res.status(400).json({ error: 'لا يوجد حساب Lulu - أضف حساباً أولاً' });
+
+    let totalSynced = 0, totalSkipped = 0, totalErrors = 0;
+
+    for (const acc of accounts) {
+      const lulu = new (require('./lib/lulustream').LuluStreamAPI)(acc.api_key);
+      let page = 1;
+      const perPage = 200;
+      let hasMore = true;
+
+      while (hasMore) {
+        let files;
+        try {
+          files = await lulu.listFiles(page, perPage, acc.main_folder_id || undefined);
+        } catch (e) {
+          console.error('[LuluSync] listFiles error:', e.message);
+          totalErrors++;
+          break;
+        }
+
+        const list = Array.isArray(files) ? files : (files?.files || files?.result || []);
+        if (!list.length) { hasMore = false; break; }
+
+        for (const f of list) {
+          const fileCode = f.file_code || f.filecode || f.code || '';
+          if (!fileCode) { totalSkipped++; continue; }
+
+          const title = f.file_title || f.title || f.name || '';
+          const canplay = f.status === 'active' || f.canplay === 1 || f.canplay === true;
+          const embedUrl = `https://lulustream.com/e/${fileCode}`;
+          const hlsUrl = f.hls_url || f.download_url || '';
+
+          // Track in lulu_uploaded_files always
+          const existingFile = await db.prepare('SELECT id FROM lulu_uploaded_files WHERE file_code = ?').get(fileCode);
+          if (!existingFile) {
+            const isEpisode = /S\d+E\d+/i.test(title) || /حلقة|episode/i.test(title);
+            await db.prepare(
+              "INSERT INTO lulu_uploaded_files (file_code, title, original_name, type, cat_name, lulu_account_id, folder_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            ).run(
+              fileCode, title, title,
+              isEpisode ? 'episode' : 'movie',
+              f.fld_name || '', acc.id, f.fld_id || 0,
+              canplay ? 'ok' : 'processing',
+              f.uploaded || Date.now()
+            );
+          }
+
+          // Only store in lulu_catalog if canplay=true
+          if (!canplay) { totalSkipped++; continue; }
+
+          // Determine type: episode if title has S01E01 pattern or folder structure
+          const isEpisode = /S\d+E\d+/i.test(title) || /حلقة|episode/i.test(title);
+
+          if (isEpisode) {
+            // Try to find parent catalog by folder name or show name
+            const existing = await db.prepare('SELECT id FROM lulu_episodes WHERE file_code = ?').get(fileCode);
+            if (existing) { totalSkipped++; continue; }
+
+            // Parse season/episode from title
+            const seMatch = title.match(/S(\d+)\s*E(\d+)/i);
+            const season = seMatch ? parseInt(seMatch[1]) : 1;
+            const episode = seMatch ? parseInt(seMatch[2]) : 1;
+
+            // Find or create parent catalog
+            const showName = title.replace(/\s*[--]\s*S\d+E\d+.*/i, '').replace(/\s*S\d+E\d+.*/i, '').trim();
+            let catalogId = null;
+            if (showName) {
+              const existingCat = await db.prepare("SELECT id FROM lulu_catalog WHERE title ILIKE ? AND vod_type = 'series'").get(showName);
+              if (existingCat) {
+                catalogId = existingCat.id;
+              } else {
+                // Create new series catalog entry with canplay=true
+                const newCat = await db.prepare(
+                  "INSERT INTO lulu_catalog (id, title, vod_type, canplay, episode_count, uploaded_at) VALUES (?, ?, 'series', true, 0, ?) RETURNING id"
+                ).get(String(Date.now()) + String(Math.random()).slice(2,6), showName, Date.now());
+                catalogId = newCat?.id;
+              }
+            }
+
+            if (catalogId) {
+              await db.prepare(
+                "INSERT INTO lulu_episodes (id, catalog_id, season, episode, title, file_code, embed_url, hls_url, canplay) VALUES (?, ?, ?, ?, ?, ?, ?, ?, true) ON CONFLICT (id) DO UPDATE SET file_code = EXCLUDED.file_code, embed_url = EXCLUDED.embed_url, hls_url = EXCLUDED.hls_url, canplay = true"
+              ).run(
+                fileCode, catalogId, season, episode, title, fileCode, embedUrl, hlsUrl
+              );
+              // Update episode_count on parent
+              try {
+                await db.prepare("UPDATE lulu_catalog SET episode_count = (SELECT COUNT(*) FROM lulu_episodes WHERE catalog_id = ?), canplay = true WHERE id = ?").run(catalogId, catalogId);
+              } catch {}
+            }
+          } else {
+            // Movie - check if already exists in lulu_catalog
+            const existing = await db.prepare('SELECT id FROM lulu_catalog WHERE file_code = ?').get(fileCode);
+            if (existing) { totalSkipped++; continue; }
+
+            const catId = String(Date.now()) + String(Math.random()).slice(2,6);
+            await db.prepare(
+              "INSERT INTO lulu_catalog (id, title, vod_type, file_code, embed_url, hls_url, canplay, episode_count, uploaded_at) VALUES (?, ?, 'movie', ?, ?, ?, true, 0, ?)"
+            ).run(catId, title || 'بدون عنوان', fileCode, embedUrl, hlsUrl, Date.now());
+          }
+
+          totalSynced++;
+        }
+
+        if (list.length < perPage) { hasMore = false; }
+        else { page++; }
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
+
+    res.json({ success: true, synced: totalSynced, skipped: totalSkipped, errors: totalErrors });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Cleanup: remove non-canplay content from lulu_catalog ──────────────────
+app.post('/api/lulu-upload/cleanup', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  try {
+    // Delete episodes with canplay=false
+    const delEps = await db.prepare("DELETE FROM lulu_episodes WHERE canplay = false").run();
+    // Delete catalog entries with canplay=false and no playable episodes
+    const delCat = await db.prepare("DELETE FROM lulu_catalog WHERE canplay = false AND id NOT IN (SELECT DISTINCT catalog_id FROM lulu_episodes WHERE canplay = true)").run();
+    // Update episode_count for remaining series
+    await db.prepare("UPDATE lulu_catalog SET episode_count = (SELECT COUNT(*) FROM lulu_episodes WHERE catalog_id = lulu_catalog.id AND canplay = true)").run();
+    res.json({ success: true, deletedEpisodes: delEps.changes || 0, deletedCatalog: delCat.changes || 0 });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── DB Content (from lulu_catalog + lulu_episodes) ──────────────────────────
+app.get('/api/lulu-upload/db-content', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  const { type, search, page, limit } = req.query;
+  const p = parseInt(page) || 1;
+  const l = Math.min(parseInt(limit) || 50, 200);
+  const offset = (p - 1) * l;
+  try {
+    let where = "WHERE 1=1";
+    const params = [];
+    if (type && type !== 'all') { where += " AND vod_type = ?"; params.push(type); }
+    if (search) { where += " AND (title ILIKE ? OR genres ILIKE ?)"; params.push(`%${search}%`, `%${search}%`); }
+    const totalRow = await db.prepare(`SELECT COUNT(*) as c FROM lulu_catalog ${where}`).get(...params);
+    const total = totalRow?.c || 0;
+    const items = await db.prepare(
+      `SELECT id, title, vod_type as type, poster, year, rating, genres, file_code, canplay, episode_count, uploaded_at as created_at FROM lulu_catalog ${where} ORDER BY uploaded_at DESC NULLS LAST LIMIT ? OFFSET ?`
+    ).all(...params, l, offset);
+    // Add embed_url for each item
+    for (const item of items) {
+      item.embed_url = item.file_code ? `https://lulustream.com/e/${item.file_code}` : '';
+      if (item.type === 'series' && item.episode_count > 0) {
+        try {
+          const eps = await db.prepare('SELECT id, season, episode, title, file_code, canplay FROM lulu_episodes WHERE catalog_id = ? ORDER BY season, episode').all(item.id);
+          item.episodes = eps;
+        } catch { item.episodes = []; }
+      }
+    }
+    res.json({ items, page: p, total, hasMore: offset + l < total });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── DB Job history ──────────────────────────────────────────────────────────
+app.get('/api/lulu-upload/db-jobs', requireAuth, async (req, res) => {
+  if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
+  try {
+    const jobs = await db.prepare('SELECT * FROM lulu_upload_jobs ORDER BY created_at DESC LIMIT 50').all();
+    res.json({ jobs });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.use((req, res) => {
+  res.status(404).json({ error: "غير موجود" });
+});
+
+app.use((err, req, res, next) => {
+  console.error("Server error:", err);
+
+  res.status(500).json({ error: "Ø®Ø·Ø£ Ø ̄Ø§Ø®Ù"ÙŠ" });
+});
+
+// â"€â"€â"€ Ø ̈Ø ̄Ø¡ Ø§Ù"Ø3ÙŠØ±ÙØ± + ØaØ­Ø ̄ÙŠØ« ØaÙ"Ù'Ø§Ø¦ÙŠ â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+
+// ═══ Graceful error handling - prevent crashes under high concurrency ═══
+
+process.on("uncaughtException", (err) => {
+  console.error(
+    "[FATAL] Uncaught exception:",
+    err.message,
+    err.stack?.split("\n")[1],
+  );
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error(
+    "[WARN] Unhandled rejection:",
+    reason instanceof Error ? reason.message : reason,
+  );
+});
+
+db.init()
+  .then(() => {
+    const server = app.listen(config.PORT, config.HOST, async () => {
+      // ═══ Server tuning for 100+ concurrent users ═══
+
+      server.keepAliveTimeout = 65000; // Keep connections alive (must > proxy timeout)
+
+      server.headersTimeout = 70000; // Must be > keepAliveTimeout
+
+      server.maxConnections = 0; // Unlimited (OS limit applies)
+
+      server.timeout = 0; // No timeout for streaming connections
+
+      console.log(
+        `\n  â•"â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•-`,
+      );
+
+      console.log(`  â•'   IPTV Cloud Streaming Server v3.0               â•'`);
+
+      console.log(
+        `  â•'   Ø ̈Ø« Ù...Ø ̈Ø§Ø ́Ø± + ØaØ­Ù'Ù' JWT + ØaØ­Ø ̄ÙŠØ« ØaÙ"Ù'Ø§Ø¦ÙŠ             â•'`,
+      );
+
+      console.log(
+        `  â• â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•£`,
+      );
+
+      console.log(
+        `  â•'   http://localhost:${config.PORT}                         â•'`,
+      );
+
+      console.log(`  â•'   DB: PostgreSQL (shared)                       â•'`);
+
+      console.log(
+        `  â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•\n`,
+      );
+
+      console.log(`  ║   keepAlive: 65s | maxSockets: 80 upstream      ║`);
+
+      console.log(`  ╚══════════════════════════════════════════════════╝\n`);
+
+      streamManager.start();
+
+      vodProxy.start();
+
+      hlsProxy.start();
+
+      liveProxy.start();
+
+      restreamer.start();
+
+      restreamer.start();
+
+      xtreamProxy.setDB(db);
+
+      xtreamProxy.start();
+
+      // Initialize Xtream from DB (load default account for legacy compat)
+      try {
+        await initXtreamFromDB(db);
+      } catch (e) {
+        console.error("[Init] Xtream init error:", e.message);
+      }
+
+      // ─── Preload xtream channels into FFmpegRestreamer ───
+      // Channels stay running permanently - instant playback for first viewer
+      try {
+        const channels = await db.prepare("SELECT stream_id, name, base_url, account_id FROM xtream_channels WHERE stream_id IS NOT NULL").all();
+        if (channels.length > 0) {
+          console.log(`[Restreamer] ⚡ تحميل مسبق لـ ${channels.length} قناة...`);
+          for (const ch of channels) {
+            const info = await getChannelAccount(db, ch.id || ch.stream_id);
+            const serverUrl = info?.account ? info.account.server_url : (ch.base_url || XTREAM.primary);
+            const username = info?.account ? info.account.username : XTREAM.user;
+            const password = info?.account ? info.account.password : XTREAM.pass;
+            const sourceUrl = `${serverUrl}/live/${username}/${password}/${ch.stream_id}.ts`;
+            restreamer.preloadStream(String(ch.stream_id), sourceUrl, ch.name).catch(() => {});
+          }
+        }
+      } catch (e) {
+        console.error("[Restreamer] Preload error:", e.message);
+      }
+
+      // ─── Preload xtream channels into FFmpegRestreamer ───
+      // Channels stay running permanently - instant playback for first viewer
+      try {
+        const channels = await db.prepare("SELECT stream_id, name, base_url, account_id FROM xtream_channels WHERE stream_id IS NOT NULL").all();
+        if (channels.length > 0) {
+          console.log(`[Restreamer] ⚡ تحميل مسبق لـ ${channels.length} قناة...`);
+          for (const ch of channels) {
+            const info = await getChannelAccount(db, ch.id || ch.stream_id);
+            const serverUrl = info?.account ? info.account.server_url : (ch.base_url || XTREAM.primary);
+            const username = info?.account ? info.account.username : XTREAM.user;
+            const password = info?.account ? info.account.password : XTREAM.pass;
+            const sourceUrl = `${serverUrl}/live/${username}/${password}/${ch.stream_id}.ts`;
+            restreamer.preloadStream(String(ch.stream_id), sourceUrl, ch.name).catch(() => {});
+          }
+        }
+      } catch (e) {
+        console.error("[Restreamer] Preload error:", e.message);
+      }
+
+      // Sync channels from backend PostgreSQL on startup
+      syncChannelsFromBackend(true).catch((e) =>
+        console.error("[Sync] Startup error:", e.message),
+      );
+      setInterval(
+        () => syncChannelsFromBackend(true).catch(() => {}),
+        CHANNEL_SYNC_INTERVAL,
+      );
+
+      // Pre-warm VOD cache on startup (fetch latest movies & series)
+      if (XTREAM.primary) {
+        try {
+          console.log("[VOD] Pre-warming cache...");
+
+          const home = await xtreamVod.getHome();
+
+        console.log(
+          `[VOD] Pre-warmed: ${home.latestMovies?.length || 0} movies, ${home.latestSeries?.length || 0} series`,
+        );
+
+        // Also pre-load categories for better UX
+
+        const [vodCats, seriesCats] = await Promise.all([
+          xtreamVod.getVodCategories(),
+
+          xtreamVod.getSeriesCategories(),
+        ]);
+
+        console.log(
+          `[VOD] Categories loaded: ${vodCats?.length || 0} VOD, ${seriesCats?.length || 0} Series`,
+        );
+      } catch (e) {
+        console.error("[VOD] Pre-warm error:", e.message);
+      }
+      } else {
+        console.log("[VOD] Skipping pre-warm - no IPTV account configured yet");
+      }
+    });
+
+    const shutdown = async () => {
+      console.log("\n[Server] Ø¥ÙŠÙ'Ø§Ù...");
+
+      streamManager.stop();
+
+      vodProxy.stop();
+
+      hlsProxy.stop();
+
+      restreamer.stop();
+
+      restreamer.stop();
+
+      xtreamProxy.stop();
+
+      if (db) db.close();
+
+      server.close();
+
+      process.exit(0);
+    };
+
+    process.on("SIGTERM", shutdown);
+
+    process.on("SIGINT", shutdown);
+  })
+  .catch((err) => {
+    console.error("[DB] Failed to initialize:", err.message);
+
+    process.exit(1);
+  });
+

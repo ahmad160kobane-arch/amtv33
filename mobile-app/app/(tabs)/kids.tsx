@@ -13,17 +13,28 @@ import { useRouter } from 'expo-router';
 import { useColorScheme } from '@/hooks/useColorScheme';
 import Colors from '@/constants/Colors';
 import {
-  fetchIptvCategoriesWithMovies,
-  fetchFreeChannels, IptvVodItem, IptvCategoryWithMovies, FreeChannel,
+  fetchFreeChannels,
+  fetchLuluList,
+  FreeChannel,
+  LuluItem,
 } from '@/constants/Api';
 import ContentRow from '@/components/ContentRow';
 import SkeletonRow from '@/components/SkeletonRow';
 import LiveChannelRow from '@/components/LiveChannelRow';
+import { usePremiumGuard } from '@/hooks/usePremiumGuard';
 
 const HEADER_H = 50;
 
-function toContentItem(v: IptvVodItem) {
-  return { id: v.id, title: v.name, poster: v.poster, vod_type: v.vod_type, year: v.year, rating: v.rating };
+function toContentItem(v: LuluItem) {
+  return {
+    id: v.id,
+    title: v.title,
+    poster: v.poster,
+    vod_type: v.vod_type,
+    year: v.year,
+    rating: v.rating,
+    source: 'lulu',
+  };
 }
 
 const KIDS_KEYWORDS = ['كرتون', 'أنيميشن', 'أنمي', 'أطفال', 'animation', 'cartoon', 'anime', 'kids'];
@@ -35,7 +46,8 @@ export default function KidsScreen() {
   const insets = useSafeAreaInsets();
 
   const [channels, setChannels] = useState<FreeChannel[]>([]);
-  const [catRows, setCatRows] = useState<IptvCategoryWithMovies[]>([]);
+  const [kidsMovies, setKidsMovies] = useState<LuluItem[]>([]);
+  const [kidsSeries, setKidsSeries] = useState<LuluItem[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -47,16 +59,18 @@ export default function KidsScreen() {
 
   const loadData = useCallback(async () => {
     try {
-      const [chData, catsData] = await Promise.all([
+      const [chData, moviesData, seriesData] = await Promise.all([
         fetchFreeChannels({ group: 'أطفال', limit: 20 }).catch(() => ({ channels: [] })),
-        fetchIptvCategoriesWithMovies(40).catch(() => ({ categories: [], total: 0 })),
+        fetchLuluList({ type: 'movie', search: 'كرتون' }).catch(() => ({ items: [] })),
+        fetchLuluList({ type: 'series', search: 'كرتون' }).catch(() => ({ items: [] })),
       ]);
       setChannels(chData.channels || []);
-      // Filter categories matching kids/animation keywords
-      const kidsCats = (catsData.categories || []).filter(c =>
-        KIDS_KEYWORDS.some(kw => c.name.toLowerCase().includes(kw))
-      );
-      setCatRows(kidsCats);
+      setKidsMovies((moviesData.items || []).filter((i: LuluItem) =>
+        KIDS_KEYWORDS.some(kw => (i.title || '').toLowerCase().includes(kw) || (i.genre || '').toLowerCase().includes(kw))
+      ));
+      setKidsSeries((seriesData.items || []).filter((i: LuluItem) =>
+        KIDS_KEYWORDS.some(kw => (i.title || '').toLowerCase().includes(kw) || (i.genre || '').toLowerCase().includes(kw))
+      ));
     } catch {} finally {
       setLoading(false);
       setRefreshing(false);
@@ -74,14 +88,29 @@ export default function KidsScreen() {
     loadData();
   }, [loadData]);
 
+  const guard = usePremiumGuard();
+
   const handleChannelPress = useCallback((ch: FreeChannel) => {
-    router.push({ pathname: '/player', params: { freeChannelId: ch.id, title: ch.name } });
-  }, [router]);
+    guard.requireAuth(() => {
+      router.push({ pathname: '/player', params: { premiumChannelId: ch.id, title: ch.name } });
+    });
+  }, [guard, router]);
 
   const handleVodPress = useCallback((item: any) => {
-    const type = item.vod_type === 'series' ? 'series' : 'movie';
-    router.push({ pathname: '/detail', params: { xtreamId: item.id, vodType: type, title: item.title || item.name, poster: item.poster } });
-  }, [router]);
+    guard.requireAuth(() => {
+      const type = item.vod_type === 'series' ? 'series' : 'movie';
+      router.push({
+        pathname: '/detail',
+        params: {
+          luluId: item.id,
+          vodType: type,
+          source: 'lulu',
+          title: item.title,
+          poster: item.poster,
+        },
+      });
+    });
+  }, [guard, router]);
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -106,21 +135,29 @@ export default function KidsScreen() {
           onSeeAll={() => router.push('/live')}
         />
 
-        {/* المحتوى */}
+        {/* محتوى أطفال من lulu */}
         {loading ? (
           <><SkeletonRow /><SkeletonRow /><SkeletonRow /></>
         ) : (
           <>
-            {catRows.map(cat => cat.items.length > 0 && (
+            {kidsMovies.length > 0 && (
               <ContentRow
-                key={cat.id}
-                title={cat.name}
-                items={cat.items.map(toContentItem)}
+                title="أفلام كرتون"
+                items={kidsMovies.map(toContentItem)}
                 onItemPress={handleVodPress}
-                onSeeAll={() => router.push({ pathname: '/allcontent', params: { categoryId: cat.id, title: cat.name } })}
+                onSeeAll={() => router.push({ pathname: '/allcontent', params: { type: 'movie' } })}
                 showBadge
               />
-            ))}
+            )}
+            {kidsSeries.length > 0 && (
+              <ContentRow
+                title="مسلسلات كرتون"
+                items={kidsSeries.map(toContentItem)}
+                onItemPress={handleVodPress}
+                onSeeAll={() => router.push({ pathname: '/allcontent', params: { type: 'series' } })}
+                showBadge
+              />
+            )}
           </>
         )}
 

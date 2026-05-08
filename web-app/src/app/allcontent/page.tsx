@@ -1,5 +1,5 @@
 'use client';
-import React, { useEffect, useState, useCallback, Suspense } from 'react';
+import React, { useEffect, useState, useCallback, Suspense, useRef } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { fetchLuluList, fetchLuluGenres, LuluItem } from '@/constants/api';
 import ContentCard from '@/components/ContentCard';
@@ -22,6 +22,7 @@ function AllContentContent() {
   );
   const [genres, setGenres] = useState<string[]>([]);
   const [activeGenre, setActiveGenre] = useState<string>('');
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async (p = 1, reset = false) => {
     if (p === 1) setLoading(true); else setLoadingMore(true);
@@ -44,6 +45,13 @@ function AllContentContent() {
 
   const loadMore = () => { const next = page + 1; setPage(next); load(next); };
 
+  // Debounced search — triggers 500ms after user stops typing
+  const handleSearchChange = (val: string) => {
+    setSearch(val);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => setSearchQuery(val), 500);
+  };
+
   const handleSearch = (e: React.FormEvent) => { e.preventDefault(); setSearchQuery(search); };
 
   const toCard = (item: LuluItem) => ({
@@ -57,7 +65,7 @@ function AllContentContent() {
   });
 
   return (
-    <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-24 md:pb-6">
+    <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-28 md:pb-6 page-enter">
       <div className="max-w-7xl mx-auto px-4">
         <div className="py-4">
           <h1 className="text-xl font-black text-light-text dark:text-dark-text mb-3">تصفح المحتوى</h1>
@@ -66,7 +74,7 @@ function AllContentContent() {
             <input
               type="text"
               value={search}
-              onChange={e => setSearch(e.target.value)}
+              onChange={e => handleSearchChange(e.target.value)}
               placeholder="ابحث عن فيلم أو مسلسل..."
               className="w-full bg-light-input dark:bg-dark-input text-light-text dark:text-dark-text rounded-xl px-4 py-3 pr-10 text-sm font-medium placeholder:text-light-muted dark:placeholder:text-dark-muted focus:outline-none focus:ring-2 focus:ring-brand-primary/40"
             />
@@ -117,7 +125,7 @@ function AllContentContent() {
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 md:gap-3">
+            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 md:gap-3">
               {items.map((item, i) => (
                 <ContentCard key={`${item.id}_${i}`} item={toCard(item) as any} />
               ))}

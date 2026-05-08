@@ -327,6 +327,9 @@ export async function register(
 }
 
 export async function logout(): Promise<void> {
+  try {
+    await apiFetch("/api/auth/logout", { method: "POST" });
+  } catch {}
   await clearToken();
 }
 
@@ -497,9 +500,11 @@ export async function submitRating(
   return data;
 }
 
-// ─── Simple In-Memory Cache ────────────────────────────
+// ─── Simple In-Memory Cache with auto-cleanup ────────────────────────────
 const _cache = new Map<string, { data: any; ts: number }>();
 const CACHE_TTL_MS = 5 * 60 * 1000;
+const MAX_CACHE_SIZE = 100;
+
 function getCached<T>(key: string): T | null {
   const e = _cache.get(key);
   if (!e) return null;
@@ -510,217 +515,23 @@ function getCached<T>(key: string): T | null {
   return e.data as T;
 }
 function setCached(key: string, data: any) {
+  // تنظيف تلقائي إذا تجاوز الحد الأقصى
+  if (_cache.size >= MAX_CACHE_SIZE) {
+    const oldestKey = _cache.keys().next().value;
+    if (oldestKey) _cache.delete(oldestKey);
+  }
   _cache.set(key, { data, ts: Date.now() });
 }
 
-// ─── VidSrc Content API (أفلام ومسلسلات من vidsrc عبر السيرفر السحابي) ─────
-
-export interface VidsrcItem {
-  id: string;
-  imdb_id: string;
-  tmdb_id: string;
-  title: string;
-  poster: string;
-  backdrop?: string;
-  year: string;
-  rating: string;
-  genres: string[];
-  description?: string;
-  quality: string;
-  vod_type: "movie" | "series";
-  embed_url?: string;
-  time_added?: string;
-}
-
-export interface VidsrcDetail extends VidsrcItem {
-  genre?: string;
-  cast?: string;
-  director?: string;
-  country?: string;
-  runtime?: string;
-  original_title?: string;
-  seasons?: number[];
-  episodes?: VidsrcEpisode[];
-}
-
-export interface VidsrcEpisode {
-  id: string;
-  season: number;
-  episode: number;
-  title: string;
-  overview?: string;
-  thumbnail?: string;
-  released?: string;
-}
-
-export interface VidsrcHomeData {
-  latestMovies: VidsrcItem[];
-  latestTvShows: VidsrcItem[];
-  trending: VidsrcItem[];
-  popularMovies?: VidsrcItem[];
-  popularTvShows?: VidsrcItem[];
-}
-
-export interface VidsrcBrowseResult {
-  items: VidsrcItem[];
-  page: number;
-  hasMore: boolean;
-  total?: number;
-}
-
-export async function fetchVidsrcHome(): Promise<VidsrcHomeData> {
-  const cached = getCached<VidsrcHomeData>("vidsrc_home");
-  if (cached) return cached;
-  try {
-    const res = await cloudFetch("/api/vidsrc/home");
-    const data = await res.json();
-    setCached("vidsrc_home", data);
-    return data;
-  } catch {
-    return {
-      latestMovies: [],
-      latestTvShows: [],
-      trending: [],
-      popularMovies: [],
-      popularTvShows: [],
-    };
+// تنظيف دوري للعناصر المنتهية
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of _cache) {
+    if (now - entry.ts > CACHE_TTL_MS) _cache.delete(key);
   }
-}
+}, 60000);
 
-export async function fetchVidsrcBrowse(params?: {
-  type?: string;
-  page?: number;
-  category?: string;
-  limit?: number;
-}): Promise<VidsrcBrowseResult> {
-  const q = new URLSearchParams();
-  if (params?.type) q.set("type", params.type);
-  if (params?.page) q.set("page", String(params.page));
-  if (params?.category) q.set("category", params.category);
-  if (params?.limit) q.set("limit", String(params.limit));
-  const qs = q.toString();
-  const cacheKey = `vidsrc_browse_${qs}`;
-  const cached = getCached<VidsrcBrowseResult>(cacheKey);
-  if (cached) return cached;
-  try {
-    const res = await cloudFetch(`/api/vidsrc/browse${qs ? "?" + qs : ""}`);
-    const data = await res.json();
-    setCached(cacheKey, data);
-    return data;
-  } catch {
-    return { items: [], page: 1, hasMore: false };
-  }
-}
-
-export async function searchVidsrc(query: string): Promise<VidsrcItem[]> {
-  if (!query.trim()) return [];
-  const cacheKey = `vidsrc_search_${query.trim()}`;
-  const cached = getCached<VidsrcItem[]>(cacheKey);
-  if (cached) return cached;
-  try {
-    const res = await cloudFetch(
-      `/api/vidsrc/search?query=${encodeURIComponent(query.trim())}`,
-    );
-    const data = await res.json();
-    const items = data.results || data.items || [];
-    setCached(cacheKey, items);
-    return items;
-  } catch {
-    return [];
-  }
-}
-
-export async function fetchVidsrcDetail(
-  type: "movie" | "tv",
-  id: string,
-): Promise<VidsrcDetail | null> {
-  try {
-    const res = await cloudFetch(`/api/vidsrc/detail/${type}/${id}`);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-export async function fetchVidsrcSearch(
-  query: string,
-  page = 1,
-): Promise<VidsrcBrowseResult> {
-  try {
-    const q = new URLSearchParams({ q: query, page: String(page) });
-    const res = await cloudFetch(`/api/vidsrc/search?${q.toString()}`);
-    return await res.json();
-  } catch {
-    return { items: [], page: 1, hasMore: false };
-  }
-}
-
-export async function fetchVidsrcLatestEpisodes(
-  page = 1,
-): Promise<VidsrcItem[]> {
-  try {
-    const res = await cloudFetch(`/api/vidsrc/episodes?page=${page}`);
-    const data = await res.json();
-    return data.items || [];
-  } catch {
-    return [];
-  }
-}
-
-/**
- * بث من Consumet باستخدام TMDB ID
- */
-export async function requestVidsrcStream(opts: {
-  tmdbId?: string;
-  type?: "movie" | "tv";
-  season?: number;
-  episode?: number;
-  title?: string;
-  releaseYear?: number;
-}): Promise<StreamResult> {
-  try {
-    const res = await cloudFetch("/api/stream/vidsrc", {
-      method: "POST",
-      body: JSON.stringify(opts),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      return {
-        success: false,
-        error: data.message || data.error,
-        requiresSubscription: !!data.requiresSubscription,
-        expired: !!data.expired,
-      };
-    }
-    if (data.hlsUrl && !data.hlsUrl.startsWith("http")) {
-      data.hlsUrl = `${CLOUD_SERVER_URL}${data.hlsUrl}`;
-    }
-    if (data.vodUrl && !data.vodUrl.startsWith("http")) {
-      data.vodUrl = `${CLOUD_SERVER_URL}${data.vodUrl}`;
-    }
-    if (data.subtitles) {
-      data.subtitles = data.subtitles.map((s: any) => ({
-        ...s,
-        url: s.url.startsWith("http") ? s.url : `${CLOUD_SERVER_URL}${s.url}`,
-      }));
-    }
-    // resolve quality URLs
-    if (data.qualities) {
-      for (const q of Object.keys(data.qualities)) {
-        if (
-          data.qualities[q].url &&
-          !data.qualities[q].url.startsWith("http")
-        ) {
-          data.qualities[q].url = `${CLOUD_SERVER_URL}${data.qualities[q].url}`;
-        }
-      }
-    }
-    return data;
-  } catch (err: any) {
-    return { success: false, error: err.message || "خطأ في الاتصال بالسيرفر" };
-  }
-}
+// ─── VidSrc — تم الحذف — كل المحتوى من lulu فقط ─────
 
 // ─── Cloud Streaming (اتصال مباشر بالسيرفر السحابي) ─────
 
@@ -776,6 +587,7 @@ export async function requestLiveStream(
   try {
     const res = await cloudFetch(`/api/stream/live/${channelId}`, {
       method: "POST",
+      body: JSON.stringify({ mode: 'pipe' }),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -985,27 +797,7 @@ export async function fetchSubtitles(params: {
   }
 }
 
-/**
- * إنشاء جلسة HLS Proxy من رابط مستخرج بالتطبيق (WebView)
- */
-export async function proxyHls(
-  url: string,
-  referer: string,
-): Promise<{ success: boolean; hlsUrl?: string }> {
-  try {
-    const res = await cloudFetch("/api/stream/proxy-hls", {
-      method: "POST",
-      body: JSON.stringify({ url, referer }),
-    });
-    const data = await res.json();
-    if (data.hlsUrl && !data.hlsUrl.startsWith("http")) {
-      data.hlsUrl = `${CLOUD_SERVER_URL}${data.hlsUrl}`;
-    }
-    return data;
-  } catch {
-    return { success: false };
-  }
-}
+// proxyHls — تم الحذف — لا يوجد بث embed بعد الآن
 
 export function getCloudServerUrl(): string {
   return CLOUD_SERVER_URL;
@@ -1052,6 +844,7 @@ export async function fetchFreeChannels(params?: {
 }): Promise<FreeChannelsResult> {
   try {
     const q = new URLSearchParams();
+    // السيرفر السحابي يستخدم "category" كاسم المعامل
     if (params?.group) q.set("category", params.group);
     if (params?.search) q.set("search", params.search);
     if (params?.limit) q.set("limit", String(params.limit));
@@ -1060,8 +853,13 @@ export async function fetchFreeChannels(params?: {
     const cacheKey = `free_channels_${qs}`;
     const cached = getCached<FreeChannelsResult>(cacheKey);
     if (cached) return cached;
+    // إرسال JWT مع طلب القنوات المجانية لدعم إحصائيات المشاهدة
+    const token = await getToken();
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
     const res = await fetch(
       `${CLOUD_SERVER_URL}/api/xtream/channels${qs ? "?" + qs : ""}`,
+      { headers },
     );
     if (!res.ok) throw new Error("Failed to fetch");
     const data = await res.json();
@@ -1090,68 +888,12 @@ export async function fetchFreeChannels(params?: {
   }
 }
 
-/**
- * جلب تصنيفات القنوات المجانية
- */
-export async function fetchFreeCategories(): Promise<string[]> {
-  try {
-    const res = await fetch(`${CLOUD_SERVER_URL}/api/xtream/channels?limit=1`);
-    if (!res.ok) return [];
-    const data = await res.json();
-    return data.categories || [];
-  } catch {
-    return [];
-  }
-}
+// fetchFreeCategories — تم الحذف
 
-/**
- * جلب رابط البث للقناة المجانية — يُرجع الرابط مباشرة
- */
-export async function requestFreeStream(
-  channelId: string,
-): Promise<FreeStreamResult> {
-  try {
-    const res = await cloudFetch(
-      `/api/xtream/stream/${encodeURIComponent(channelId)}`,
-    );
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      return { success: false, error: data.error || "القناة غير متاحة" };
-    }
-    const data = await res.json();
-    // Prefer hlsUrl (HLS proxy) — shares one IPTV connection for all users
-    // Fallback: directUrl (302 redirect to IPTV) or proxyUrl (legacy TS pipe)
-    let streamUrl = data.hlsUrl || data.directUrl || data.proxyUrl || "";
-    // Prepend server base URL for relative proxy paths
-    if (streamUrl && !streamUrl.startsWith("http")) {
-      streamUrl = `${CLOUD_SERVER_URL}${streamUrl}`;
-    }
-    return {
-      success: true,
-      name: data.name,
-      logo: data.logo,
-      group: data.category,
-      streamUrl,
-    };
-  } catch (err: any) {
-    return { success: false, error: err.message || "خطأ في الاتصال" };
-  }
-}
+// requestFreeStream — تم الحذف — كل القنوات بريميوم فقط
+// استخدم requestPremiumStream بدلاً من ذلك
 
-/**
- * تحديث قائمة القنوات المجانية
- */
-export async function refreshFreeChannels(): Promise<{
-  success: boolean;
-  message?: string;
-}> {
-  try {
-    const res = await cloudFetch("/api/xtream/refresh");
-    return await res.json();
-  } catch {
-    return { success: false };
-  }
-}
+// refreshFreeChannels — تم الحذف
 
 // ─── Premium (beIN Sports + الكأس) ─ now served from Xtream ────────────────────────
 
@@ -1185,8 +927,13 @@ export interface PremiumStreamResult {
 
 export async function fetchPremiumChannels(): Promise<PremiumChannelsResult> {
   try {
+    // إرسال JWT للتحقق من حالة الاشتراك
+    const token = await getToken();
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
     const res = await fetch(
       `${CLOUD_SERVER_URL}/api/xtream/channels?category=beIN Sports&limit=50`,
+      { headers },
     );
     const data = await res.json();
     if (!res.ok)
@@ -1219,243 +966,7 @@ export async function fetchPremiumChannels(): Promise<PremiumChannelsResult> {
   }
 }
 
-// ─── IPTV VOD API (أفلام ومسلسلات من Xtream) ────────────────────────────────
-
-export interface IptvVodItem {
-  id: string;
-  name: string;
-  poster: string;
-  rating: string;
-  year: string;
-  genre?: string;
-  category_id?: string;
-  ext?: string;
-  vod_type: "movie" | "series";
-}
-
-export interface IptvVodDetail extends IptvVodItem {
-  o_name?: string;
-  backdrop?: string;
-  plot?: string;
-  cast?: string;
-  director?: string;
-  runtime?: string;
-  duration_secs?: number;
-  releaseDate?: string;
-  country?: string;
-  tmdb_id?: number | null;
-  trailer?: string;
-  age?: string;
-  genre_raw?: string;
-  rating5?: number | null;
-}
-
-export interface IptvEpisode {
-  id: string;
-  episode: number;
-  title: string;
-  rawTitle?: string;
-  poster?: string;
-  plot?: string;
-  duration?: string;
-  duration_secs?: number;
-  released?: string;
-  ext: string;
-  season: number;
-  resolution?: string;
-}
-
-export interface IptvSeason {
-  season: number;
-  episodes: IptvEpisode[];
-}
-
-export interface IptvSeriesDetail extends IptvVodDetail {
-  seasons: IptvSeason[];
-  episode_run_time?: string;
-}
-
-export interface IptvBrowseResult {
-  items: IptvVodItem[];
-  page: number;
-  total: number;
-  hasMore: boolean;
-}
-
-export interface IptvHomeData {
-  latestMovies: IptvVodItem[];
-  latestSeries: IptvVodItem[];
-  vodCategories: { id: string; name: string }[];
-  seriesCategories: { id: string; name: string }[];
-}
-
-export async function fetchIptvHome(): Promise<IptvHomeData> {
-  const cached = getCached<IptvHomeData>("iptv_home");
-  if (cached) return cached;
-  try {
-    const res = await cloudFetch("/api/xtream/vod/home");
-    const data = await res.json();
-    setCached("iptv_home", data);
-    return data;
-  } catch {
-    return {
-      latestMovies: [],
-      latestSeries: [],
-      vodCategories: [],
-      seriesCategories: [],
-    };
-  }
-}
-
-export interface IptvCategoryWithMovies {
-  id: string;
-  name: string;
-  items: IptvVodItem[];
-}
-
-export async function fetchIptvCategoriesWithMovies(
-  maxCategories = 40,
-  filter = "",
-): Promise<{ categories: IptvCategoryWithMovies[]; total: number }> {
-  const key = `iptv_cats_movies_${maxCategories}_${filter}`;
-  const cached = getCached<{
-    categories: IptvCategoryWithMovies[];
-    total: number;
-  }>(key);
-  if (cached) return cached;
-  try {
-    const res = await cloudFetch(
-      `/api/xtream/vod/categories-with-movies?max_categories=${maxCategories}&per_category=12${filter ? "&filter=" + filter : ""}`,
-    );
-    const data = await res.json();
-    setCached(key, data);
-    return data;
-  } catch {
-    return { categories: [], total: 0 };
-  }
-}
-
-export async function fetchIptvMovies(params?: {
-  categoryId?: string;
-  page?: number;
-  search?: string;
-}): Promise<IptvBrowseResult> {
-  const q = new URLSearchParams();
-  if (params?.categoryId) q.set("category_id", params.categoryId);
-  if (params?.page) q.set("page", String(params.page));
-  if (params?.search) q.set("search", params.search);
-  const qs = q.toString();
-  const key = `iptv_movies_${qs}`;
-  const cached = getCached<IptvBrowseResult>(key);
-  if (cached) return cached;
-  try {
-    const res = await cloudFetch(
-      `/api/xtream/vod/streams${qs ? "?" + qs : ""}`,
-    );
-    const data = await res.json();
-    setCached(key, data);
-    return data;
-  } catch {
-    return { items: [], page: 1, total: 0, hasMore: false };
-  }
-}
-
-export async function fetchIptvSeries(params?: {
-  categoryId?: string;
-  page?: number;
-  search?: string;
-}): Promise<IptvBrowseResult> {
-  const q = new URLSearchParams();
-  if (params?.categoryId) q.set("category_id", params.categoryId);
-  if (params?.page) q.set("page", String(params.page));
-  if (params?.search) q.set("search", params.search);
-  const qs = q.toString();
-  const key = `iptv_series_${qs}`;
-  const cached = getCached<IptvBrowseResult>(key);
-  if (cached) return cached;
-  try {
-    const res = await cloudFetch(
-      `/api/xtream/series/list${qs ? "?" + qs : ""}`,
-    );
-    const data = await res.json();
-    setCached(key, data);
-    return data;
-  } catch {
-    return { items: [], page: 1, total: 0, hasMore: false };
-  }
-}
-
-export async function fetchIptvMovieDetail(
-  vodId: string,
-): Promise<IptvVodDetail | null> {
-  try {
-    const res = await cloudFetch(`/api/xtream/vod/info/${vodId}`);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-export async function fetchIptvSeriesDetail(
-  seriesId: string,
-): Promise<IptvSeriesDetail | null> {
-  try {
-    const res = await cloudFetch(`/api/xtream/series/info/${seriesId}`);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-export async function fetchIptvSearch(
-  query: string,
-  page = 1,
-): Promise<IptvBrowseResult> {
-  try {
-    const res = await cloudFetch(
-      `/api/xtream/vod/search?q=${encodeURIComponent(query)}&page=${page}`,
-    );
-    return await res.json();
-  } catch {
-    return { items: [], page: 1, total: 0, hasMore: false };
-  }
-}
-
-export async function requestIptvVodStream(
-  vodId: string,
-  ext = "mp4",
-): Promise<{ success: boolean; streamUrl?: string; error?: string }> {
-  try {
-    const res = await cloudFetch(`/api/xtream/vod/stream/${vodId}?ext=${ext}`);
-    const data = await res.json();
-    if (!res.ok) return { success: false, error: data.error };
-    let url: string = data.streamUrl || "";
-    if (url && !url.startsWith("http")) url = `${CLOUD_SERVER_URL}${url}`;
-    return { success: true, streamUrl: url };
-  } catch (err: any) {
-    return { success: false, error: err.message };
-  }
-}
-
-export async function requestIptvSeriesStream(
-  episodeId: string,
-  ext = "mp4",
-): Promise<{ success: boolean; streamUrl?: string; error?: string }> {
-  try {
-    const res = await cloudFetch(
-      `/api/xtream/series/stream/${episodeId}?ext=${ext}`,
-    );
-    const data = await res.json();
-    if (!res.ok) return { success: false, error: data.error };
-    let url: string = data.streamUrl || "";
-    if (url && !url.startsWith("http")) url = `${CLOUD_SERVER_URL}${url}`;
-    return { success: true, streamUrl: url };
-  } catch (err: any) {
-    return { success: false, error: err.message };
-  }
-}
+// ─── IPTV VOD API — تم الحذف — lulu هو المصدر الوحيد للأفلام والمسلسلات ─────
 
 // ─────────────────────────────────────────────────────────────────────────────
 

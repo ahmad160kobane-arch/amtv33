@@ -80,7 +80,7 @@ function EntertainmentContent() {
   });
 
   return (
-    <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-20 md:pb-6">
+    <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-28 md:pb-6 page-enter">
       <div className="max-w-7xl mx-auto px-3 md:px-4">
         {/* Header desktop */}
         <div className="hidden md:flex pt-4 pb-2 items-center gap-2">

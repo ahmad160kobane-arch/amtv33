@@ -93,7 +93,7 @@ export default function SubscriptionPage() {
   const isPremium = sub?.isPremium;
 
   return (
-    <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-24 md:pb-6">
+    <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-28 md:pb-6 page-enter">
       <div className="max-w-lg mx-auto px-4 py-6 space-y-5">
         <h1 className="text-xl font-black text-light-text dark:text-dark-text">الاشتراك</h1>
 

@@ -13,12 +13,14 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useColorScheme } from '@/hooks/useColorScheme';
 import Colors from '@/constants/Colors';
 import { fetchSubscription, activateCode, isLoggedIn, SubscriptionInfo } from '@/constants/Api';
+import { useAuth } from '@/context/AuthContext';
 
 export default function SubscriptionScreen() {
   const colorScheme = useColorScheme();
   const colors = Colors[colorScheme];
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { refresh: refreshAuth } = useAuth();
   const [sub, setSub] = useState<SubscriptionInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [loggedIn, setLoggedIn] = useState(false);
@@ -43,6 +45,8 @@ export default function SubscriptionScreen() {
     setActivating(true);
     try {
       const result = await activateCode(code.trim());
+      // Refresh AuthContext so premium status updates app-wide
+      await refreshAuth();
       Alert.alert('تم التفعيل! 🎉', result.message, [{ text: 'حسناً', onPress: load }]);
       setCode('');
     } catch (e: any) {

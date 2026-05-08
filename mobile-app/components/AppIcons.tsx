@@ -62,3 +62,5 @@ export function SkipForwardIcon({ size = 24, color = '#fff' }: IconProps) { retu
 export function ExpandIcon({ size = 24, color = '#fff' }: IconProps) { return <Feather name="maximize" size={size} color={color} />; }
 export function ContractIcon({ size = 24, color = '#fff' }: IconProps) { return <Feather name="minimize" size={size} color={color} />; }
 export function RotateIcon({ size = 24, color = '#fff' }: IconProps) { return <Feather name="rotate-cw" size={size} color={color} />; }
+export function LockPremiumIcon({ size = 24, color = '#FFB800' }: IconProps) { return <Feather name="lock" size={size} color={color} />; }
+export function CrownIcon({ size = 24, color = '#FFB800' }: IconProps) { return <Feather name="award" size={size} color={color} />; }

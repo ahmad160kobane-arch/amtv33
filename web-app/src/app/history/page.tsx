@@ -61,7 +61,7 @@ export default function HistoryPage() {
   }
 
   return (
-    <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-24 md:pb-6">
+    <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-28 md:pb-6 page-enter">
       <div className="max-w-3xl mx-auto px-4">
         <div className="py-4 flex items-center gap-2">
           <h1 className="text-xl font-black text-light-text dark:text-dark-text">سجل المشاهدة</h1>
@@ -70,8 +70,8 @@ export default function HistoryPage() {
 
         <div className="flex flex-col gap-3">
           {items.map((item) => {
-            const type = item.content_type === 'series' ? 'tv' : 'movie';
-            const href = `/detail?tmdbId=${item.item_id}&type=${type}&title=${encodeURIComponent(item.title || '')}&poster=${encodeURIComponent(item.poster || '')}`;
+            const type = item.content_type === 'series' ? 'series' : 'movie';
+            const href = `/detail?id=${item.item_id}&type=${type}&source=lulu&title=${encodeURIComponent(item.title || '')}&poster=${encodeURIComponent(item.poster || '')}`;
             return (
               <Link key={item.id} href={href} className="flex items-center gap-3 p-3 rounded-xl bg-light-card dark:bg-dark-card hover:bg-light-input dark:hover:bg-dark-input transition group">
                 {/* Poster */}

@@ -10,7 +10,6 @@ import {
   Dimensions,
   StatusBar,
   Share,
-  FlatList,
 } from "react-native";
 import {
   PlayIcon,
@@ -19,6 +18,7 @@ import {
   ShareIcon,
   StarIcon,
   FilmIcon,
+  LockPremiumIcon,
 } from "@/components/AppIcons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
@@ -26,80 +26,27 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColorScheme } from "@/hooks/useColorScheme";
 import Colors from "@/constants/Colors";
 import {
-  fetchVidsrcDetail,
   fetchLuluDetail,
   requestLuluStream,
-  fetchIptvMovieDetail,
-  fetchIptvSeriesDetail,
-  VidsrcDetail,
-  VidsrcEpisode,
-  IptvVodDetail,
-  IptvSeriesDetail,
-  IptvEpisode,
-  IptvSeason,
   LuluDetail,
-  isLoggedIn,
+  LuluEpisode,
+  LuluSeason,
+  isLoggedIn as apiIsLoggedIn,
   checkFavorite,
   toggleFavorite,
 } from "@/constants/Api";
+import { useAuth } from "@/context/AuthContext";
+import { usePremiumGuard } from "@/hooks/usePremiumGuard";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const BACKDROP_H = SCREEN_W * 0.58;
 
-function EpisodeThumb({
-  ep,
-  seriesPoster,
-  colors,
-}: {
-  ep: any;
-  seriesPoster?: string;
-  colors: any;
-}) {
-  const [epErr, setEpErr] = useState(false);
-  const [seriesErr, setSeriesErr] = useState(false);
-  const thumb = ep.poster || ep.thumbnail;
-
-  if (thumb && !epErr) {
-    return (
-      <Image
-        source={{ uri: thumb }}
-        style={styles.epThumb}
-        resizeMode="cover"
-        onError={() => setEpErr(true)}
-      />
-    );
-  }
-  if (seriesPoster && !seriesErr) {
-    return (
-      <Image
-        source={{ uri: seriesPoster }}
-        style={[styles.epThumb, { opacity: 0.55 }]}
-        resizeMode="cover"
-        onError={() => setSeriesErr(true)}
-      />
-    );
-  }
-  return (
-    <LinearGradient
-      colors={["rgba(100,100,120,0.2)", "rgba(60,60,80,0.4)"]}
-      style={[
-        styles.epThumb,
-        { alignItems: "center", justifyContent: "center" },
-      ]}
-    >
-      <FilmIcon size={18} color={colors.textSecondary} />
-    </LinearGradient>
-  );
-}
-
-export default function IptvDetailScreen() {
+export default function DetailScreen() {
   const colorScheme = useColorScheme();
   const colors = Colors[colorScheme];
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{
-    xtreamId?: string;
-    tmdbId?: string;
     luluId?: string;
     source?: string;
     vodType?: string;
@@ -108,52 +55,29 @@ export default function IptvDetailScreen() {
   }>();
 
   const [loading, setLoading] = useState(true);
-  const [detail, setDetail] = useState<any>(null);
+  const [detail, setDetail] = useState<LuluDetail | null>(null);
   const [selectedSeason, setSelectedSeason] = useState(1);
   const [isFav, setIsFav] = useState(false);
   const [favLoading, setFavLoading] = useState(false);
   const [posterError, setPosterError] = useState(false);
   const [backdropError, setBackdropError] = useState(false);
+  const { isPremium, isLoggedIn, loading: authLoading } = useAuth();
+  const guard = usePremiumGuard();
 
-  // Determine content source
-  const isLulu = !!params.luluId || params.source === "lulu";
-  const isVidsrc = !!params.tmdbId && !isLulu;
-  const contentId = params.luluId || params.tmdbId || params.xtreamId || "";
+  const contentId = params.luluId || "";
   const isSeries = params.vodType === "series" || params.vodType === "tv";
-  const vType = isSeries ? "tv" : "movie";
+  const luluType = isSeries ? "series" : "movie";
 
   const loadData = useCallback(async () => {
     try {
-      let data: any = null;
-      if (isLulu) {
-        const luluType = isSeries ? "series" : "movie";
-        data = await fetchLuluDetail(contentId, luluType);
-        if (data && isSeries) {
-          const ld = data as LuluDetail;
-          const luluSeasons = ld.seasons || [];
-          if (luluSeasons.length > 0) setSelectedSeason(luluSeasons[0].season);
-        }
-      } else if (isVidsrc) {
-        data = await fetchVidsrcDetail(vType as "movie" | "tv", contentId);
-        // Set initial season for series
-        if (data && isSeries) {
-          const vd = data as VidsrcDetail;
-          if (vd.seasons && vd.seasons.length > 0)
-            setSelectedSeason(vd.seasons[0]);
-        }
-      } else {
-        data = isSeries
-          ? await fetchIptvSeriesDetail(contentId)
-          : await fetchIptvMovieDetail(contentId);
-        // Set initial season for series
-        if (data && isSeries) {
-          const sd = data as IptvSeriesDetail;
-          if (sd.seasons && sd.seasons.length > 0)
-            setSelectedSeason(sd.seasons[0].season);
-        }
-      }
+      if (!contentId) return;
+      const data = await fetchLuluDetail(contentId, luluType);
       setDetail(data);
-      const loggedIn = await isLoggedIn();
+      if (data && isSeries) {
+        const seasons = data.seasons || [];
+        if (seasons.length > 0) setSelectedSeason(seasons[0].season);
+      }
+      const loggedIn = await apiIsLoggedIn();
       if (loggedIn) {
         const fav = await checkFavorite(contentId, "vod");
         setIsFav(fav);
@@ -163,7 +87,7 @@ export default function IptvDetailScreen() {
     } finally {
       setLoading(false);
     }
-  }, [contentId, isSeries, isLulu, isVidsrc, vType]);
+  }, [contentId, isSeries, luluType]);
 
   useEffect(() => {
     loadData();
@@ -171,19 +95,19 @@ export default function IptvDetailScreen() {
 
   const handleToggleFav = async () => {
     if (favLoading) return;
-    const loggedIn = await isLoggedIn();
+    const loggedIn = await apiIsLoggedIn();
     if (!loggedIn) {
       router.push("/account" as any);
       return;
     }
     setFavLoading(true);
     try {
-      const favTitle = detail?.title || detail?.name || params.title;
+      const favTitle = detail?.title || params.title;
       const favPoster = detail?.poster || params.poster;
       const result = await toggleFavorite(contentId, "vod", {
         title: favTitle,
         poster: favPoster,
-        content_type: vType === "tv" ? "series" : "movie",
+        content_type: luluType,
       });
       if (result) setIsFav(!isFav);
     } catch {
@@ -193,34 +117,34 @@ export default function IptvDetailScreen() {
   };
 
   const handlePlayMovie = () => {
-    if (isLulu) {
-      const embedUrl = (detail as LuluDetail)?.embedUrl || "";
+    guard.requireAuth(() => {
+      const ld = detail as LuluDetail;
+      const embedUrl = ld?.embedUrl || "";
+      const hlsUrl = ld?.hlsUrl || "";
+      const fileCode = ld?.fileCode || ld?.id || contentId;
       if (embedUrl) {
         router.push({
           pathname: "/player",
           params: { embedUrl, title, isEmbed: "1" },
         } as any);
+      } else if (hlsUrl) {
+        router.push({
+          pathname: "/player",
+          params: { luluHls: hlsUrl, title, luluType: "movie" },
+        } as any);
+      } else {
+        router.push({
+          pathname: "/player",
+          params: { luluId: fileCode, luluType: "movie", title },
+        } as any);
       }
-      return;
-    }
-    if (isVidsrc) {
-      const tmdbId = detail?.tmdb_id || contentId;
-      router.push({
-        pathname: "/player",
-        params: { tmdbId, vidsrcType: "movie", title },
-      } as any);
-    } else {
-      const ext = (detail as IptvVodDetail)?.ext || "mp4";
-      router.push({
-        pathname: "/player",
-        params: { xtreamVodId: contentId, xtreamExt: ext, title },
-      } as any);
-    }
+    });
   };
 
-  const handlePlayEpisode = (ep: any) => {
-    if (isLulu) {
+  const handlePlayEpisode = (ep: LuluEpisode) => {
+    guard.requireAuth(() => {
       const embedUrl = ep.embedUrl || "";
+      const hlsUrl = ep.hlsUrl || "";
       if (embedUrl) {
         router.push({
           pathname: "/player",
@@ -230,68 +154,43 @@ export default function IptvDetailScreen() {
             isEmbed: "1",
           },
         } as any);
+      } else if (hlsUrl) {
+        router.push({
+          pathname: "/player",
+          params: {
+            luluHls: hlsUrl,
+            title: `${title} - ${ep.title || `الحلقة ${ep.episode}`}`,
+            luluType: "series",
+          },
+        } as any);
       }
-      return;
-    }
-    if (isVidsrc) {
-      const tmdbId = detail?.tmdb_id || contentId;
-      router.push({
-        pathname: "/player",
-        params: {
-          tmdbId,
-          vidsrcType: "tv",
-          season: String(ep.season),
-          episode: String(ep.episode),
-          title: `${title} - ${ep.title || `الحلقة ${ep.episode}`}`,
-        },
-      } as any);
-    } else {
-      router.push({
-        pathname: "/player",
-        params: {
-          xtreamEpisodeId: ep.id,
-          xtreamExt: ep.ext || "mp4",
-          title: `${title} - ${ep.title || ep.episode}`,
-        },
-      } as any);
-    }
+    });
   };
 
   const handleShare = async () => {
-    const name = detail?.title || detail?.name || params.title || "";
+    const name = detail?.title || params.title || "";
     Share.share({ message: `شاهد "${name}" على تطبيق MA` });
   };
 
   const backdropUri = detail?.backdrop || detail?.poster || params.poster || "";
   const posterUri = detail?.poster || params.poster || "";
-  const title = detail?.title || detail?.name || params.title || "";
-  const description = detail?.description || detail?.plot || "";
-  const genresText = detail?.genres?.join(" · ") || detail?.genre || "";
+  const title = detail?.title || params.title || "";
+  const description = detail?.plot || "";
+  const genresText = detail?.genres || detail?.genre || "";
+  const castText = detail?.cast_list || "";
+  const directorText = detail?.director || "";
+  const countryText = detail?.country || "";
+  const runtimeText = detail?.runtime || "";
 
-  // Episodes logic — supports both Vidsrc and IPTV formats
+  // Episodes
   let seasons: number[] = [];
-  let episodes: any[] = [];
+  let episodes: LuluEpisode[] = [];
   if (isSeries && detail) {
-    if (isLulu) {
-      const ld = detail as LuluDetail;
-      seasons = (ld.seasons || []).map((s) => s.season);
-      episodes = (ld.seasons || [])
-        .filter((s) => s.season === selectedSeason)
-        .flatMap((s) => s.episodes || []);
-    } else if (isVidsrc) {
-      seasons = (detail as VidsrcDetail)?.seasons || [];
-      const allEps = (detail as VidsrcDetail)?.episodes || [];
-      episodes = allEps.filter(
-        (ep: VidsrcEpisode) => ep.season === selectedSeason,
-      );
-    } else {
-      const iptvSeasons = (detail as IptvSeriesDetail)?.seasons || [];
-      seasons = iptvSeasons.map((s) => s.season);
-      const currentSeasonData = iptvSeasons.find(
-        (s) => s.season === selectedSeason,
-      );
-      episodes = currentSeasonData?.episodes || [];
-    }
+    const ld = detail as LuluDetail;
+    seasons = (ld.seasons || []).map((s) => s.season);
+    episodes = (ld.seasons || [])
+      .filter((s) => s.season === selectedSeason)
+      .flatMap((s) => s.episodes || []);
   }
 
   if (loading) {
@@ -402,21 +301,6 @@ export default function IptvDetailScreen() {
               >
                 {title}
               </Text>
-              {detail?.o_name && detail.o_name !== title ? (
-                <Text
-                  style={[
-                    styles.genreText,
-                    {
-                      color: colors.textSecondary,
-                      writingDirection: "rtl",
-                      marginBottom: 2,
-                    },
-                  ]}
-                  numberOfLines={1}
-                >
-                  {detail.o_name}
-                </Text>
-              ) : null}
               {/* Meta row */}
               <View style={styles.metaRow}>
                 {detail?.year ? (
@@ -465,18 +349,6 @@ export default function IptvDetailScreen() {
                     </Text>
                   </View>
                 ) : null}
-                {detail?.age ? (
-                  <View
-                    style={[
-                      styles.metaPill,
-                      { backgroundColor: "rgba(239,68,68,0.15)" },
-                    ]}
-                  >
-                    <Text style={[styles.metaText, { color: "#ef4444" }]}>
-                      {detail.age}
-                    </Text>
-                  </View>
-                ) : null}
                 <View
                   style={[
                     styles.metaPill,
@@ -509,22 +381,6 @@ export default function IptvDetailScreen() {
                   {genresText}
                 </Text>
               ) : null}
-              {/* Release date */}
-              {detail?.releaseDate ? (
-                <Text
-                  style={[
-                    styles.genreText,
-                    {
-                      color: colors.textSecondary,
-                      writingDirection: "rtl",
-                      fontSize: 11,
-                      marginTop: 2,
-                    },
-                  ]}
-                >
-                  {detail.releaseDate}
-                </Text>
-              ) : null}
             </View>
           </View>
 
@@ -551,9 +407,9 @@ export default function IptvDetailScreen() {
           ) : null}
 
           {/* Cast & Director & Country */}
-          {detail?.cast || detail?.director || detail?.country ? (
+          {castText || directorText || countryText ? (
             <View style={styles.creditsSection}>
-              {detail.director ? (
+              {directorText ? (
                 <View style={styles.creditRow}>
                   <Text
                     style={[
@@ -567,11 +423,11 @@ export default function IptvDetailScreen() {
                     style={[styles.creditValue, { color: colors.text }]}
                     numberOfLines={1}
                   >
-                    {detail.director}
+                    {directorText}
                   </Text>
                 </View>
               ) : null}
-              {detail.cast ? (
+              {castText ? (
                 <View style={styles.creditRow}>
                   <Text
                     style={[
@@ -585,11 +441,11 @@ export default function IptvDetailScreen() {
                     style={[styles.creditValue, { color: colors.text }]}
                     numberOfLines={2}
                   >
-                    {detail.cast}
+                    {castText}
                   </Text>
                 </View>
               ) : null}
-              {detail.country ? (
+              {countryText ? (
                 <View style={styles.creditRow}>
                   <Text
                     style={[
@@ -603,7 +459,7 @@ export default function IptvDetailScreen() {
                     style={[styles.creditValue, { color: colors.text }]}
                     numberOfLines={1}
                   >
-                    {detail.country}
+                    {countryText}
                   </Text>
                 </View>
               ) : null}
@@ -618,13 +474,19 @@ export default function IptvDetailScreen() {
               activeOpacity={0.85}
             >
               <LinearGradient
-                colors={Colors.brand.gradient}
+                colors={isPremium ? Colors.brand.gradient : ['#555', '#444'] as const}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 0 }}
                 style={styles.playBtnGradient}
               >
-                <PlayIcon size={18} color="#000" />
-                <Text style={styles.playBtnText}>تشغيل الفيلم</Text>
+                {isPremium ? (
+                  <PlayIcon size={18} color="#000" />
+                ) : (
+                  <LockPremiumIcon size={18} color="#FFB800" />
+                )}
+                <Text style={[styles.playBtnText, !isPremium && { color: '#FFB800' }]}>
+                  {isPremium ? 'تشغيل الفيلم' : 'اشترك للمشاهدة'}
+                </Text>
               </LinearGradient>
             </TouchableOpacity>
           )}
@@ -687,11 +549,6 @@ export default function IptvDetailScreen() {
                     onPress={() => handlePlayEpisode(ep)}
                     activeOpacity={0.8}
                   >
-                    <EpisodeThumb
-                      ep={ep}
-                      seriesPoster={detail?.poster}
-                      colors={colors}
-                    />
                     <View style={styles.epInfo}>
                       <Text
                         style={[
@@ -702,50 +559,6 @@ export default function IptvDetailScreen() {
                       >
                         {ep.episode}. {ep.title || `الحلقة ${ep.episode}`}
                       </Text>
-                      <View
-                        style={{
-                          flexDirection: "row",
-                          alignItems: "center",
-                          gap: 6,
-                          marginTop: 2,
-                        }}
-                      >
-                        {ep.duration ? (
-                          <Text
-                            style={[
-                              styles.epMeta,
-                              { color: colors.textSecondary },
-                            ]}
-                          >
-                            {ep.duration}
-                          </Text>
-                        ) : null}
-                        {ep.resolution && ep.resolution !== "0x0" ? (
-                          <View
-                            style={{
-                              backgroundColor: colors.cardBackground,
-                              paddingHorizontal: 4,
-                              paddingVertical: 1,
-                              borderRadius: 4,
-                            }}
-                          >
-                            <Text
-                              style={[
-                                styles.epMeta,
-                                { color: colors.textSecondary, fontSize: 9 },
-                              ]}
-                            >
-                              {ep.resolution.includes("1920")
-                                ? "HD"
-                                : ep.resolution.includes("1280")
-                                  ? "HD"
-                                  : ep.resolution.includes("3840")
-                                    ? "4K"
-                                    : "SD"}
-                            </Text>
-                          </View>
-                        ) : null}
-                      </View>
                     </View>
                     <View
                       style={[
@@ -868,19 +681,14 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     gap: 12,
     paddingLeft: 12,
+    paddingVertical: 12,
   },
-  epThumb: { width: 96, height: 60 },
-  epInfo: { flex: 1, paddingVertical: 10 },
+  epInfo: { flex: 1 },
   epTitle: {
     fontFamily: Colors.fonts.bold,
     fontSize: 13,
     textAlign: "right",
     marginBottom: 4,
-  },
-  epMeta: {
-    fontFamily: Colors.fonts.regular,
-    fontSize: 11,
-    textAlign: "right",
   },
   playCircle: {
     width: 32,

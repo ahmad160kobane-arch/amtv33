@@ -73,7 +73,7 @@ export default function LivePlayer({ streamUrl, streamId: propStreamId, title, l
 
     console.log('[LivePlayer] 🎬 Starting stream:', effectiveStreamUrl);
 
-    const LOADING_TIMEOUT = 20000;
+    const LOADING_TIMEOUT = 60000;
     let loadingTimer: any = null;
 
     loadingTimer = setTimeout(() => {
@@ -87,7 +87,7 @@ export default function LivePlayer({ streamUrl, streamId: propStreamId, title, l
     }, LOADING_TIMEOUT);
 
     const isTs = effectiveStreamUrl.includes('/xtream-pipe/') || effectiveStreamUrl.includes('.ts') || effectiveStreamUrl.includes('/live-pipe/');
-    const isHls = effectiveStreamUrl.includes('.m3u8') || effectiveStreamUrl.includes('/proxy/live/');
+    const isHls = effectiveStreamUrl.includes('.m3u8') || effectiveStreamUrl.includes('/proxy/live/') || effectiveStreamUrl.includes('/hls/stream_');
 
     console.log('[LivePlayer] Stream type:', { isTs, isHls, effectiveStreamUrl });
 
@@ -161,41 +161,44 @@ export default function LivePlayer({ streamUrl, streamId: propStreamId, title, l
       }
     } else if (isHls) {
       console.log('[LivePlayer] 📺 HLS stream detected');
-      if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        // Safari native HLS
-        console.log('[LivePlayer] ✅ Using Safari native HLS');
-        video.src = effectiveStreamUrl;
-        video.play().catch((err) => {
-          console.error('[LivePlayer] ❌ Safari play error:', err);
-          if (err.name === 'NotAllowedError') {
-            setAutoplayBlocked(true);
-            setBuffering(false);
-          }
-        });
-      } else {
-        console.log('[LivePlayer] 🔧 Loading HLS.js...');
-        const loadHls = () => {
-          const Hls = (window as any).Hls;
-          console.log('[LivePlayer] HLS.js loaded:', !!Hls, 'Supported:', Hls?.isSupported());
-          if (Hls && Hls.isSupported()) {
+      // Always use HLS.js (even on Safari) — native HLS cannot send Authorization headers
+      // or reliably pass st= query params for segment auth, causing 401/timeout on proxied streams
+      const loadHls = () => {
+        const Hls = (window as any).Hls;
+        if (Hls && Hls.isSupported()) {
             console.log('[LivePlayer] ✅ Creating HLS instance...');
             // Cache token once — avoid synchronous localStorage read on every XHR
             const cachedToken = typeof localStorage !== 'undefined'
               ? localStorage.getItem('ma_auth_token')
               : null;
 
+            let streamAuthParams = '';
+            try {
+              const urlObj = new URL(effectiveStreamUrl);
+              const st = urlObj.searchParams.get('st');
+              const did = urlObj.searchParams.get('did');
+              if (st) streamAuthParams += '&st=' + encodeURIComponent(st);
+              if (did) streamAuthParams += '&did=' + encodeURIComponent(did);
+            } catch {}
+
             hlsInstance = new Hls({
               enableWorker: true,
               lowLatencyMode: false,
               startLevel: -1,
               debug: false,
-              // ═══ Auth: inject Authorization header for every XHR (manifest + segments) ═══
               xhrSetup: (xhr: XMLHttpRequest, url: string) => {
+                xhr.withCredentials = true;
                 if (cachedToken) xhr.setRequestHeader('Authorization', `Bearer ${cachedToken}`);
+                if (streamAuthParams && !url.includes('st=') && !url.endsWith('.m3u8')) {
+                  try {
+                    const sep = url.includes('?') ? '&' : '?';
+                    xhr.open('GET', url + sep + streamAuthParams.slice(1), true);
+                  } catch {}
+                }
                 xhr.addEventListener('readystatechange', () => {
                   if (xhr.readyState !== 4) return;
                   if (xhr.status === 429 || xhr.status === 401 || xhr.status === 403) {
-                    authErrorDetected = true; // sync flag — stops HLS.js retry immediately
+                    authErrorDetected = true;
                     try {
                       const body = JSON.parse(xhr.responseText || '{}');
                       const errType = body.error || '';
@@ -224,32 +227,28 @@ export default function LivePlayer({ streamUrl, streamId: propStreamId, title, l
                   }
                 });
               },
-              // ═══ Fast startup — start playing with minimal buffered data ═══
-              startFragPrefetch: true,             // prefetch first frag while parsing manifest
-              maxStarvationDelay: 2,               // start playback after 2s of buffer (faster)
+              startFragPrefetch: true,
+              maxStarvationDelay: 2,
               maxLoadingDelay: 2,
               highBufferWatchdogPeriod: 1,
-              // ═══ Live edge sync ═══
-              liveSyncDurationCount: 2,            // more tolerant for first load
-              liveMaxLatencyDurationCount: 4,
+              liveSyncDurationCount: 1,
+              liveMaxLatencyDurationCount: 3,
               liveDurationInfinity: true,
-              // ═══ Buffer ═══
-              maxBufferLength: 10,
-              maxMaxBufferLength: 20,
-              maxBufferSize: 8 * 1024 * 1024,  // 8MB — sufficient for live, less GC pressure
+              maxBufferLength: 30,
+              maxMaxBufferLength: 60,
+              maxBufferSize: 32 * 1024 * 1024,
               maxBufferHole: 1.0,
-              backBufferLength: 0,              // live mode: no need to buffer behind
-              // ═══ Aggressive timeouts for faster first-play ═══
+              backBufferLength: 0,
               manifestLoadingTimeOut: 6000,
               manifestLoadingMaxRetry: 4,
               manifestLoadingRetryDelay: 200,
               levelLoadingTimeOut: 6000,
               levelLoadingMaxRetry: 4,
               levelLoadingRetryDelay: 200,
-              fragLoadingTimeOut: 10000,
+              fragLoadingTimeOut: 60000,
               fragLoadingMaxRetry: 3,
-              fragLoadingRetryDelay: 200,
-              fragLoadingMaxRetryTimeout: 3000,
+              fragLoadingRetryDelay: 1000,
+              fragLoadingMaxRetryTimeout: 60000,
             });
             
             console.log('[LivePlayer] 🔗 Loading source:', effectiveStreamUrl);
@@ -264,13 +263,18 @@ export default function LivePlayer({ streamUrl, streamId: propStreamId, title, l
               console.log('[LivePlayer] ✅ Manifest loaded!');
             });
 
+            let playStarted = false;
             hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
-              console.log('[LivePlayer] ✅ Manifest parsed - starting playback');
+              console.log('[LivePlayer] ✅ Manifest parsed');
+              if (playStarted) return; // Don't interrupt playback on manifest refresh
+              playStarted = true;
+              console.log('[LivePlayer] ▶️ Starting playback');
               video.play().catch((err) => {
-                console.error('[LivePlayer] ❌ Play error:', err);
                 if (err.name === 'NotAllowedError') {
                   setAutoplayBlocked(true);
                   setBuffering(false);
+                } else if (err.name !== 'AbortError') {
+                  console.error('[LivePlayer] ❌ Play error:', err);
                 }
               });
             });
@@ -343,7 +347,7 @@ export default function LivePlayer({ streamUrl, streamId: propStreamId, title, l
         else {
           console.log('[LivePlayer] 📥 Loading HLS.js from CDN...');
           const s = document.createElement('script');
-          s.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js';
+          s.src = 'https://cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js';
           s.onload = () => {
             console.log('[LivePlayer] ✅ HLS.js script loaded');
             loadHls();
@@ -354,7 +358,6 @@ export default function LivePlayer({ streamUrl, streamId: propStreamId, title, l
           };
           document.head.appendChild(s);
         }
-      }
     } else {
       console.log('[LivePlayer] 📺 Direct video source');
       video.src = effectiveStreamUrl;

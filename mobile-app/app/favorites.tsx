@@ -2,11 +2,12 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, RefreshControl, Animated, Dimensions } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowBackIcon, PersonIcon, BookmarkIcon, FilmIcon, TvIcon } from '@/components/AppIcons';
+import { ArrowBackIcon, PersonIcon, BookmarkIcon, FilmIcon, TvIcon, LockPremiumIcon } from '@/components/AppIcons';
 import { useRouter } from 'expo-router';
 import { useColorScheme } from '@/hooks/useColorScheme';
 import Colors from '@/constants/Colors';
 import { VodItem, Channel, apiFetch, isLoggedIn } from '@/constants/Api';
+import { usePremiumGuard } from '@/hooks/usePremiumGuard';
 
 const { width } = Dimensions.get('window');
 const CARD_W = (width - 48) / 3;
@@ -40,6 +41,7 @@ export default function FavoritesScreen() {
   const colorScheme = useColorScheme();
   const colors = Colors[colorScheme];
   const router = useRouter();
+  const guard = usePremiumGuard();
   const insets = useSafeAreaInsets();
   const [vodFavs, setVodFavs] = useState<VodItem[]>([]);
   const [chFavs, setChFavs] = useState<Channel[]>([]);
@@ -62,8 +64,10 @@ export default function FavoritesScreen() {
   useEffect(() => { loadData(); }, [loadData]);
 
   const handlePress = useCallback((item: any) => {
-    router.push({ pathname: '/detail', params: { xtreamId: item.id, vodType: item.content_type === 'series' || item.content_type === 'tv' ? 'series' : 'movie', title: item.title || '', poster: item.poster || '' } });
-  }, [router]);
+    guard.requireAuth(() => {
+      router.push({ pathname: '/detail', params: { luluId: item.id, vodType: item.content_type === 'series' || item.content_type === 'tv' ? 'series' : 'movie', source: 'lulu', title: item.title || '', poster: item.poster || '' } });
+    });
+  }, [guard, router]);
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -121,7 +125,11 @@ export default function FavoritesScreen() {
               <View style={styles.gridWrap}>
                 {chFavs.map((ch: any) => (
                   <TouchableOpacity key={ch.id} style={[styles.card, { backgroundColor: colors.cardBackground }]}
-                    onPress={() => router.push({ pathname: '/player', params: { channelId: ch.id, title: ch.name } } as any)} activeOpacity={0.75}>
+                    onPress={() => {
+                      guard.requireAuth(() => {
+                        router.push({ pathname: '/player', params: { channelId: ch.id, title: ch.name } } as any);
+                      });
+                    }} activeOpacity={0.75}>
                     <View style={styles.chLiveDot} />
                     <View style={[styles.chLogoWrap, { backgroundColor: colors.inputBackground }]}>
                       {ch.logo ? (

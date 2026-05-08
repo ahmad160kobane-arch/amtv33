@@ -14,9 +14,44 @@ import {
   toggleFavorite,
   addWatchHistory,
   isLoggedIn,
-  VidsrcDetail,
-  VidsrcEpisode,
+  LuluDetail,
 } from "@/constants/api";
+
+/* ─── Types ─────────────────────────────────────────────── */
+interface ContentEpisode {
+  id?: string;
+  episode: number;
+  season: number;
+  title?: string;
+  thumbnail?: string;
+  overview?: string;
+  released?: string;
+  luluHls?: string;
+  luluEmbed?: string;
+  subtitleUrls?: { ar?: string; ku?: string } | null;
+}
+
+interface ContentDetail {
+  id: string;
+  title: string;
+  poster: string;
+  backdrop?: string;
+  vod_type: "movie" | "series";
+  year?: string;
+  rating?: string;
+  description?: string;
+  runtime?: string;
+  director?: string;
+  cast?: string;
+  country?: string;
+  genres?: string[];
+  trailer?: string;
+  seasons?: number[];
+  episodes?: ContentEpisode[];
+  luluHls?: string;
+  luluEmbed?: string;
+  subtitleUrls?: { ar?: string; ku?: string } | null;
+}
 import VodPlayer from "@/components/VodPlayer";
 
 /* ─── YouTube-style Detail Page ─────────────────────────────────── */
@@ -28,14 +63,13 @@ function DetailContent() {
   const vodType = params.get("type") || params.get("vodType") || "movie";
   const paramTitle = params.get("title") || "";
   const paramPoster = params.get("poster") || "";
-  const sourceLulu = params.get("source") !== "vidsrc";
 
-  const [detail, setDetail] = useState<VidsrcDetail | null>(null);
+  const [detail, setDetail] = useState<ContentDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [isFav, setIsFav] = useState(false);
   const [loggedIn, setLoggedIn] = useState(false);
   const [currentSeason, setCurrentSeason] = useState(1);
-  const [currentEpisode, setCurrentEpisode] = useState<VidsrcEpisode | null>(
+  const [currentEpisode, setCurrentEpisode] = useState<ContentEpisode | null>(
     null,
   );
   const [streamUrl, setStreamUrl] = useState("");
@@ -66,75 +100,65 @@ function DetailContent() {
   const loadData = useCallback(async () => {
     if (!contentId) return;
     try {
-      if (sourceLulu) {
-        // ── جلب التفاصيل من LuluStream مباشرة ──
-        const luluType =
-          vodType === "series" || vodType === "tv" ? "series" : "movie";
-        const lData = await fetchLuluDetail(contentId, luluType);
-        if (lData) {
-          // تحويل LuluDetail → VidsrcDetail
-          const episodes: VidsrcEpisode[] = (lData.episodes || []).map((e) => ({
-            id: e.id,
-            episode: e.episode,
-            season: e.season,
-            title: e.title,
-            thumbnail: e.thumbnail || "",
-            overview: e.overview || "",
-            released: e.air_date || "",
-            luluHls: e.hlsUrl,
-            luluEmbed: e.embedUrl,
-            subtitleUrls: e.subtitleUrls || null,
-          }));
-          const seasonNums = Array.from(
-            new Set(episodes.map((e) => e.season)),
-          ).sort((a, b) => a - b);
-          // استخراج الحقول الإضافية من الـ JSON (غير موجودة في الـ interface)
-          const raw = lData as any;
-          // تحويل genres string → array
-          const genreStr: string = lData.genre || raw.genres || "";
-          const genresArr: string[] = genreStr
-            ? genreStr
-                .split(/[,،\/]/)
-                .map((g: string) => g.trim())
-                .filter(Boolean)
-            : [];
-          // وصف مناسب: plot أولاً ثم lang+genre
-          const plotText: string = raw.plot || "";
-          const metaText: string = [
-            lData.lang && `🌐 ${lData.lang}`,
-            genreStr && `🎭 ${genreStr}`,
-          ]
-            .filter(Boolean)
-            .join("   ");
-          const descText = plotText || metaText;
+      // ── جلب التفاصيل من LuluStream ──
+      const luluType =
+        vodType === "series" || vodType === "tv" ? "series" : "movie";
+      const lData = await fetchLuluDetail(contentId, luluType);
+      if (lData) {
+        // تحويل LuluDetail → ContentDetail
+        const episodes: ContentEpisode[] = (lData.episodes || []).map((e) => ({
+          id: e.id,
+          episode: e.episode,
+          season: e.season,
+          title: e.title,
+          thumbnail: e.thumbnail || "",
+          overview: e.overview || "",
+          released: e.air_date || "",
+          luluHls: e.hlsUrl,
+          luluEmbed: e.embedUrl,
+          subtitleUrls: e.subtitleUrls || null,
+        }));
+        const seasonNums = Array.from(
+          new Set(episodes.map((e) => e.season)),
+        ).sort((a, b) => a - b);
+        const raw = lData as any;
+        const genreStr: string = lData.genre || raw.genres || "";
+        const genresArr: string[] = genreStr
+          ? genreStr
+              .split(/[,،\/]/)
+              .map((g: string) => g.trim())
+              .filter(Boolean)
+          : [];
+        const plotText: string = raw.plot || "";
+        const metaText: string = [
+          lData.lang && `🌐 ${lData.lang}`,
+          genreStr && `🎭 ${genreStr}`,
+        ]
+          .filter(Boolean)
+          .join("   ");
+        const descText = plotText || metaText;
 
-          setDetail({
-            id: lData.id,
-            title: lData.title,
-            poster: lData.poster || paramPoster,
-            backdrop: lData.backdrop || lData.poster || paramPoster,
-            description: descText,
-            vod_type: lData.vod_type,
-            year: lData.year || "",
-            rating: lData.rating || "",
-            runtime: raw.runtime || "",
-            director: raw.director || "",
-            cast: raw.cast_list || "",
-            country: raw.country || "",
-            genres: genresArr,
-            seasons: seasonNums,
-            episodes,
-            luluHls: lData.hlsUrl,
-            luluEmbed: lData.embedUrl,
-            subtitleUrls: lData.subtitleUrls || null,
-          } as VidsrcDetail);
-        } else {
-          // lulu not found, content might not exist
-          setLoading(false);
-          return;
-        }
+        setDetail({
+          id: lData.id,
+          title: lData.title,
+          poster: lData.poster || paramPoster,
+          backdrop: lData.backdrop || lData.poster || paramPoster,
+          description: descText,
+          vod_type: lData.vod_type,
+          year: lData.year || "",
+          rating: lData.rating || "",
+          runtime: raw.runtime || "",
+          director: raw.director || "",
+          cast: raw.cast_list || "",
+          country: raw.country || "",
+          genres: genresArr,
+          seasons: seasonNums,
+          episodes,
+          luluHls: lData.hlsUrl,
+          luluEmbed: lData.embedUrl,
+          subtitleUrls: lData.subtitleUrls || null,
+        });
       } else {
-        // لا يوجد مصدر آخر — المحتوى غير متوفر
         setLoading(false);
         return;
       }
@@ -149,7 +173,7 @@ function DetailContent() {
     } finally {
       setLoading(false);
     }
-  }, [contentId, fetchType, sourceLulu, vodType, paramPoster]);
+  }, [contentId, vodType, paramPoster]);
 
   useEffect(() => {
     loadData();
@@ -283,28 +307,10 @@ function DetailContent() {
     }
   };
 
-  const fetchSubtitles = useCallback(
-    async (tmdbId: string, type: string, season?: number, episode?: number) => {
-      try {
-        let url = `/api/subtitles?tmdbId=${tmdbId}&type=${type}`;
-        if (type === "tv" && season && episode)
-          url += `&season=${season}&episode=${episode}`;
-        const token =
-          typeof window !== "undefined"
-            ? localStorage.getItem("token") || ""
-            : "";
-        const res = await fetch(url, {
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        });
-        const data = await res.json();
-        if (data.subtitles?.length) setSubtitles(data.subtitles);
-      } catch {}
-    },
-    [],
-  );
+
 
   const startStream = useCallback(
-    async (ep?: VidsrcEpisode) => {
+    async (ep?: ContentEpisode) => {
       setStreamLoading(true);
       setStreamError("");
       setStreamUrl("");
@@ -333,85 +339,56 @@ function DetailContent() {
       };
 
       try {
-        // ── 1. مصدر LuluStream: استعمل embedUrl (إيفرام LuluStream) ──
-        if (sourceLulu) {
-          const embedU = ep ? ep.luluEmbed : detail?.luluEmbed;
-          if (embedU) {
-            setEmbedSources([{ url: embedU, name: "LuluStream" }]);
-            setEmbedSourceIdx(0);
-            setEmbedUrl(embedU);
-            setStreamUrl("");
-            // ترجمات من SubDL
-            const subUrls = (ep?.subtitleUrls || detail?.subtitleUrls) as
-              | { ar?: string; ku?: string }
-              | null
-              | undefined;
-            if (subUrls) {
-              const subs: any[] = [];
-              if (subUrls.ar)
-                subs.push({
-                  url: subUrls.ar,
-                  label: "🇸🇦 عربي",
-                  language: "ar",
-                });
-              if (subUrls.ku)
-                subs.push({
-                  url: subUrls.ku,
-                  label: "🏳️ كردي",
-                  language: "ku",
-                });
-              setSubtitles(subs);
-            }
-            recordHistory(
-              ep ? `${contentId}_${ep.season}_${ep.episode}` : contentId,
-            );
-            setStreamLoading(false);
-            return;
+        // ── LuluStream: استعمل embedUrl ──
+        const embedU = ep ? ep.luluEmbed : detail?.luluEmbed;
+        if (embedU) {
+          setEmbedSources([{ url: embedU, name: "LuluStream" }]);
+          setEmbedSourceIdx(0);
+          setEmbedUrl(embedU);
+          setStreamUrl("");
+          // ترجمات من SubDL
+          const subUrls = (ep?.subtitleUrls || detail?.subtitleUrls) as
+            | { ar?: string; ku?: string }
+            | null
+            | undefined;
+          if (subUrls) {
+            const subs: any[] = [];
+            if (subUrls.ar)
+              subs.push({
+                url: subUrls.ar,
+                label: "🇸🇦 عربي",
+                language: "ar",
+              });
+            if (subUrls.ku)
+              subs.push({
+                url: subUrls.ku,
+                label: "🏳️ كردي",
+                language: "ku",
+              });
+            setSubtitles(subs);
           }
-          // fallback: requestLuluStream
-          const luluOpts = ep
-            ? { type: "series" as const, ep_id: ep.id || "" }
-            : { type: "movie" as const, id: contentId };
-          const lulu = await requestLuluStream(luluOpts);
-          if (lulu.embedUrl) {
-            setEmbedSources([{ url: lulu.embedUrl, name: "LuluStream" }]);
-            setEmbedSourceIdx(0);
-            setEmbedUrl(lulu.embedUrl);
-            setStreamUrl("");
-            recordHistory(
-              ep ? `${contentId}_${ep.season}_${ep.episode}` : contentId,
-            );
-            setStreamLoading(false);
-            return;
-          }
-          setStreamError("لم يتوفر الفيديو بعد، جاري المعالجة...");
+          recordHistory(
+            ep ? `${contentId}_${ep.season}_${ep.episode}` : contentId,
+          );
           setStreamLoading(false);
           return;
         }
-
-        // ── 2. مصدر آخر: جرب LuluStream بالـ ID ──
-        const luluOpts2 = ep
+        // fallback: requestLuluStream
+        const luluOpts = ep
           ? { type: "series" as const, ep_id: ep.id || "" }
           : { type: "movie" as const, id: contentId };
-        if (ep?.id || contentId) {
-          const lulu = await requestLuluStream(luluOpts2);
-          if (lulu.available && lulu.hlsUrl) {
-            setStreamUrl(lulu.hlsUrl);
-            recordHistory(
-              ep ? `${contentId}_${ep.season}_${ep.episode}` : contentId,
-            );
-            setStreamLoading(false);
-            fetchSubtitles(
-              detail?.tmdb_id || contentId,
-              ep ? "tv" : "movie",
-              ep?.season,
-              ep?.episode,
-            );
-            return;
-          }
+        const lulu = await requestLuluStream(luluOpts);
+        if (lulu.embedUrl) {
+          setEmbedSources([{ url: lulu.embedUrl, name: "LuluStream" }]);
+          setEmbedSourceIdx(0);
+          setEmbedUrl(lulu.embedUrl);
+          setStreamUrl("");
+          recordHistory(
+            ep ? `${contentId}_${ep.season}_${ep.episode}` : contentId,
+          );
+          setStreamLoading(false);
+          return;
         }
-
-        // لا يوجد مصدر آخر — المحتوى غير متوفر على LuluStream
         setStreamError("لم يتوفر الفيديو بعد، جاري المعالجة...");
       } catch {
         setStreamError("خطأ في الاتصال");
@@ -419,11 +396,11 @@ function DetailContent() {
         setStreamLoading(false);
       }
     },
-    [detail, contentId, title, poster, isSeries, loggedIn, fetchSubtitles],
+    [detail, contentId, title, poster, isSeries, loggedIn],
   );
 
   const handleEpisodePlay = useCallback(
-    (ep: VidsrcEpisode) => {
+    (ep: ContentEpisode) => {
       setCurrentEpisode(ep);
       startStream(ep);
     },
@@ -438,7 +415,7 @@ function DetailContent() {
       const firstEp =
         (detail.episodes || []).find((e) => e.season === 1) ||
         (detail.episodes || [])[0];
-      const ep = firstEp || ({ season: 1, episode: 1 } as VidsrcEpisode);
+      const ep = firstEp || ({ season: 1, episode: 1 } as ContentEpisode);
       setCurrentEpisode(ep);
       startStream(ep);
     } else {
@@ -447,11 +424,11 @@ function DetailContent() {
   }, [detail, loading, isSeries, startStream]);
 
   const seasons: number[] = detail?.seasons || [];
-  const episodes: VidsrcEpisode[] = (detail?.episodes || []).filter(
+  const episodes: ContentEpisode[] = (detail?.episodes || []).filter(
     (e) => e.season === currentSeason,
   );
 
-  const getNextEpisode = useCallback((): VidsrcEpisode | null => {
+  const getNextEpisode = useCallback((): ContentEpisode | null => {
     if (!currentEpisode) return episodes[0] || null;
     const idx = episodes.findIndex((e) => e.episode === currentEpisode.episode);
     if (idx >= 0 && idx < episodes.length - 1) return episodes[idx + 1];
@@ -462,7 +439,7 @@ function DetailContent() {
     );
   }, [currentEpisode, episodes, detail, currentSeason]);
 
-  const getPrevEpisode = useCallback((): VidsrcEpisode | null => {
+  const getPrevEpisode = useCallback((): ContentEpisode | null => {
     if (!currentEpisode) return null;
     const idx = episodes.findIndex((e) => e.episode === currentEpisode.episode);
     if (idx > 0) return episodes[idx - 1];
@@ -1015,8 +992,36 @@ function DetailContent() {
   };
 
   /* ── Main render ── */
+
+  // Not found state — content doesn't exist in DB
+  if (!loading && !detail) {
+    return (
+      <div className="min-h-screen bg-light-bg dark:bg-dark-bg flex flex-col items-center justify-center gap-5 px-4 text-center pb-24">
+        <div className="w-20 h-20 rounded-2xl bg-brand-primary/10 flex items-center justify-center">
+          <svg className="w-10 h-10 text-brand-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.069A1 1 0 0121 8.82v6.36a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+          </svg>
+        </div>
+        <div>
+          <h2 className="text-lg font-bold text-light-text dark:text-dark-text mb-2">
+            {paramTitle || "المحتوى غير متوفر"}
+          </h2>
+          <p className="text-sm text-light-muted dark:text-dark-muted max-w-xs">
+            هذا المحتوى غير متوفر حالياً أو لم تكتمل معالجته بعد.
+          </p>
+        </div>
+        <button
+          onClick={() => window.history.back()}
+          className="px-6 py-2.5 rounded-xl bg-brand-primary text-black font-bold text-sm hover:bg-brand-dark transition"
+        >
+          العودة
+        </button>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-light-bg dark:bg-dark-bg text-light-text dark:text-dark-text pb-24 md:pb-6">
+    <div className="min-h-screen bg-light-bg dark:bg-dark-bg text-light-text dark:text-dark-text pb-28 md:pb-6 page-enter">
       <div className="max-w-7xl mx-auto">
         {/* YouTube-style 2-column layout on desktop */}
         <div className="lg:flex lg:gap-6 lg:px-6 lg:pt-4">

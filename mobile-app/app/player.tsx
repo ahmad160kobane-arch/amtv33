@@ -27,17 +27,14 @@ import {
   isStreamReady,
   getToken,
   getCloudServerUrl,
-  requestFreeStream,
   requestPremiumStream,
-  requestIptvVodStream,
-  requestIptvSeriesStream,
   fetchSubscription,
   getSavedUser,
   isLoggedIn,
   addWatchHistory,
 } from '@/constants/Api';
 
-// JavaScript to inject BEFORE page loads - NUCLEAR MAXIMUM ad blocking
+// JavaScript to inject BEFORE page loads - mobile setup only
 const WEBVIEW_EARLY_JS = `
 (function() {
   // ========== 0. إجبار عرض الموبايل ==========
@@ -88,378 +85,6 @@ const WEBVIEW_EARLY_JS = `
   Object.defineProperty(navigator, 'maxTouchPoints', { value: 5, writable: false });
   Object.defineProperty(navigator, 'msMaxTouchPoints', { value: 5, writable: false });
 
-  const noop = () => {};
-  const fakeWin = { focus: noop, blur: noop, close: noop, closed: true, document: { write: noop, writeln: noop }, location: { href: '' } };
-
-  // Comprehensive list of ad domains to block
-  const adDomains = [
-    // مواقع البالغين
-    'gloporn', 'hadesex', 'pornhub', 'xvideos', 'xhamster', 'redtube', 'youporn', 'tube8',
-    'livejasmin', 'chaturbate', 'stripchat', 'bongacams', 'cam4', 'camsoda', 'myfreecams',
-    'spankbang', 'xnxx', 'beeg', 'brazzers', 'naughtyamerica', 'realitykings',
-    // Google Ads
-    'doubleclick.net', 'googlesyndication.com', 'googleadservices.com',
-    'adservice.google.com', 'pagead2.googlesyndication.com', 'google-analytics.com',
-    'googletagmanager.com', 'googletagservices.com', 'adsense',
-    // Major ad networks
-    'adsrvr.org', 'adnxs.com', 'adsafeprotected.com', 'moatads.com',
-    'amazon-adsystem.com', 'adsymptotic.com', 'adcolony.com', 'unity3d.com/ads',
-    'criteo.com', 'criteo.net', 'pubmatic.com', 'openx.net', 'rubiconproject.com',
-    'spotxchange.com', 'teads.tv', 'adform.net', 'smartadserver.com',
-    // Popup/Popunder networks
-    'popads.net', 'popcash.net', 'propellerads.com', 'popmyads.com',
-    'popunderjs.com', 'popunder.net', 'richpush.co', 'pushengage.com',
-    'pushground.com', 'webpushr.com', 'onesignal.com', 'pushwoosh.com',
-    'zeroredirect.com', 'onclickmax.com', 'onclickalgo.com', 'onclickads.net',
-    // Native ads
-    'outbrain.com', 'taboola.com', 'mgid.com', 'revcontent.com', 'contentad.net', 'content.ad',
-    // Adult ad networks
-    'exoclick.com', 'juicyads.com', 'trafficjunky.com', 'trafficstars.com', 'plugrush.com',
-    // Other ad networks
-    'admaven.com', 'adsterra.com', 'adcash.com', 'bidvertiser.com',
-    'hilltopads.com', 'clickadu.com', 'propellerclick.com', 'clickaine.com',
-    'a-ads.com', 'adtng.com', 'adxpremium.com', 'ad-maven.com',
-    'yllix.com', 'revenuehits.com', 'adversal.com', 'infolinks.com', 'media.net',
-    // Shortened links
-    'adf.ly', 'shorte.st', 'linkbucks.com', 'sh.st', 'bc.vc', 'adfoc.us', 'adfly.com',
-    // Tracking
-    'facebook.com/tr', 'connect.facebook.net', 'analytics.', 'tracker.',
-    'tracking.', 'pixel.', 'beacon.', 'telemetry.', 'metrics.',
-    'afftrack.com', 'go2cloud.org', 'appsflyer.com', 'adjust.com', 'voluum.com', 'clickmeter.com',
-    // Suspicious domains
-    'twistyfunnels.com', 'vialotadom.com', 'astronautlividlyreformer.com',
-    'pothertion.com', 'viicmkru.com', 'performet.qpon', 'topsites',
-    // Vidsrc specific ads
-    'whos.amung.us', 'stream-verify.', 'verification.', 'captcha-delivery.',
-    // Mining
-    'coinhive', 'cryptoloot', 'coin-hive', 'minero', 'crypto-loot', 'webminer',
-    // Generic patterns
-    'ad.', 'ads.', 'adserver.', 'advertising.', 'banner.', 'sponsor.',
-  ];
-  
-  const safeHosts = ['vidsrc.to', 'vidsrc.me', 'vidsrc.cc', 'vidsrc.net', 'vidplay', 'megacloud', 'mycloud', 'rabbitstream', 'dokicloud', 'tmdb.org', 'embed.su', 'superembed', 'autoembed', '2embed.cc', 'autoembed.cc', 'multiembed.mov', 'filemoon', 'streamwish'];
-
-  // Helper function to check if URL is ad (conservative)
-  // STRICT WHITELIST: السماح بنطاقات المصادر المتعددة
-  const ALLOWED_HOSTS = ['vidsrc.to', 'vidsrc.cc', 'vidsrc.me', 'vidsrc.net', '2embed.cc', 'embed.su', 'autoembed.cc', 'multiembed.mov', 'vidplay', 'megacloud', 'rabbitstream', 'filemoon', 'streamwish'];
-  
-  const isAdUrl = (url) => {
-    if (!url || typeof url !== 'string') return true; // حظر إذا فارغ
-    const u = url.toLowerCase();
-    
-    // السماح بـ blob و data URLs
-    if (u.startsWith('blob:') || u.startsWith('data:') || u.startsWith('about:')) return false;
-    
-    // السماح بملفات الميديا
-    if (u.includes('.m3u8') || u.includes('.mp4') || u.includes('.ts') || u.includes('.webm')) return false;
-    
-    // السماح فقط بالنطاقات المحددة
-    const isAllowed = ALLOWED_HOSTS.some(h => u.includes(h));
-    
-    // إذا لم يكن مسموح، فهو إعلان
-    return !isAllowed;
-  };
-
-  // ========== 1. Block window.open (popups) ==========
-  try {
-    Object.defineProperty(window, 'open', { value: () => fakeWin, writable: false, configurable: false });
-  } catch(e) { window.open = () => fakeWin; }
-  
-  // Block alert/confirm/prompt popups
-  window.alert = noop;
-  window.confirm = () => false;
-  window.prompt = () => null;
-  window.showModalDialog = noop;
-  window.print = noop;
-
-  // ========== 2. Block location changes (redirects) ==========
-  try {
-    const locDesc = Object.getOwnPropertyDescriptor(window, 'location');
-    if (locDesc && locDesc.configurable !== false) {
-      let currentHref = window.location.href;
-      Object.defineProperty(window, 'location', {
-        get: () => {
-          const loc = new URL(currentHref);
-          loc.assign = (url) => { if (!isAdUrl(url)) currentHref = url; };
-          loc.replace = (url) => { if (!isAdUrl(url)) currentHref = url; };
-          Object.defineProperty(loc, 'href', {
-            get: () => currentHref,
-            set: (v) => { if (!isAdUrl(v)) currentHref = v; }
-          });
-          return loc;
-        },
-        set: noop
-      });
-    }
-  } catch(e) {}
-
-  // ========== 3. CSS to hide ads only (conservative) ==========
-  const style = document.createElement('style');
-  style.textContent = \`
-    .ad-showing, .ima-ad-container, .ytp-ad-module,
-    .ytp-ad-overlay-container, .ytp-ad-text-overlay,
-    [class*="taboola"], [class*="outbrain"], [class*="mgid"],
-    [id*="taboola"], [id*="outbrain"], [id*="mgid"],
-    iframe[src*="doubleclick"], iframe[src*="googlesyndication"],
-    iframe[src*="popads"], iframe[src*="adsterra"], iframe[src*="exoclick"],
-    img[width="1"][height="1"], img[src*="pixel"], img[src*="beacon"]
-    {
-      display: none !important;
-      visibility: hidden !important;
-      pointer-events: none !important;
-    }
-    a[href*="clickynx"], a[href*="popads"], a[href*="adsterra"],
-    a[style*="position: absolute"][style*="opacity: 0"] {
-      pointer-events: none !important;
-      display: none !important;
-    }
-  \`;
-  (document.head || document.documentElement).appendChild(style);
-
-  // ========== 4. Block click events on suspicious elements ==========
-  document.addEventListener('click', function(e) {
-    const target = e.target;
-    if (!target) return;
-    
-    // Check if click is on video player or controls
-    if (target.closest('video') || target.closest('.jw-') || 
-        target.closest('.vjs-') || target.closest('.plyr') ||
-        target.closest('[class*="player"]') || target.closest('[class*="control"]')) {
-      return; // Allow player clicks
-    }
-    
-    // Block clicks on suspicious elements
-    const href = target.href || target.closest('a')?.href;
-    if (href && isAdUrl(href)) {
-      e.preventDefault();
-      e.stopPropagation();
-      e.stopImmediatePropagation();
-      console.log('[AdBlock] Blocked click to:', href);
-      return false;
-    }
-  }, true);
-
-  // ========== 5. Override fetch to block ad requests ==========
-  const origFetch = window.fetch;
-  window.fetch = function(url, opts) {
-    const urlStr = typeof url === 'string' ? url : (url.url || '');
-    if (isAdUrl(urlStr)) {
-      console.log('[AdBlock] Blocked fetch:', urlStr.substring(0, 60));
-      return Promise.resolve(new Response('', { status: 204 }));
-    }
-    return origFetch.apply(this, arguments);
-  };
-
-  // Override XMLHttpRequest to block ad requests
-  const origXHROpen = XMLHttpRequest.prototype.open;
-  XMLHttpRequest.prototype.open = function(method, url) {
-    if (isAdUrl(url)) {
-      this._blocked = true;
-      console.log('[AdBlock] Blocked XHR:', url.substring(0, 60));
-      return;
-    }
-    return origXHROpen.apply(this, arguments);
-  };
-  
-  const origXHRSend = XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.send = function() {
-    if (this._blocked) return;
-    return origXHRSend.apply(this, arguments);
-  };
-  
-  // Block WebSocket and Workers
-  try {
-    const OrigWebSocket = window.WebSocket;
-    window.WebSocket = function(url) {
-      if (isAdUrl(url)) {
-        console.log('[AdBlock] Blocked WebSocket:', url);
-        return { close: noop, send: noop, addEventListener: noop, readyState: 3 };
-      }
-      return new OrigWebSocket(url);
-    };
-    
-    if (window.Worker) {
-      const OrigWorker = window.Worker;
-      window.Worker = function(url) {
-        if (typeof url === 'string' && isAdUrl(url)) {
-          return { postMessage: noop, terminate: noop, addEventListener: noop };
-        }
-        return new OrigWorker(url);
-      };
-    }
-    
-    navigator.sendBeacon = (url) => {
-      if (isAdUrl(url)) return true;
-      return true;
-    };
-  } catch(e) {}
-
-  // ========== 6. Block createElement for script/iframe ads ==========
-  const origCreate = document.createElement.bind(document);
-  document.createElement = function(tag) {
-    const el = origCreate(tag);
-    const t = tag.toLowerCase();
-    if (t === 'script' || t === 'iframe' || t === 'embed' || t === 'object') {
-      const origSetAttr = el.setAttribute.bind(el);
-      el.setAttribute = function(name, value) {
-        if (name === 'src' && isAdUrl(value)) {
-          console.log('[AdBlock] Blocked src:', value.substring(0, 60));
-          return;
-        }
-        return origSetAttr(name, value);
-      };
-      Object.defineProperty(el, 'src', {
-        set: (v) => { if (!isAdUrl(v)) origSetAttr('src', v); },
-        get: () => el.getAttribute('src'),
-        configurable: true
-      });
-    }
-    return el;
-  };
-  
-  // Block appendChild for ad elements
-  const origAppend = Node.prototype.appendChild;
-  Node.prototype.appendChild = function(node) {
-    if (node && node.tagName) {
-      const tag = node.tagName.toLowerCase();
-      if ((tag === 'script' || tag === 'iframe') && node.src && isAdUrl(node.src)) {
-        console.log('[AdBlock] Blocked appendChild:', node.src.substring(0, 60));
-        return node;
-      }
-    }
-    return origAppend.call(this, node);
-  };
-
-  // ========== 7. Block event listeners ==========
-  const suspiciousEvents = ['click', 'mousedown', 'mouseup', 'touchstart', 'touchend', 'pointerdown', 'pointerup', 'contextmenu'];
-  const isSuspiciousFn = (fn) => {
-    if (!fn) return false;
-    const s = fn.toString().toLowerCase();
-    return s.includes('window.open') || s.includes('location.href') || s.includes('location.assign') ||
-           s.includes('.click()') || s.includes('popup') || s.includes('redirect') || s.includes('popunder');
-  };
-
-  const origAddEvent = EventTarget.prototype.addEventListener;
-  EventTarget.prototype.addEventListener = function(type, fn, opts) {
-    if (suspiciousEvents.includes(type) && isSuspiciousFn(fn)) {
-      console.log('[AdBlock] Blocked suspicious listener:', type);
-      return;
-    }
-    return origAddEvent.call(this, type, fn, opts);
-  };
-
-  // ========== 7. CSS AGGRESSIVE: إخفاء كل الإعلانات ==========
-  const style = document.createElement('style');
-  style.textContent = \`
-    /* إخفاء كل iframes ما عدا المشغل */
-    iframe:not([src*="vidsrc"]):not([src*="vidplay"]):not([src*="megacloud"]):not([src*="rabbitstream"]):not([src*="embed"]):not([src*="2embed"]):not([src*="autoembed"]):not([src*="multiembed"]):not([src*="filemoon"]):not([src*="streamwish"]) {
-      display: none !important;
-      visibility: hidden !important;
-      opacity: 0 !important;
-      pointer-events: none !important;
-      position: absolute !important;
-      width: 0 !important;
-      height: 0 !important;
-    }
-    
-    /* إخفاء divs و overlays الإعلانية */
-    div[id*="ad-"]:not([id*="video"]):not([id*="player"]), 
-    div[class*="ad-"]:not([class*="video"]):not([class*="player"]), 
-    div[id*="ads"]:not([id*="video"]), div[class*="ads"]:not([class*="video"]),
-    div[id*="banner"], div[class*="banner"], 
-    div[id*="popup"], div[class*="popup"],
-    div[id*="modal"]:not([class*="player"]):not([class*="video"]), 
-    div[class*="modal"]:not([class*="player"]):not([class*="video"]),
-    [class*="taboola"], [class*="outbrain"], [class*="mgid"],
-    [id*="taboola"], [id*="outbrain"], [id*="mgid"],
-    .ad-showing, .ima-ad-container, .ytp-ad-module {
-      display: none !important;
-      visibility: hidden !important;
-      opacity: 0 !important;
-      pointer-events: none !important;
-    }
-    
-    /* إخفاء الروابط الشفافة فوق الفيديو */
-    a[style*="position: absolute"],
-    a[style*="position:absolute"],
-    a[href*="jup9"], a[href*="clickynx"], a[href*="popads"], 
-    a[href*="adsterra"], a[href*="exoclick"], a[href*="afu.php"] {
-      display: none !important;
-      pointer-events: none !important;
-      opacity: 0 !important;
-    }
-    
-    /* إخفاء عناصر التتبع */
-    img[width="1"][height="1"], img[src*="pixel"], img[src*="beacon"],
-    img[src*="track"], img[src*="analytics"] {
-      display: none !important;
-    }
-    
-    /* منع أي عنصر ثابت بـ z-index عالي (إعلانات منبثقة) */
-    div[style*="position: fixed"][style*="z-index"],
-    div[style*="position:fixed"][style*="z-index"] {
-      display: none !important;
-    }
-    
-    /* إخفاء أي overlay ليس جزء من المشغل */
-    .overlay:not(.vjs-overlay):not([class*="player"]),
-    [class*="overlay"]:not([class*="player"]):not([class*="video"]) {
-      display: none !important;
-    }
-  \`;
-  (document.head || document.documentElement).appendChild(style);
-
-  // ========== 8. Conservative ad link removal ==========
-  function removeAds() {
-    // إزالة كل iframes ما عدا المشغل
-    document.querySelectorAll('iframe').forEach(iframe => {
-      const src = (iframe.src || '').toLowerCase();
-      const allowedDomains = ['vidsrc', 'vidplay', 'megacloud', 'rabbitstream', 'embed', '2embed', 'autoembed', 'multiembed', 'filemoon', 'streamwish', 'dokicloud'];
-      if (!allowedDomains.some(d => src.includes(d))) {
-        iframe.remove();
-      }
-    });
-    
-    // Remove ad links
-    document.querySelectorAll('a[href*="jup9"], a[href*="clickynx"], a[href*="popads"], a[href*="adsterra"], a[href*="exoclick"], a[href*="afu.php"]').forEach(a => {
-      a.remove();
-    });
-    
-    // إزالة divs إعلانية
-    document.querySelectorAll('[id*="ad-"], [class*="ad-"], [id*="popup"], [class*="popup"]').forEach(el => {
-      if (!el.closest('video') && !el.querySelector('video') && 
-          !el.closest('[class*="player"]') && !el.querySelector('[class*="player"]')) {
-        el.remove();
-      }
-    });
-    
-    // إزالة onclick المشبوهة
-    document.querySelectorAll('a[onclick], div[onclick]').forEach(el => {
-      const onclick = el.getAttribute('onclick') || '';
-      const lc = onclick.toLowerCase();
-      if (lc.includes('window.open') || lc.includes('popup') || lc.includes('redirect')) {
-        el.removeAttribute('onclick');
-        el.style.pointerEvents = 'none';
-      }
-    });
-    
-    // إزالة عناصر ثابتة بـ z-index عالي (إعلانات منبثقة)
-    document.querySelectorAll('div, a').forEach(el => {
-      const style = window.getComputedStyle(el);
-      if (style.position === 'fixed' && parseInt(style.zIndex) > 900) {
-        if (!el.closest('video') && !el.querySelector('video') && 
-            !el.closest('[class*="player"]')) {
-          el.remove();
-        }
-      }
-    });
-  }
-  
-  // Run ad removal aggressively
-  removeAds();
-  setInterval(removeAds, 500);
-  document.addEventListener('DOMContentLoaded', removeAds);
-
   // Handle fullscreen
   document.addEventListener('fullscreenchange', function() {
     window.ReactNativeWebView.postMessage(JSON.stringify({
@@ -499,7 +124,6 @@ const WEBVIEW_EARLY_JS = `
     }
   }, true);
 
-  console.log('[AdBlock] NUCLEAR ad blocker loaded - ALL ADS BLOCKED');
   true;
 })();
 `;
@@ -696,45 +320,20 @@ function formatTime(ms: number) {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-// قائمة المصادر المتعددة مع الاحتياطي
-const EMBED_SOURCES = [
-  { name: 'vidsrc.to', buildUrl: (id: string, type: string, s?: number, e?: number) => 
-    type === 'tv' ? `https://vidsrc.to/embed/tv/${id}/${s || 1}/${e || 1}` : `https://vidsrc.to/embed/movie/${id}` },
-  { name: 'vidsrc.cc', buildUrl: (id: string, type: string, s?: number, e?: number) => 
-    type === 'tv' ? `https://vidsrc.cc/v2/embed/tv/${id}/${s || 1}/${e || 1}` : `https://vidsrc.cc/v2/embed/movie/${id}` },
-  { name: 'vidsrc.me', buildUrl: (id: string, type: string, s?: number, e?: number) => 
-    type === 'tv' ? `https://vidsrc.me/embed/tv?tmdb=${id}&season=${s || 1}&episode=${e || 1}` : `https://vidsrc.me/embed/movie?tmdb=${id}` },
-  { name: '2embed.cc', buildUrl: (id: string, type: string, s?: number, e?: number) => 
-    type === 'tv' ? `https://www.2embed.cc/embedtv/${id}&s=${s || 1}&e=${e || 1}` : `https://www.2embed.cc/embed/${id}` },
-  { name: 'embed.su', buildUrl: (id: string, type: string, s?: number, e?: number) => 
-    type === 'tv' ? `https://embed.su/embed/tv/${id}/${s || 1}/${e || 1}` : `https://embed.su/embed/movie/${id}` },
-  { name: 'autoembed.cc', buildUrl: (id: string, type: string, s?: number, e?: number) => 
-    type === 'tv' ? `https://autoembed.cc/embed/tv/${id}/${s || 1}/${e || 1}` : `https://autoembed.cc/embed/movie/${id}` },
-];
-
-function buildEmbedUrl(tmdbId: string, type: 'movie' | 'tv', season?: number, episode?: number, sourceIndex = 0) {
-  const source = EMBED_SOURCES[sourceIndex % EMBED_SOURCES.length];
-  return source.buildUrl(tmdbId, type, season, episode);
-}
-
-function getSourceName(sourceIndex: number) {
-  return EMBED_SOURCES[sourceIndex % EMBED_SOURCES.length].name;
-}
+// EMBED_SOURCES — تم الحذف — lulu هو المصدر الوحيد
 
 export default function PlayerScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{
     channelId?: string;
-    freeChannelId?: string;
     premiumChannelId?: string;
     title?: string;
-    tmdbId?: string;
-    vidsrcType?: string;
-    season?: string;
-    episode?: string;
-    xtreamVodId?: string;
-    xtreamEpisodeId?: string;
-    xtreamExt?: string;
+    embedUrl?: string;
+    isEmbed?: string;
+    luluHls?: string;
+    luluId?: string;
+    luluType?: string;
+    source?: string;
   }>();
 
   const videoRef = useRef<Video>(null);
@@ -775,21 +374,12 @@ export default function PlayerScreen() {
   const { width: screenWidth } = Dimensions.get('window');
 
   const channelId = Array.isArray(params.channelId) ? params.channelId[0] : params.channelId;
-  const freeChannelId = Array.isArray(params.freeChannelId) ? params.freeChannelId[0] : params.freeChannelId;
   const premiumChannelId = Array.isArray(params.premiumChannelId) ? params.premiumChannelId[0] : params.premiumChannelId;
   const titleParam = Array.isArray(params.title) ? params.title[0] : params.title;
-  const tmdbId = Array.isArray(params.tmdbId) ? params.tmdbId[0] : params.tmdbId;
-  const vidsrcType = (Array.isArray(params.vidsrcType) ? params.vidsrcType[0] : params.vidsrcType) as 'movie' | 'tv' | undefined;
-  const seasonNum = params.season ? parseInt(Array.isArray(params.season) ? params.season[0] : params.season, 10) : undefined;
-  const episodeNum = params.episode ? parseInt(Array.isArray(params.episode) ? params.episode[0] : params.episode, 10) : undefined;
-  const xtreamVodId = Array.isArray(params.xtreamVodId) ? params.xtreamVodId[0] : params.xtreamVodId;
-  const xtreamEpisodeId = Array.isArray(params.xtreamEpisodeId) ? params.xtreamEpisodeId[0] : params.xtreamEpisodeId;
-  const xtreamExt = (Array.isArray(params.xtreamExt) ? params.xtreamExt[0] : params.xtreamExt) || 'mp4';
-  const isIptvVod = !!xtreamVodId || !!xtreamEpisodeId;
-  const isLive = !!channelId || !!freeChannelId || !!premiumChannelId;
-  const isFreeChannel = !!freeChannelId;
-  const isPremiumChannel = !!premiumChannelId;
-  const isVidsrc = !!tmdbId && !channelId && !freeChannelId && !premiumChannelId && !isIptvVod;
+  const embedUrlParam = Array.isArray(params.embedUrl) ? params.embedUrl[0] : params.embedUrl;
+  const isEmbed = (Array.isArray(params.isEmbed) ? params.isEmbed[0] : params.isEmbed) === '1';
+  const luluHlsParam = Array.isArray(params.luluHls) ? params.luluHls[0] : params.luluHls;
+  const isLive = !!channelId || !!premiumChannelId;
 
   useEffect(() => {
     ScreenOrientation.unlockAsync().catch(() => {});
@@ -833,7 +423,35 @@ export default function PlayerScreen() {
 
     async function initStream() {
       try {
-        // Premium channels (beIN Sports + الكأس) - requires subscription
+        // ─── Embed URL (lulu / external embed) ───
+        if (embedUrlParam && isEmbed) {
+          console.log('[Player] Embed URL:', embedUrlParam);
+          setEmbedUrl(embedUrlParam);
+          setLoadingStream(false);
+          return;
+        }
+
+        // ─── Lulu HLS stream ───
+        if (luluHlsParam) {
+          console.log('[Player] Lulu HLS:', luluHlsParam);
+          let playUrl = luluHlsParam;
+          if (playUrl && !playUrl.startsWith('http')) {
+            const cloudUrl = getCloudServerUrl();
+            playUrl = `${cloudUrl}${playUrl}`;
+          }
+          setStreamUrl(playUrl);
+          setLoadingStream(false);
+          // Record watch history
+          addWatchHistory({
+            item_id: channelId || premiumChannelId || '',
+            item_type: 'vod',
+            title: titleParam || '',
+            content_type: 'movie',
+          }).catch(() => {});
+          return;
+        }
+
+        // ─── Premium channels — كل القنوات بريميوم ───
         if (premiumChannelId) {
           console.log('[Player] Premium channel:', premiumChannelId);
           const result = await requestPremiumStream(premiumChannelId);
@@ -862,65 +480,7 @@ export default function PlayerScreen() {
           return;
         }
 
-        // Free IPTV channels - direct stream URL from server
-        if (freeChannelId) {
-          console.log('[Player] Free channel:', freeChannelId);
-          const result = await requestFreeStream(freeChannelId);
-          if (cancelled) return;
-
-          if (result?.success && result.streamUrl) {
-            console.log('[Player] Free stream URL:', result.streamUrl);
-            const hdrs: Record<string, string> = {};
-            if (result.headers) Object.assign(hdrs, result.headers);
-
-            // Add auth header only for live-pipe (server-proxied) — NOT for token redirects
-            // Token redirect (/xtream-play/) goes to IPTV directly; sending JWT there breaks playback
-            if (result.streamUrl.includes('/live-pipe/')) {
-              const token = await getToken();
-              if (token) hdrs.Authorization = `Bearer ${token}`;
-            }
-
-            setCloudStreamId(freeChannelId);
-            cloudStreamIdRef.current = freeChannelId;
-            setStreamHeaders(hdrs);
-            setStreamUrl(result.streamUrl);
-            setLoadingStream(false);
-            return;
-          }
-
-          setError('تعذّر تحميل البث — تحقق من اتصالك');
-          setLoadingStream(false);
-          return;
-        }
-
-        // IPTV VOD — فيلم أو حلقة مسلسل من Xtream
-        if (xtreamVodId || xtreamEpisodeId) {
-          console.log('[Player] IPTV VOD:', xtreamVodId || xtreamEpisodeId);
-          const result = xtreamEpisodeId
-            ? await requestIptvSeriesStream(xtreamEpisodeId, xtreamExt)
-            : await requestIptvVodStream(xtreamVodId!, xtreamExt);
-          if (cancelled) return;
-
-          if (result?.success && result.streamUrl) {
-            console.log('[Player] IPTV VOD URL:', result.streamUrl);
-            setStreamUrl(result.streamUrl);
-            setLoadingStream(false);
-            // Record watch history
-            addWatchHistory({
-              item_id: xtreamVodId || xtreamEpisodeId || '',
-              item_type: 'vod',
-              title: titleParam || '',
-              content_type: xtreamEpisodeId ? 'series' : 'movie',
-            }).catch(() => {});
-            return;
-          }
-
-          setError(result?.error || 'تعذّر تحميل الفيلم');
-          setLoadingStream(false);
-          return;
-        }
-
-        // Live channels (IPTV from database) - use native player
+        // ─── Live channels (IPTV from database) ───
         if (channelId) {
           const result = await requestLiveStream(channelId);
           if (cancelled) return;
@@ -967,35 +527,6 @@ export default function PlayerScreen() {
           setLoadingStream(false);
           return;
         }
-
-        // VOD content - check subscription then use WebView embed
-        if (isVidsrc && tmdbId) {
-          const logged = await isLoggedIn();
-          setIsLoggedInPlayer(logged);
-          if (!logged) {
-            setRequiresSubscription(true);
-            setError('login_required');
-            setLoadingStream(false);
-            return;
-          }
-          const [sub, savedUser] = await Promise.all([fetchSubscription(), getSavedUser()]);
-          if (cancelled) return;
-          const role = savedUser?.role || 'user';
-          const canWatch = sub?.isPremium || role === 'admin' || role === 'agent';
-          if (!canWatch) {
-            setRequiresSubscription(true);
-            setError('يتطلب اشتراك بريميوم');
-            setLoadingStream(false);
-            return;
-          }
-          const s = seasonNum || 1;
-          const e = episodeNum || 1;
-          const embed = buildEmbedUrl(tmdbId, vidsrcType || 'movie', s, e, sourceIndex);
-          setEmbedUrl(embed);
-          setCurrentSourceName(getSourceName(sourceIndex));
-          setLoadingStream(false);
-          console.log(`[Player] Using source ${sourceIndex}: ${getSourceName(sourceIndex)}`);
-        }
       } catch {
         if (cancelled) return;
         setError('خطأ في الاتصال بالسيرفر');
@@ -1011,23 +542,10 @@ export default function PlayerScreen() {
       if (controlsTimer.current) clearTimeout(controlsTimer.current);
       if (cloudStreamIdRef.current) releaseStream(cloudStreamIdRef.current).catch(() => {});
     };
-  }, [channelId, freeChannelId, premiumChannelId, tmdbId, vidsrcType, seasonNum, episodeNum, xtreamVodId, xtreamEpisodeId, xtreamExt, retryKey, sourceIndex]);
+  }, [channelId, premiumChannelId, embedUrlParam, isEmbed, luluHlsParam, retryKey]);
 
-  // دالة للتبديل إلى المصدر الاحتياطي التالي
-  const fetchSubtitlesMobile = useCallback(async () => {
-    if (!tmdbId) return;
-    try {
-      const cloudUrl = await getCloudServerUrl();
-      let url = `${cloudUrl}/api/subtitles?tmdbId=${tmdbId}&type=${vidsrcType || 'movie'}`;
-      if (vidsrcType === 'tv' && seasonNum && episodeNum) {
-        url += `&season=${seasonNum}&episode=${episodeNum}`;
-      }
-      const token = await getToken();
-      const res = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
-      const data = await res.json();
-      if (data.subtitles?.length) setSubtitles(data.subtitles);
-    } catch {}
-  }, [tmdbId, vidsrcType, seasonNum, episodeNum]);
+  // دالة جلب الترجمات — لم تعد مستعملة بدون vidsrc
+  // الترجمات تأتي من lulu مباشرة
 
   const selectSubtitleMobile = useCallback(async (sub: any | null) => {
     setShowSubMenu(false);
@@ -1076,24 +594,14 @@ true;
   }, []);
 
   useEffect(() => {
-    if (isVidsrc && embedUrl) {
+    if (embedUrl) {
       setSubtitles([]);
       setActiveSubtitle(null);
-      fetchSubtitlesMobile();
     }
-  }, [isVidsrc, embedUrl, fetchSubtitlesMobile]);
+  }, [embedUrl]);
 
-  const tryNextSource = useCallback(() => {
-    if (sourceIndex < EMBED_SOURCES.length - 1) {
-      console.log(`[Player] Trying next source: ${sourceIndex + 1}`);
-      setSourceIndex(prev => prev + 1);
-      setWebViewError(false);
-      setError('');
-      setLoadingStream(true);
-    } else {
-      setError('جميع المصادر غير متاحة - جرب لاحقاً');
-    }
-  }, [sourceIndex]);
+  // tryNextSource — لم يعد هناك مصادر متعددة
+  // lulu هو المصدر الوحيد
 
   const resetControlsTimer = useCallback(() => {
     if (controlsTimer.current) clearTimeout(controlsTimer.current);
@@ -1187,7 +695,7 @@ true;
 
   // Handle back button for WebView fullscreen
   useEffect(() => {
-    if (!isVidsrc) return;
+    if (!embedUrl) return;
     
     const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
       if (isWebViewFullscreen && webviewRef.current) {
@@ -1199,7 +707,7 @@ true;
     });
 
     return () => backHandler.remove();
-  }, [isVidsrc, isWebViewFullscreen]);
+  }, [embedUrl, isWebViewFullscreen]);
 
   const togglePlayPause = async () => {
     if (!videoRef.current) return;
@@ -1272,8 +780,8 @@ true;
     resetControlsTimer();
   };
 
-  // VOD content - WebView only (simple, no extraction)
-  if (isVidsrc) {
+  // Embed content - WebView for lulu embed URLs
+  if (embedUrl) {
     return (
       <View style={styles.container}>
         <StatusBar hidden />
@@ -1286,20 +794,12 @@ true;
             onLoadStart={() => setLoadingStream(true)}
             onLoadEnd={() => setLoadingStream(false)}
             onError={() => {
-              console.log(`[Player] Error loading source ${sourceIndex}: ${getSourceName(sourceIndex)}`);
-              if (sourceIndex < EMBED_SOURCES.length - 1) {
-                tryNextSource();
-              } else {
-                setError('فشل تحميل المشغل - جرب مصدر آخر');
-              }
+              setError('فشل تحميل المشغل');
             }}
             onHttpError={(syntheticEvent) => {
               const { nativeEvent } = syntheticEvent;
-              console.log(`[Player] HTTP Error ${nativeEvent.statusCode} on source ${sourceIndex}`);
-              if (nativeEvent.statusCode >= 400 && sourceIndex < EMBED_SOURCES.length - 1) {
-                tryNextSource();
-              } else if (nativeEvent.statusCode >= 400) {
-                setError('المصدر غير متاح - جرب مصدر آخر');
+              if (nativeEvent.statusCode >= 400) {
+                setError('المصدر غير متاح');
               }
             }}
             onMessage={onWebViewMessage}
@@ -1333,6 +833,8 @@ true;
                 'dokicloud',
                 'filemoon',
                 'streamwish',
+                'lulustream.com',
+                'luluvdo.com',
               ];
               
               // السماح بـ blob و data URLs (للفيديو)
@@ -1451,7 +953,7 @@ true;
           <View style={styles.centerOverlay}>
             <InfoIcon size={48} color="#EF4444" />
             <Text style={styles.errorText}>{error || 'فشل تحميل الفيديو'}</Text>
-            <Text style={styles.sourceText}>المصدر: {currentSourceName || getSourceName(sourceIndex)}</Text>
+            <Text style={styles.sourceText}>lulu</Text>
             <View style={styles.errorBtns}>
               <TouchableOpacity style={styles.retryBtn} onPress={() => {
                 setWebViewError(false);
@@ -1460,11 +962,6 @@ true;
               }}>
                 <Text style={styles.retryText}>إعادة المحاولة</Text>
               </TouchableOpacity>
-              {sourceIndex < EMBED_SOURCES.length - 1 && (
-                <TouchableOpacity style={[styles.retryBtn, { backgroundColor: Colors.brand.primary }]} onPress={tryNextSource}>
-                  <Text style={styles.retryText}>جرب مصدر آخر</Text>
-                </TouchableOpacity>
-              )}
             </View>
           </View>
         ) : null}
@@ -1488,7 +985,7 @@ true;
             source={{
               uri: streamUrl,
               headers: Object.keys(streamHeaders).length > 0 ? streamHeaders : undefined,
-              overrideFileExtensionAndroid: isLive ? 'm3u8' : (isIptvVod ? xtreamExt : undefined),
+              overrideFileExtensionAndroid: isLive ? 'm3u8' : undefined,
             }}
             style={styles.video}
             resizeMode={resizeMode}

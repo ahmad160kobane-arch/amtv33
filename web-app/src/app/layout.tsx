@@ -141,7 +141,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <ServiceWorkerRegister />
             <OfflineBanner />
             <Navbar />
-            <main className="pt-16">{children}</main>
+            <main className="pt-16" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>{children}</main>
           </AuthProvider>
         </ThemeProvider>
       </body>

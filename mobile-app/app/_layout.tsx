@@ -8,6 +8,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useColorScheme } from '@/hooks/useColorScheme';
 import Colors from '@/constants/Colors';
 import { AppAlertProvider } from '@/components/AppAlert';
+import { AuthProvider } from '@/context/AuthContext';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -38,13 +39,14 @@ export default function RootLayout() {
 
   return (
     <SafeAreaProvider>
+      <AuthProvider>
       <AppAlertProvider>
       <StatusBar style="light" />
       <Stack
         screenOptions={{
           headerShown: false,
           contentStyle: { backgroundColor: colors.background },
-          animation: 'slide_from_left',
+          animation: 'slide_from_right',
           gestureEnabled: false,
         }}
       >
@@ -60,26 +62,27 @@ export default function RootLayout() {
           name="live"
           options={{
             headerShown: false,
-            animation: 'slide_from_left',
+            animation: 'slide_from_right',
           }}
         />
         <Stack.Screen
           name="allcontent"
           options={{
             headerShown: false,
-            animation: 'slide_from_left',
+            animation: 'slide_from_right',
           }}
         />
         <Stack.Screen name="detail" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />
-        <Stack.Screen name="favorites" options={{ headerShown: false, animation: 'slide_from_left' }} />
-        <Stack.Screen name="subscription" options={{ headerShown: false, animation: 'slide_from_left' }} />
-        <Stack.Screen name="history" options={{ headerShown: false, animation: 'slide_from_left' }} />
-        <Stack.Screen name="settings" options={{ headerShown: false, animation: 'slide_from_left' }} />
-        <Stack.Screen name="privacy" options={{ headerShown: false, animation: 'slide_from_left' }} />
-        <Stack.Screen name="support" options={{ headerShown: false, animation: 'slide_from_left' }} />
-        <Stack.Screen name="agent" options={{ headerShown: false, animation: 'slide_from_left' }} />
+        <Stack.Screen name="favorites" options={{ headerShown: false, animation: 'slide_from_right' }} />
+        <Stack.Screen name="subscription" options={{ headerShown: false, animation: 'slide_from_right' }} />
+        <Stack.Screen name="history" options={{ headerShown: false, animation: 'slide_from_right' }} />
+        <Stack.Screen name="settings" options={{ headerShown: false, animation: 'slide_from_right' }} />
+        <Stack.Screen name="privacy" options={{ headerShown: false, animation: 'slide_from_right' }} />
+        <Stack.Screen name="support" options={{ headerShown: false, animation: 'slide_from_right' }} />
+        <Stack.Screen name="agent" options={{ headerShown: false, animation: 'slide_from_right' }} />
       </Stack>
       </AppAlertProvider>
+      </AuthProvider>
     </SafeAreaProvider>
   );
 }

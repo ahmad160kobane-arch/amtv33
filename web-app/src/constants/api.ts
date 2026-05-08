@@ -1,5 +1,6 @@
 // ============================================================
 // API Service - MA Streaming Web
+// النظام النشط: LuluStream (أفلام/مسلسلات) + Xtream Channels (بث مباشر)
 // ============================================================
 
 // Use relative URL so Next.js rewrites proxy to the backend (bypasses CORS)
@@ -47,16 +48,6 @@ function removeStorage(key: string) {
 }
 
 // ─── Types ───────────────────────────────────────────────
-export interface Channel {
-  id: string;
-  name: string;
-  group: string;
-  logo: string;
-  is_streaming: boolean;
-  enabled: boolean;
-  viewers: number;
-}
-
 export interface FreeChannel {
   id: string;
   name: string;
@@ -64,60 +55,6 @@ export interface FreeChannel {
   stream_url?: string;
   group?: string;
   category?: string;
-}
-
-export interface VidsrcItem {
-  id: string;
-  title: string;
-  poster: string;
-  backdrop?: string;
-  vod_type: "movie" | "series";
-  imdb_id?: string;
-  tmdb_id?: string;
-  year?: string;
-  rating?: string;
-  genres?: string[];
-  description?: string;
-  source?: string;
-}
-
-export interface VidsrcDetail {
-  id: string;
-  title: string;
-  poster: string;
-  backdrop?: string;
-  vod_type: "movie" | "series";
-  imdb_id?: string;
-  tmdb_id?: string;
-  year?: string;
-  rating?: string;
-  genres?: string[];
-  description?: string;
-  cast?: string;
-  director?: string;
-  country?: string;
-  duration?: string;
-  runtime?: string;
-  trailer?: string;
-  seasons?: number[]; // array of season numbers e.g. [1, 2, 3]
-  episodes?: VidsrcEpisode[];
-  luluHls?: string;
-  luluEmbed?: string;
-  subtitleUrls?: { ar?: string; ku?: string } | null;
-}
-
-export interface VidsrcEpisode {
-  id?: string;
-  episode: number;
-  season: number;
-  title?: string;
-  overview?: string;
-  thumbnail?: string;
-  released?: string;
-  air_date?: string;
-  luluHls?: string;
-  luluEmbed?: string;
-  subtitleUrls?: { ar?: string; ku?: string } | null;
 }
 
 export interface UserProfile {
@@ -181,6 +118,7 @@ export interface ActiveSession {
   type: string;
   started_at: number;
   last_seen: number;
+  device_id?: string;
 }
 
 export interface SessionInfo {
@@ -192,6 +130,67 @@ export interface SessionInfo {
   active_sessions: number;
   sessions: ActiveSession[];
   is_admin: boolean;
+}
+
+export interface FreeStreamResult {
+  success: boolean;
+  name?: string;
+  logo?: string;
+  group?: string;
+  streamUrl?: string;
+  streamId?: string;
+  headers?: Record<string, string>;
+  error?: string;
+}
+
+// ─── LuluStream Types ─────────────────────────────────
+export interface LuluItem {
+  id: string;
+  title: string;
+  poster: string;
+  year: string;
+  genre: string;
+  rating: string;
+  lang: string;
+  cat?: string;
+  vod_type: "movie" | "series";
+  episodeCount?: number;
+}
+
+export interface LuluEpisode {
+  id: string;
+  episode: number;
+  season: number;
+  title: string;
+  thumbnail: string;
+  overview?: string;
+  air_date?: string;
+  fileCode: string;
+  hlsUrl: string;
+  embedUrl: string;
+  subtitleUrls?: { ar?: string; ku?: string } | null;
+  ext: string;
+}
+
+export interface LuluSeason {
+  season: number;
+  episodes: LuluEpisode[];
+}
+
+export interface LuluDetail extends LuluItem {
+  backdrop?: string;
+  plot?: string;
+  cast_list?: string;
+  director?: string;
+  country?: string;
+  runtime?: string;
+  genres?: string;
+  seasons?: LuluSeason[];
+  episodes?: LuluEpisode[];
+  fileCode?: string;
+  hlsUrl?: string;
+  embedUrl?: string;
+  subtitleUrls?: { ar?: string; ku?: string } | null;
 }
 
 // ─── Core fetch ──────────────────────────────────────────
@@ -282,7 +281,6 @@ export async function register(
 }
 
 export async function logout(): Promise<void> {
-  // Invalidate session on server (increments login_version → other devices get kicked)
   try {
     await apiFetch("/api/auth/logout", { method: "POST" });
   } catch {}
@@ -294,7 +292,6 @@ export async function fetchProfile(): Promise<UserProfile | null> {
   try {
     const res = await apiFetch("/api/auth/profile");
     if (res.status === 401) {
-      // Token invalid or session invalidated — clear storage
       removeStorage(TOKEN_KEY);
       removeStorage(USER_KEY);
       return null;
@@ -330,353 +327,7 @@ export async function activateCode(
   return data;
 }
 
-// ─── Vidsrc Content ──────────────────────────────────────
-export async function fetchVidsrcHome(): Promise<{
-  latestMovies: VidsrcItem[];
-  latestTvShows: VidsrcItem[];
-  trending: VidsrcItem[];
-  popularMovies: VidsrcItem[];
-  popularTvShows: VidsrcItem[];
-}> {
-  const empty = {
-    latestMovies: [],
-    latestTvShows: [],
-    trending: [],
-    popularMovies: [],
-    popularTvShows: [],
-  };
-  const cached = getCached<typeof empty>("home");
-  if (cached) return cached;
-  try {
-    const res = await apiFetch("/api/vidsrc/home");
-    if (!res.ok) return empty;
-    const data = await res.json();
-    const result = {
-      latestMovies: data.latestMovies || [],
-      latestTvShows: data.latestTvShows || [],
-      trending: data.trending || [],
-      popularMovies: data.popularMovies || [],
-      popularTvShows: data.popularTvShows || [],
-    };
-    setCache("home", result);
-    return result;
-  } catch {
-    return empty;
-  }
-}
-
-export async function fetchVidsrcBrowse(params: {
-  type?: string;
-  category?: string;
-  page?: number;
-  limit?: number;
-}): Promise<{
-  items: VidsrcItem[];
-  total: number;
-  page: number;
-  hasMore: boolean;
-}> {
-  const empty = { items: [], total: 0, page: 1, hasMore: false };
-  try {
-    const q = new URLSearchParams();
-    if (params.type) q.set("type", params.type);
-    if (params.category) q.set("category", params.category);
-    if (params.page) q.set("page", String(params.page));
-    if (params.limit) q.set("limit", String(params.limit));
-    const cacheKey = `browse_${q.toString()}`;
-    const cached = getCached<typeof empty>(cacheKey);
-    if (cached) return cached;
-    const res = await apiFetch(`/api/vidsrc/browse?${q.toString()}`);
-    if (!res.ok) return empty;
-    const data = await res.json();
-    const result = {
-      items: data.items || [],
-      total: data.total || 0,
-      page: data.page || 1,
-      hasMore: data.hasMore ?? false,
-    };
-    setCache(cacheKey, result);
-    return result;
-  } catch {
-    return empty;
-  }
-}
-
-export async function fetchVidsrcDetail(
-  type: "movie" | "tv",
-  id: string,
-): Promise<VidsrcDetail | null> {
-  try {
-    const res = await apiFetch(`/api/vidsrc/detail/${type}/${id}`);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-export async function searchVidsrc(query: string): Promise<VidsrcItem[]> {
-  try {
-    const res = await apiFetch(
-      `/api/vidsrc/search?q=${encodeURIComponent(query)}`,
-    );
-    if (!res.ok) return [];
-    const data = await res.json();
-    return data.items || [];
-  } catch {
-    return [];
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// النظام الجديد: Xtream VOD — أفلام ومسلسلات من IPTV
-// ═══════════════════════════════════════════════════════════════════
-
-export interface IptvVodItem {
-  id: string;
-  name: string;
-  poster: string;
-  rating: string;
-  year: string;
-  genre?: string;
-  category_id?: string;
-  ext?: string;
-  vod_type: "movie" | "series";
-}
-
-export interface IptvVodDetail extends IptvVodItem {
-  o_name?: string;
-  backdrop?: string;
-  plot?: string;
-  cast?: string;
-  director?: string;
-  runtime?: string;
-  duration_secs?: number;
-  releaseDate?: string;
-  country?: string;
-  tmdb_id?: number | null;
-  trailer?: string;
-  age?: string;
-  genre_raw?: string;
-  rating5?: number | null;
-}
-
-export interface IptvEpisode {
-  id: string;
-  episode: number;
-  title: string;
-  rawTitle?: string;
-  poster?: string;
-  plot?: string;
-  duration?: string;
-  duration_secs?: number;
-  released?: string;
-  ext: string;
-  season: number;
-  resolution?: string;
-}
-
-export interface IptvSeason {
-  season: number;
-  episodes: IptvEpisode[];
-}
-
-export interface IptvSeriesDetail extends IptvVodDetail {
-  seasons: IptvSeason[];
-  episode_run_time?: string;
-}
-
-export interface IptvBrowseResult {
-  items: IptvVodItem[];
-  page: number;
-  total: number;
-  hasMore: boolean;
-}
-
-export interface IptvHomeData {
-  latestMovies: IptvVodItem[];
-  latestSeries: IptvVodItem[];
-  vodCategories: { id: string; name: string }[];
-  seriesCategories: { id: string; name: string }[];
-}
-
-export interface IptvCategoryWithMovies {
-  id: string;
-  name: string;
-  items: IptvVodItem[];
-}
-
-export async function fetchIptvHome(): Promise<IptvHomeData> {
-  const cached = getCached<IptvHomeData>("iptv_home");
-  if (cached) return cached;
-  try {
-    const res = await apiFetch("/api/xtream/vod/home");
-    if (!res.ok) throw new Error();
-    const data = await res.json();
-    setCache("iptv_home", data);
-    return data;
-  } catch {
-    return {
-      latestMovies: [],
-      latestSeries: [],
-      vodCategories: [],
-      seriesCategories: [],
-    };
-  }
-}
-
-export async function fetchIptvCategoriesWithMovies(
-  maxCategories = 40,
-  filter = "",
-): Promise<{ categories: IptvCategoryWithMovies[]; total: number }> {
-  const key = `iptv_cats_movies_${maxCategories}_${filter}`;
-  const cached = getCached<{
-    categories: IptvCategoryWithMovies[];
-    total: number;
-  }>(key);
-  if (cached) return cached;
-  try {
-    const res = await apiFetch(
-      `/api/xtream/vod/categories-with-movies?max_categories=${maxCategories}&per_category=12${filter ? "&filter=" + filter : ""}`,
-    );
-    if (!res.ok) throw new Error();
-    const data = await res.json();
-    setCache(key, data);
-    return data;
-  } catch {
-    return { categories: [], total: 0 };
-  }
-}
-
-export async function fetchIptvMovies(params?: {
-  categoryId?: string;
-  page?: number;
-  search?: string;
-}): Promise<IptvBrowseResult> {
-  const q = new URLSearchParams();
-  if (params?.categoryId) q.set("category_id", params.categoryId);
-  if (params?.page) q.set("page", String(params.page));
-  if (params?.search) q.set("search", params.search);
-  const qs = q.toString();
-  const key = `iptv_movies_${qs}`;
-  const cached = getCached<IptvBrowseResult>(key);
-  if (cached) return cached;
-  try {
-    const res = await apiFetch(`/api/xtream/vod/streams${qs ? "?" + qs : ""}`);
-    if (!res.ok) throw new Error();
-    const data = await res.json();
-    setCache(key, data);
-    return data;
-  } catch {
-    return { items: [], page: 1, total: 0, hasMore: false };
-  }
-}
-
-export async function fetchIptvSeries(params?: {
-  categoryId?: string;
-  page?: number;
-  search?: string;
-}): Promise<IptvBrowseResult> {
-  const q = new URLSearchParams();
-  if (params?.categoryId) q.set("category_id", params.categoryId);
-  if (params?.page) q.set("page", String(params.page));
-  if (params?.search) q.set("search", params.search);
-  const qs = q.toString();
-  const key = `iptv_series_${qs}`;
-  const cached = getCached<IptvBrowseResult>(key);
-  if (cached) return cached;
-  try {
-    const res = await apiFetch(`/api/xtream/series/list${qs ? "?" + qs : ""}`);
-    if (!res.ok) throw new Error();
-    const data = await res.json();
-    setCache(key, data);
-    return data;
-  } catch {
-    return { items: [], page: 1, total: 0, hasMore: false };
-  }
-}
-
-export async function fetchIptvMovieDetail(
-  vodId: string,
-): Promise<IptvVodDetail | null> {
-  try {
-    const res = await apiFetch(`/api/xtream/vod/info/${vodId}`);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-export async function fetchIptvSeriesDetail(
-  seriesId: string,
-): Promise<IptvSeriesDetail | null> {
-  try {
-    const res = await apiFetch(`/api/xtream/series/info/${seriesId}`);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-export async function fetchIptvSearch(
-  query: string,
-  page = 1,
-): Promise<IptvBrowseResult> {
-  try {
-    const res = await apiFetch(
-      `/api/xtream/vod/search?q=${encodeURIComponent(query)}&page=${page}`,
-    );
-    if (!res.ok) throw new Error();
-    return await res.json();
-  } catch {
-    return { items: [], page: 1, total: 0, hasMore: false };
-  }
-}
-
-export async function requestIptvVodStream(
-  vodId: string,
-  ext = "mp4",
-): Promise<{ success: boolean; streamUrl?: string; error?: string }> {
-  try {
-    const res = await apiFetch(`/api/xtream/vod/stream/${vodId}?ext=${ext}`);
-    const data = await res.json();
-    if (!res.ok) return { success: false, error: data.error };
-    return { success: true, streamUrl: data.streamUrl || "" };
-  } catch (err: any) {
-    return { success: false, error: err.message };
-  }
-}
-
-export async function requestIptvSeriesStream(
-  episodeId: string,
-  ext = "mp4",
-): Promise<{ success: boolean; streamUrl?: string; error?: string }> {
-  try {
-    const res = await apiFetch(
-      `/api/xtream/series/stream/${episodeId}?ext=${ext}`,
-    );
-    const data = await res.json();
-    if (!res.ok) return { success: false, error: data.error };
-    return { success: true, streamUrl: data.streamUrl || "" };
-  } catch (err: any) {
-    return { success: false, error: err.message };
-  }
-}
-
-// ─── Xtream Channels (beIN Sports + الكأس + عراقي + عربي) ─────────────
-export interface FreeStreamResult {
-  success: boolean;
-  name?: string;
-  logo?: string;
-  group?: string;
-  streamUrl?: string;
-  streamId?: string;
-  headers?: Record<string, string>;
-  error?: string;
-}
-
+// ─── Xtream Channels (البث المباشر) ──────────────
 export async function requestFreeStream(
   channelId: string,
 ): Promise<FreeStreamResult> {
@@ -706,9 +357,6 @@ export async function requestFreeStream(
       }
     } catch {}
 
-    // ─── Use POST /api/stream/live/:channelId ───
-    // This returns HLS proxy URL with st= token (no FFmpeg, shared cache, instant)
-    // GET /api/xtream/stream triggers FFmpeg+HLS which is slow and unstable
     const res = await apiFetch(`/api/stream/live/${encodeURIComponent(channelId)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -776,28 +424,6 @@ export async function fetchFreeChannels(params?: {
     };
   } catch {
     return { channels: [] };
-  }
-}
-
-// ─── Premium Channels ────────────────────────────────────
-export async function fetchChannels(params?: {
-  group?: string;
-  search?: string;
-  limit?: number;
-  offset?: number;
-}): Promise<{ items: Channel[]; total: number }> {
-  try {
-    const q = new URLSearchParams();
-    if (params?.group) q.set("group", params.group);
-    if (params?.search) q.set("search", params.search);
-    if (params?.limit) q.set("limit", String(params.limit));
-    if (params?.offset) q.set("offset", String(params.offset));
-    const res = await apiFetch(`/api/channels?${q.toString()}`);
-    if (!res.ok) return { items: [], total: 0 };
-    const data = await res.json();
-    return { items: data.channels || data.items || [], total: data.total || 0 };
-  } catch {
-    return { items: [], total: 0 };
   }
 }
 
@@ -936,40 +562,6 @@ export async function fetchAgentCodes(params?: {
   }
 }
 
-// ─── VidSrc Streaming ────────────────────────────────────
-export async function requestVidsrcStream(opts: {
-  tmdbId?: string;
-  type?: "movie" | "tv";
-  season?: number;
-  episode?: number;
-  title?: string;
-}): Promise<{
-  success: boolean;
-  hlsUrl?: string;
-  vodUrl?: string;
-  embedUrl?: string;
-  subtitles?: any[];
-  error?: string;
-  requiresSubscription?: boolean;
-}> {
-  try {
-    const res = await apiFetch("/api/stream/vidsrc", {
-      method: "POST",
-      body: JSON.stringify(opts),
-    });
-    const data = await res.json();
-    if (!res.ok)
-      return {
-        success: false,
-        error: data.error || data.message,
-        requiresSubscription: !!data.requiresSubscription,
-      };
-    return { success: true, ...data };
-  } catch (err: any) {
-    return { success: false, error: err.message };
-  }
-}
-
 // ─── LuluStream: جلب HLS للمحتوى المرفوع ────────────────
 export async function requestLuluStream(opts: {
   type: "movie" | "series";
@@ -994,55 +586,6 @@ export async function requestLuluStream(opts: {
 }
 
 // ─── LuluStream: Browse & Detail ────────────────────────
-export interface LuluItem {
-  id: string;
-  title: string;
-  poster: string;
-  year: string;
-  genre: string;
-  rating: string;
-  lang: string;
-  cat?: string;
-  vod_type: "movie" | "series";
-  episodeCount?: number;
-}
-
-export interface LuluEpisode {
-  id: string;
-  episode: number;
-  season: number;
-  title: string;
-  thumbnail: string;
-  overview?: string;
-  air_date?: string;
-  fileCode: string;
-  hlsUrl: string;
-  embedUrl: string;
-  subtitleUrls?: { ar?: string; ku?: string } | null;
-  ext: string;
-}
-
-export interface LuluSeason {
-  season: number;
-  episodes: LuluEpisode[];
-}
-
-export interface LuluDetail extends LuluItem {
-  backdrop?: string;
-  plot?: string;
-  cast_list?: string;
-  director?: string;
-  country?: string;
-  runtime?: string;
-  genres?: string;
-  seasons?: LuluSeason[];
-  episodes?: LuluEpisode[];
-  fileCode?: string;
-  hlsUrl?: string;
-  embedUrl?: string;
-  subtitleUrls?: { ar?: string; ku?: string } | null;
-}
-
 export async function fetchLuluGenres(): Promise<string[]> {
   try {
     const res = await apiFetch("/api/lulu/genres");

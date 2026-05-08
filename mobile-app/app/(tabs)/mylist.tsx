@@ -2,12 +2,13 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { View, Text, StyleSheet, FlatList, Image, TouchableOpacity, RefreshControl, Animated, Dimensions } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { FilmIcon, LogoutIcon, HeartIcon } from '@/components/AppIcons';
+import { FilmIcon, LogoutIcon, HeartIcon, LockPremiumIcon } from '@/components/AppIcons';
 import AppLogo from '@/components/AppLogo';
 import { useRouter } from 'expo-router';
 import { useColorScheme } from '@/hooks/useColorScheme';
 import Colors from '@/constants/Colors';
 import { VodItem, isLoggedIn, apiFetch } from '@/constants/Api';
+import { usePremiumGuard } from '@/hooks/usePremiumGuard';
 const { width } = Dimensions.get('window');
 const CARD_W = (width - 48) / 3;
 const CARD_H = CARD_W * 1.52;
@@ -60,9 +61,13 @@ export default function MyListScreen() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
+  const guard = usePremiumGuard();
+
   const handlePress = useCallback((item: any) => {
-    router.push({ pathname: '/detail', params: { xtreamId: item.id, vodType: item.content_type === 'series' || item.content_type === 'tv' ? 'series' : 'movie', title: item.title || '', poster: item.poster || '' } });
-  }, [router]);
+    guard.requireAuth(() => {
+      router.push({ pathname: '/detail', params: { luluId: item.id, vodType: item.content_type === 'series' || item.content_type === 'tv' ? 'series' : 'movie', source: 'lulu', title: item.title || '', poster: item.poster || '' } });
+    });
+  }, [guard, router]);
 
   const renderItem = useCallback(({ item }: { item: any }) => (
     <TouchableOpacity style={[styles.card, { height: CARD_H }]} onPress={() => handlePress(item)} activeOpacity={0.75}>
@@ -143,5 +148,5 @@ const styles = StyleSheet.create({
   badge: { position: 'absolute', top: 7, right: 7, paddingHorizontal: 7, paddingVertical: 3, borderRadius: 6 },
   badgeText: { fontFamily: Colors.fonts.bold, color: '#fff', fontSize: 9, letterSpacing: 0.3 },
   cardBottom: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: 7, paddingBottom: 8 },
-  cardTitle: { fontFamily: Colors.fonts.bold, color: '#fff', fontSize: 10, textAlign: 'right', lineHeight: 14, textShadowColor: 'rgba(0,0,0,0.6)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 3 },
+  cardTitle: { fontFamily: Colors.fonts.bold, color: '#fff', fontSize: 12, textAlign: 'right', lineHeight: 16, textShadowColor: 'rgba(0,0,0,0.6)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 3 },
 });

@@ -268,9 +268,11 @@ async function renderIPTV(c) {
       <div class="panel"><div class="panel-header"><h3>الحسابات (${_iptvAccounts.length})</h3></div><div class="panel-body no-pad">
         ${_iptvAccounts.length===0?'<div class="empty-state"><div class="empty-icon">📡</div><p>لا توجد حسابات</p></div>':_iptvAccounts.map(acc=>{
           const accChs=_cloudChannels.filter(ch=>ch.account_id===acc.id);
-          return `<div class="iptv-account-card"><div class="acc-header"><div class="acc-info"><strong>${esc(acc.name||'حساب #'+acc.id)}</strong><span class="acc-meta" dir="ltr">${esc(acc.server_url)} — ${esc(acc.username)} — ${accChs.length} قناة</span></div>
+          const proxyStatus=acc.proxy_enabled?`<span style="color:${acc.proxy_running?'var(--success)':'var(--danger)'};font-size:12px">🌐 ${acc.proxy_type||'proxy'} ${acc.proxy_running?'يعمل':'متوقف'}</span>`:'';
+          return `<div class="iptv-account-card"><div class="acc-header"><div class="acc-info"><strong>${esc(acc.name||'حساب #'+acc.id)}</strong><span class="acc-meta" dir="ltr">${esc(acc.server_url)} — ${esc(acc.username)} — ${accChs.length} قناة ${proxyStatus}</span></div>
           <div class="btn-group"><button class="btn btn-sm btn-primary" onclick="searchChannelForAccount(${acc.id})">🔍 اختيار قناة</button>
           <button class="btn btn-sm ${accChs.some(ch=>ch.is_streaming)?'btn-danger':'btn-success'}" onclick="toggleAccountStreaming(${acc.id},${!accChs.some(ch=>ch.is_streaming)})">${accChs.some(ch=>ch.is_streaming)?'⏹ إيقاف الكل':'▶ تشغيل الكل'}</button>
+          <button class="btn btn-sm btn-outline" onclick="editProxyForAccount(${acc.id})">🌐 Proxy</button>
           <button class="btn btn-sm btn-danger" onclick="deleteIPTVAccount(${acc.id},'${esc(acc.name||'حساب #'+acc.id)}')">حذف</button></div></div>
           ${accChs.length>0?`<div class="acc-channels-grid">${accChs.map(ch=>`<div class="acc-channel"><div class="ch-info">${ch.logo?`<img src="${esc(ch.logo)}" class="ch-logo" onerror="this.style.display='none'">`:'<div class="ch-logo-placeholder">📺</div>'}<div><div class="ch-name">${esc(ch.name)}</div><div class="ch-cat">${esc(ch.category||'عام')}</div></div></div>
           <div class="ch-actions"><span class="streaming-badge ${ch.is_streaming?'streaming-on':'streaming-off'}">${ch.is_streaming?'🟢 يبث':'🔴 متوقف'}</span>
@@ -291,6 +293,26 @@ async function selectChannelForAccount(idx){const ch=_channelSearchResults[idx];
 async function toggleStreaming(id,streaming){try{await cloudApi(`/api/admin/channel-toggle-stream/${encodeURIComponent(id)}`,{method:'POST',body:JSON.stringify({streaming})});toast(streaming?'تم التشغيل':'تم الإيقاف');renderPage('iptv');}catch(e){toast(e.message,'error');}}
 async function removeChannelFromAccount(id,name){if(!confirm(`إزالة "${name}"؟`))return;try{await cloudApi(`/api/admin/cloud-channels/${encodeURIComponent(id)}`,{method:'DELETE'});toast('تم الإزالة');renderPage('iptv');}catch(e){toast(e.message,'error');}}
 async function clearStreamErrors(){if(!confirm('مسح الأخطاء؟'))return;try{await cloudApi('/api/admin/stream-errors',{method:'DELETE'});toast('تم المسح');renderPage('iptv');}catch(e){toast(e.message,'error');}}
+let _proxyAccountId=null;
+async function editProxyForAccount(accountId){
+  _proxyAccountId=accountId;
+  showModal('إعدادات Proxy/VPN',`<div id="proxy-modal-body" style="max-height:400px;overflow-y:auto"><div class="loading"><div class="spinner"></div></div></div>`);
+  try{
+    const d=await cloudApi(`/api/admin/iptv-accounts/${accountId}/proxy`);
+    const a=d.account||{};
+    const s=d.proxy_status||{};
+    document.getElementById('proxy-modal-body').innerHTML=`<div class="form-group"><label>نوع الـ Proxy</label><select class="form-control" id="prox-type"><option value="none" ${a.proxy_type==='none'||!a.proxy_type?'selected':''}>بدون</option><option value="http" ${a.proxy_type==='http'?'selected':''}>HTTP Proxy</option><option value="socks5" ${a.proxy_type==='socks5'?'selected':''}>SOCKS5 Proxy</option><option value="shadowsocks" ${a.proxy_type==='shadowsocks'?'selected':''}>Shadowsocks</option><option value="mtproto" ${a.proxy_type==='mtproto'?'selected':''}>MTProto Proxy</option></select></div>
+<div class="form-row"><div class="form-group"><label>السيرفر</label><input class="form-control" id="prox-server" dir="ltr" value="${esc(a.proxy_server||'')}" placeholder="178.104.72.162"></div><div class="form-group"><label>المنفذ</label><input class="form-control" id="prox-port" dir="ltr" value="${a.proxy_port||''}" placeholder="443"></div></div>
+<div class="form-group"><label>السر / كلمة المرور</label><input class="form-control" id="prox-secret" dir="ltr" value="${esc(a.proxy_secret||'')}" placeholder="dd104462821249bd7ac519130220c25d09"></div>
+<div class="form-row"><div class="form-group"><label>المنفذ المحلي</label><input class="form-control" id="prox-local" dir="ltr" value="${a.proxy_local_port||''}" placeholder="مثلاً 1080"></div><div class="form-group"><label><input type="checkbox" id="prox-autostart" ${a.proxy_auto_start?'checked':''}> تشغيل تلقائي</label></div></div>
+<div class="form-group"><label><input type="checkbox" id="prox-enabled" ${a.proxy_enabled?'checked':''}> تفعيل Proxy</label></div>
+<div style="margin:12px 0;padding:8px;background:#1a1a2e;border-radius:6px"><strong>الحالة:</strong> <span style="color:${s.running?'var(--success)':'var(--danger)'}">${s.running?'🟢 يعمل':'🔴 متوقف'}</span> ${s.localPort?`(منفذ ${s.localPort})`:''}</div>
+<div class="btn-group"><button class="btn btn-primary" onclick="saveProxySettings()">💾 حفظ</button><button class="btn btn-success" onclick="startProxy()">▶ تشغيل</button><button class="btn btn-danger" onclick="stopProxy()">⏹ إيقاف</button></div>`;
+  }catch(e){document.getElementById('proxy-modal-body').innerHTML=`<p style="color:var(--danger)">${e.message}</p>`;}
+}
+async function saveProxySettings(){try{const enabled=document.getElementById('prox-enabled').checked,type=document.getElementById('prox-type').value,server=document.getElementById('prox-server').value.trim(),port=parseInt(document.getElementById('prox-port').value)||0,secret=document.getElementById('prox-secret').value.trim(),localPort=parseInt(document.getElementById('prox-local').value)||0,autoStart=document.getElementById('prox-autostart').checked;await cloudApi(`/api/admin/iptv-accounts/${_proxyAccountId}/proxy`,{method:'PUT',body:JSON.stringify({proxy_enabled:enabled,proxy_type:type,proxy_server:server,proxy_port:port,proxy_secret:secret,proxy_local_port:localPort,proxy_auto_start:autoStart})});toast('تم الحفظ');}catch(e){toast(e.message,'error');}}
+async function startProxy(){try{await cloudApi(`/api/admin/iptv-accounts/${_proxyAccountId}/proxy/start`,{method:'POST'});toast('تم تشغيل Proxy');editProxyForAccount(_proxyAccountId);}catch(e){toast(e.message,'error');}}
+async function stopProxy(){try{await cloudApi(`/api/admin/iptv-accounts/${_proxyAccountId}/proxy/stop`,{method:'POST'});toast('تم إيقاف Proxy');editProxyForAccount(_proxyAccountId);}catch(e){toast(e.message,'error');}}
 
 // ═══════════════════════════════════════════════════════
 // ─── ONE Lulu Page: IPTV Content + DB + Lulu Upload ──

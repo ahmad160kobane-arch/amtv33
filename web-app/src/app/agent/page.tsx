@@ -113,7 +113,7 @@ export default function AgentPage() {
   }
 
   return (
-    <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-24 md:pb-6">
+    <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-28 md:pb-6 page-enter">
       <div className="max-w-4xl mx-auto px-4 py-6">
         {/* Header */}
         <div className="flex items-center justify-between mb-6">

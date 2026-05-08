@@ -1,9 +1,17 @@
 "use client";
 import React, { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { VidsrcItem } from "@/constants/api";
 
-interface HeroItem extends VidsrcItem {
+interface HeroItem {
+  id: string;
+  title: string;
+  poster: string;
+  backdrop?: string;
+  vod_type: "movie" | "series";
+  year?: string;
+  rating?: string;
+  genres?: string[];
+  tmdb_id?: string;
   source?: string;
 }
 
@@ -34,7 +42,10 @@ export default function HeroSlider({ items }: Props) {
   const href = isLulu
     ? `/detail?id=${item.id}&type=${type}&source=lulu&title=${encodeURIComponent(item.title)}&poster=${encodeURIComponent(item.poster || "")}`
     : `/detail?id=${item.tmdb_id || item.id}&type=${type}&title=${encodeURIComponent(item.title)}&poster=${encodeURIComponent(item.poster || "")}`;
+  // Use backdrop if available (wide image), else fall back to poster with top-crop
+  const hasTrueBackdrop = !!(item.backdrop && item.backdrop !== item.poster);
   const bg = imgErrors.has(current) ? null : item.backdrop || item.poster;
+  const bgPosition = hasTrueBackdrop ? 'object-center' : 'object-top';
 
   return (
     <div
@@ -44,14 +55,23 @@ export default function HeroSlider({ items }: Props) {
       {/* Background image */}
       {bg ? (
         <img
-          key={current}
           src={bg}
           alt={item.title}
-          className="absolute inset-0 w-full h-full object-cover transition-opacity duration-700"
+          className={`absolute inset-0 w-full h-full object-cover ${bgPosition} transition-opacity duration-700`}
           onError={() => setImgErrors((s) => new Set(s).add(current))}
         />
       ) : (
         <div className="absolute inset-0 bg-gradient-to-br from-dark-card to-dark-bg" />
+      )}
+
+      {/* Previous image for smooth crossfade */}
+      {items.length > 1 && bg && current > 0 && items[current - 1] && (
+        <img
+          src={items[current - 1].backdrop || items[current - 1].poster}
+          alt=""
+          className={`absolute inset-0 w-full h-full object-cover ${bgPosition} transition-opacity duration-700 pointer-events-none ${imgErrors.has(current - 1) ? 'opacity-0' : 'opacity-0'}`}
+          aria-hidden="true"
+        />
       )}
 
       {/* Gradient overlays */}

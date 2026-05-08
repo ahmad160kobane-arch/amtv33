@@ -65,7 +65,7 @@ function ChannelGrid({ loading, filtered, groups, search, activeGroup, activeCha
                   ? 'bg-brand-primary/15 border border-brand-primary/50 shadow-sm shadow-brand-primary/20'
                   : 'bg-light-card dark:bg-dark-card hover:bg-light-input dark:hover:bg-dark-input active:scale-95'
               }`}>
-              <div className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-brand-success live-dot" />
+              <div className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-brand-success live-dot-green" />
               <div className="w-full aspect-video rounded-lg bg-light-input dark:bg-dark-input flex items-center justify-center mb-1.5 overflow-hidden">
                 {ch.logo && !logoErrors.has(ch.id) ? (
                   <img src={ch.logo} alt={ch.name} className="w-full h-full object-contain p-1" onError={() => onLogoError(ch.id)} />
@@ -152,7 +152,7 @@ function LiveContent() {
   };
 
   return (
-    <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-24 md:pb-6">
+    <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-28 md:pb-6 page-enter">
       <div className="max-w-7xl mx-auto px-4 lg:px-8">
         <div className="flex items-center gap-2 py-4">
           <h1 className="text-xl font-black text-light-text dark:text-dark-text">البث المباشر</h1>

@@ -16,10 +16,12 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
-import { RadioIcon, SearchIcon, CloseCircleIcon } from '@/components/AppIcons';
+import { RadioIcon, SearchIcon, CloseCircleIcon, LockPremiumIcon } from '@/components/AppIcons';
 import { useRouter } from 'expo-router';
 import { useColorScheme } from '@/hooks/useColorScheme';
 import Colors from '@/constants/Colors';
+import { useAuth } from '@/context/AuthContext';
+import { usePremiumGuard } from '@/hooks/usePremiumGuard';
 import { fetchFreeChannels, FreeChannel } from '@/constants/Api';
 
 const { width } = Dimensions.get('window');
@@ -31,22 +33,25 @@ const CARD_H = CARD_W * 1.45;
 const PAGE_SIZE = 30;
 const HEADER_H = 52;
 
-const ChannelCard = memo(({ item, colors, router }: { item: FreeChannel; colors: any; router: any }) => {
+const ChannelCard = memo(({ item, colors, onPress }: { item: FreeChannel; colors: any; onPress: () => void }) => {
+  const { isPremium, loading } = useAuth();
+  const showLock = !isPremium && !loading;
   const scale = useRef(new Animated.Value(1)).current;
   const onPressIn = () => Animated.spring(scale, { toValue: 0.95, useNativeDriver: true, speed: 50, bounciness: 4 }).start();
   const onPressOut = () => Animated.spring(scale, { toValue: 1, useNativeDriver: true, speed: 30, bounciness: 6 }).start();
+
   return (
     <Animated.View style={{ transform: [{ scale }], width: CARD_W }}>
       <TouchableOpacity
         style={[styles.card, { height: CARD_H, backgroundColor: colors.cardBackground }]}
-        onPress={() => router.push({ pathname: '/player', params: { freeChannelId: item.id, title: item.name } })}
+        onPress={onPress}
         onPressIn={onPressIn}
         onPressOut={onPressOut}
         activeOpacity={1}
       >
         <View style={[styles.logoBg, { backgroundColor: colors.cardBackground }]}>
           {item.logo ? (
-            <Image source={{ uri: item.logo }} style={styles.logo} resizeMode="contain" />
+            <Image source={{ uri: item.logo }} style={[styles.logo, showLock && styles.logoLocked]} resizeMode="contain" />
           ) : (
             <RadioIcon size={30} color={colors.textSecondary} />
           )}
@@ -60,6 +65,21 @@ const ChannelCard = memo(({ item, colors, router }: { item: FreeChannel; colors:
           <View style={styles.liveDot} />
           <Text style={styles.liveBadgeText}>مباشر</Text>
         </View>
+
+        {/* شارة القفل — كل المحتوى بريميوم ومقفول */}
+        {showLock && (
+          <View style={styles.lockBadge}>
+            <LockPremiumIcon size={9} color="#FFB800" />
+            <Text style={styles.lockBadgeText}>بريميوم</Text>
+          </View>
+        )}
+        {showLock && (
+          <View style={styles.lockOverlay} pointerEvents="none">
+            <LockPremiumIcon size={18} color="#FFB800" />
+            <Text style={styles.lockOverlayText}>اشترك</Text>
+          </View>
+        )}
+
         <View style={styles.cardBottom}>
           <Text style={styles.cardTitle} numberOfLines={2}>{item.name}</Text>
           {item.group ? <Text style={styles.cardGroup} numberOfLines={1}>{item.group}</Text> : null}
@@ -69,7 +89,18 @@ const ChannelCard = memo(({ item, colors, router }: { item: FreeChannel; colors:
   );
 });
 
-function SkeletonGrid({ colors, pulse }: { colors: any; pulse: Animated.Value }) {
+function SkeletonGrid({ colors }: { colors: any }) {
+  const pulse = useRef(new Animated.Value(0.35)).current;
+  useEffect(() => {
+    const anim = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 0.75, duration: 750, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 0.35, duration: 750, useNativeDriver: true }),
+      ])
+    );
+    anim.start();
+    return () => anim.stop();
+  }, []);
   return (
     <View style={{ paddingHorizontal: GRID_PAD, paddingTop: 8 }}>
       {[0, 1, 2, 3].map((row) => (
@@ -88,6 +119,8 @@ export default function LiveTabScreen() {
   const colors = Colors[colorScheme];
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const guard = usePremiumGuard();
+
   const [channels, setChannels] = useState<FreeChannel[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string>('');
@@ -97,18 +130,6 @@ export default function LiveTabScreen() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [total, setTotal] = useState(0);
-
-  const pulse = useRef(new Animated.Value(0.35)).current;
-  useEffect(() => {
-    const anim = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulse, { toValue: 0.75, duration: 750, useNativeDriver: true }),
-        Animated.timing(pulse, { toValue: 0.35, duration: 750, useNativeDriver: true }),
-      ])
-    );
-    anim.start();
-    return () => anim.stop();
-  }, [pulse]);
 
   const totalHeader = HEADER_H + insets.top;
   const scrollY = useRef(new Animated.Value(0)).current;
@@ -152,9 +173,15 @@ export default function LiveTabScreen() {
     loadData(false);
   }, [hasMore, loadingMore, loading, loadData]);
 
+  const handleChannelPress = useCallback((ch: FreeChannel) => {
+    guard.requireAuth(() => {
+      router.push({ pathname: '/player', params: { premiumChannelId: ch.id, title: ch.name } });
+    });
+  }, [guard, router]);
+
   const renderChannel = useCallback(({ item }: { item: FreeChannel }) => (
-    <ChannelCard item={item} colors={colors} router={router} />
-  ), [colors, router]);
+    <ChannelCard item={item} colors={colors} onPress={() => handleChannelPress(item)} />
+  ), [colors, handleChannelPress]);
 
   const ListHeader = useCallback(() => (
     <View style={{ paddingTop: totalHeader + 4 }}>
@@ -224,7 +251,7 @@ export default function LiveTabScreen() {
       {/* Channels Grid */}
       {loading ? (
         <View style={{ paddingTop: totalHeader + 70 }}>
-          <SkeletonGrid colors={colors} pulse={pulse} />
+          <SkeletonGrid colors={colors} />
         </View>
       ) : (
         <Animated.FlatList
@@ -309,6 +336,7 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
   logo: { width: '65%', height: '50%' },
+  logoLocked: { opacity: 0.5 },
   gradient: {
     position: 'absolute', bottom: 0, left: 0, right: 0, height: '68%',
   },
@@ -320,17 +348,29 @@ const styles = StyleSheet.create({
   },
   liveDot: { width: 5, height: 5, borderRadius: 2.5, backgroundColor: '#34C759' },
   liveBadgeText: { fontFamily: Colors.fonts.bold, fontSize: 9, color: '#34C759' },
+  lockBadge: {
+    position: 'absolute', bottom: 46, left: 6,
+    flexDirection: 'row', alignItems: 'center', gap: 2,
+    backgroundColor: 'rgba(0,0,0,0.78)', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 7, zIndex: 5,
+  },
+  lockBadgeText: { fontFamily: Colors.fonts.bold, color: '#FFB800', fontSize: 9 },
+  lockOverlay: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.35)', borderRadius: 12, zIndex: 4,
+  },
+  lockOverlayText: { fontFamily: Colors.fonts.bold, color: '#FFB800', fontSize: 10, marginTop: 3 },
   cardBottom: {
     position: 'absolute', bottom: 0, left: 0, right: 0,
-    padding: 7, paddingBottom: 9,
+    padding: 7, paddingBottom: 9, zIndex: 6,
   },
   cardTitle: {
-    fontFamily: Colors.fonts.bold, color: '#fff', fontSize: 12,
-    textAlign: 'right', lineHeight: 16,
+    fontFamily: Colors.fonts.bold, color: '#fff', fontSize: 13,
+    textAlign: 'right', lineHeight: 18,
     textShadowColor: 'rgba(0,0,0,0.7)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 3,
   },
   cardGroup: {
-    fontFamily: Colors.fonts.regular, color: 'rgba(255,255,255,0.65)', fontSize: 10,
+    fontFamily: Colors.fonts.regular, color: 'rgba(255,255,255,0.65)', fontSize: 11,
     textAlign: 'right', marginTop: 2,
   },
   footerLoader: { alignItems: 'center', paddingVertical: 16, gap: 4 },

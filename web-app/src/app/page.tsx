@@ -107,7 +107,7 @@ export default function HomePage() {
   };
 
   return (
-    <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-20 md:pb-6">
+    <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-28 md:pb-6 page-enter">
       {/* Hero Slider */}
       {loading ? (
         <SkeletonHero />
@@ -144,14 +144,14 @@ export default function HomePage() {
                 <button
                   key={ch.id}
                   onClick={() => handleChannelClick(ch)}
-                  className="flex-shrink-0 w-20 h-20 sm:w-24 sm:h-24 rounded-2xl overflow-hidden relative group card-hover bg-light-card dark:bg-dark-card border border-light-border dark:border-dark-border"
+                  className="flex-shrink-0 w-20 h-24 sm:w-24 sm:h-28 rounded-2xl overflow-hidden relative group card-hover bg-light-card dark:bg-dark-card border border-light-border dark:border-dark-border flex flex-col items-center"
                 >
-                  <div className="absolute inset-0 flex items-center justify-center p-3">
+                  <div className="w-full h-16 sm:h-20 flex items-center justify-center p-2">
                     {ch.logo && !logoErrors.has(ch.id) ? (
                       <img
                         src={ch.logo}
                         alt={ch.name}
-                        className={`w-full h-full object-contain ${!isPremium ? "brightness-75" : ""}`}
+                        className={`max-w-full max-h-full object-contain ${!isPremium ? "brightness-75" : ""}`}
                         onError={() =>
                           setLogoErrors((p) => new Set(p).add(ch.id))
                         }
@@ -172,6 +172,11 @@ export default function HomePage() {
                       </svg>
                     )}
                   </div>
+
+                  {/* Channel name — integrated below logo */}
+                  <span className="text-[9px] sm:text-[10px] text-light-muted dark:text-dark-muted font-medium line-clamp-1 px-1 pb-1.5 text-center w-full leading-tight">
+                    {ch.name}
+                  </span>
 
                   {/* Live dot for premium / Lock for non-premium */}
                   {isPremium ? (
@@ -203,7 +208,7 @@ export default function HomePage() {
                     ? router.push("/live")
                     : router.push("/subscription?reason=premium")
                 }
-                className="flex-shrink-0 w-20 h-20 sm:w-24 sm:h-24 rounded-2xl bg-light-input dark:bg-dark-input border border-dashed border-light-border dark:border-dark-border flex flex-col items-center justify-center gap-1 text-light-muted dark:text-dark-muted hover:text-brand-primary hover:border-brand-primary transition"
+                className="flex-shrink-0 w-20 h-24 sm:w-24 sm:h-28 rounded-2xl bg-light-input dark:bg-dark-input border border-dashed border-light-border dark:border-dark-border flex flex-col items-center justify-center gap-1 text-light-muted dark:text-dark-muted hover:text-brand-primary hover:border-brand-primary transition"
               >
                 <svg
                   className="w-5 h-5"
@@ -220,21 +225,6 @@ export default function HomePage() {
                 </svg>
                 <span className="text-[10px] font-bold">المزيد</span>
               </button>
-            </div>
-
-            {/* Channel names below */}
-            <div className="flex gap-2 overflow-x-auto no-scrollbar px-4 mt-1.5">
-              {channels.map((ch) => (
-                <div
-                  key={ch.id}
-                  className="flex-shrink-0 w-20 sm:w-24 text-center"
-                >
-                  <span className="text-[10px] text-light-muted dark:text-dark-muted font-medium line-clamp-1">
-                    {ch.name}
-                  </span>
-                </div>
-              ))}
-              <div className="flex-shrink-0 w-20 sm:w-24" />
             </div>
           </section>
         )}

@@ -82,7 +82,7 @@ export default function AccountPage() {
       : 'bg-dark-input text-dark-muted';
 
     return (
-      <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-24 md:pb-6">
+      <div className="min-h-screen bg-light-bg dark:bg-dark-bg pb-28 md:pb-6 page-enter">
         <div className="max-w-lg mx-auto px-4">
           {/* Profile header */}
           <div className="pt-6 pb-4 flex flex-col items-center gap-3 mb-4">
@@ -147,7 +147,7 @@ export default function AccountPage() {
   }
 
   return (
-    <div className="min-h-screen bg-light-bg dark:bg-dark-bg flex items-center justify-center px-4 pb-24 md:pb-6">
+    <div className="min-h-screen bg-light-bg dark:bg-dark-bg flex items-center justify-center px-4 pb-28 md:pb-6 page-enter">
       <div className="w-full max-w-sm">
         {/* Logo */}
         <div className="flex flex-col items-center mb-8">

@@ -20,6 +20,7 @@ import { SettingsIcon, SearchIcon } from "@/components/AppIcons";
 import AppLogo from "@/components/AppLogo";
 import { useRouter } from "expo-router";
 import { useColorScheme } from "@/hooks/useColorScheme";
+import { usePremiumGuard } from "@/hooks/usePremiumGuard";
 import Colors from "@/constants/Colors";
 import {
   fetchLuluHome,
@@ -51,6 +52,7 @@ export default function HomeScreen() {
   const colors = Colors[colorScheme];
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const guard = usePremiumGuard();
 
   const [movies, setMovies] = useState<LuluItem[]>([]);
   const [tvShows, setTvShows] = useState<LuluItem[]>([]);
@@ -74,7 +76,6 @@ export default function HomeScreen() {
     extrapolate: "clamp",
   });
 
-  // تحميل البيانات الأساسية
   const loadData = useCallback(async () => {
     try {
       const [homeData, chData] = await Promise.all([
@@ -123,29 +124,33 @@ export default function HomeScreen() {
 
   const handleVodPress = useCallback(
     (item: any) => {
-      const type = item.vod_type === "series" ? "series" : "movie";
-      router.push({
-        pathname: "/detail",
-        params: {
-          luluId: item.id,
-          vodType: type,
-          source: "lulu",
-          title: item.title,
-          poster: item.poster,
-        },
+      guard.requireAuth(() => {
+        const type = item.vod_type === "series" ? "series" : "movie";
+        router.push({
+          pathname: "/detail",
+          params: {
+            luluId: item.id,
+            vodType: type,
+            source: "lulu",
+            title: item.title,
+            poster: item.poster,
+          },
+        });
       });
     },
-    [router],
+    [guard, router],
   );
 
   const handleChannelPress = useCallback(
     (ch: FreeChannel) => {
-      router.push({
-        pathname: "/player",
-        params: { freeChannelId: ch.id, title: ch.name },
+      guard.requireAuth(() => {
+        router.push({
+          pathname: "/player",
+          params: { premiumChannelId: ch.id, title: ch.name },
+        });
       });
     },
-    [router],
+    [guard, router],
   );
 
   return (

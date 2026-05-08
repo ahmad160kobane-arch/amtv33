@@ -58,7 +58,7 @@ export default function HistoryScreen() {
   useEffect(() => { loadData(); }, [loadData]);
 
   const handlePress = useCallback((item: WatchHistoryItem) => {
-    router.push({ pathname: '/detail', params: { xtreamId: item.item_id, vodType: item.content_type === 'series' || item.content_type === 'tv' ? 'series' : 'movie', title: item.title, poster: item.poster } });
+    router.push({ pathname: '/detail', params: { luluId: item.item_id, vodType: item.content_type === 'series' || item.content_type === 'tv' ? 'series' : 'movie', source: 'lulu', title: item.title, poster: item.poster } });
   }, [router]);
 
   const formatDate = (d: string) => new Date(d).toLocaleDateString('ar-SA', { month: 'short', day: 'numeric', year: 'numeric' });

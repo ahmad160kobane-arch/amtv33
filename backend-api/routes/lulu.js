@@ -48,14 +48,14 @@ router.get("/home", async (req, res) => {
       `SELECT id, title, poster, year, rating, genres as genre, vod_type, canplay
        FROM lulu_catalog
        WHERE vod_type = 'movie'
-         AND canplay = true
+         AND (canplay = true OR (embed_url IS NOT NULL AND embed_url != ''))
        ORDER BY uploaded_at DESC NULLS LAST LIMIT 24`,
     );
     const series = await pool.query(
       `SELECT id, title, poster, year, rating, genres as genre, vod_type, episode_count
        FROM lulu_catalog
        WHERE vod_type = 'series'
-         AND canplay = true
+         AND (canplay = true OR (embed_url IS NOT NULL AND embed_url != ''))
        ORDER BY uploaded_at DESC NULLS LAST LIMIT 24`,
     );
     res.json({
@@ -99,7 +99,7 @@ router.get("/list", async (req, res) => {
     // فلتر أساسي: النوع + (canplay أو embed_url موجود)
     let where = [
       "vod_type = $1",
-      "canplay = true",
+      "(canplay = true OR (embed_url IS NOT NULL AND embed_url != ''))",
     ];
     let params = [type];
     let pi = 2;

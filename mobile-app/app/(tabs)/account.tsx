@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -20,14 +20,10 @@ import Colors from '@/constants/Colors';
 import { useRouter } from 'expo-router';
 import AppLogo from '@/components/AppLogo';
 import { useAppAlert } from '@/components/AppAlert';
+import { useAuth } from '@/context/AuthContext';
 import {
-  login,
-  register,
-  logout,
-  fetchProfile,
-  getSavedUser,
-  isLoggedIn,
-  UserProfile,
+  login as apiLogin,
+  register as apiRegister,
 } from '@/constants/Api';
 
 type IconKey = 'shield' | 'bookmark' | 'diamond' | 'clock' | 'settings' | 'shieldCheck' | 'chat';
@@ -57,9 +53,8 @@ export default function AccountScreen() {
   const colors = Colors[colorScheme];
   const router = useRouter();
   const { show: showAlert } = useAppAlert();
+  const { user, loading, isLoggedIn, isPremium, refresh, logout } = useAuth();
 
-  const [user, setUser] = useState<UserProfile | null>(null);
-  const [loading, setLoading] = useState(true);
   const [authLoading, setAuthLoading] = useState(false);
   const [isLogin, setIsLogin] = useState(true);
   const [error, setError] = useState('');
@@ -71,28 +66,13 @@ export default function AccountScreen() {
   const [email, setEmail] = useState('');
   const [displayName, setDisplayName] = useState('');
 
-  const loadUser = useCallback(async () => {
-    try {
-      const loggedIn = await isLoggedIn();
-      if (loggedIn) {
-        const profile = await fetchProfile();
-        if (profile) { setUser(profile); return; }
-        const saved = await getSavedUser();
-        if (saved) { setUser(saved); return; }
-      }
-      setUser(null);
-    } catch { setUser(null); }
-    finally { setLoading(false); }
-  }, []);
-
-  useEffect(() => { loadUser(); }, [loadUser]);
-
   const handleLogin = async () => {
     if (!loginField.trim() || !password.trim()) { setError('يرجى ملء جميع الحقول'); return; }
     setError(''); setAuthLoading(true);
     try {
-      const result = await login(loginField.trim(), password);
-      setUser(result.user);
+      await apiLogin(loginField.trim(), password);
+      // Refresh AuthContext so the whole app knows the user is logged in
+      await refresh();
     } catch (e: any) { setError(e.message); }
     finally { setAuthLoading(false); }
   };
@@ -101,8 +81,9 @@ export default function AccountScreen() {
     if (!username.trim() || !email.trim() || !password.trim()) { setError('يرجى ملء جميع الحقول'); return; }
     setError(''); setAuthLoading(true);
     try {
-      const result = await register(username.trim(), email.trim(), password, displayName.trim() || undefined);
-      setUser(result.user);
+      await apiRegister(username.trim(), email.trim(), password, displayName.trim() || undefined);
+      // Refresh AuthContext so the whole app knows the user is logged in
+      await refresh();
     } catch (e: any) { setError(e.message); }
     finally { setAuthLoading(false); }
   };
@@ -113,7 +94,7 @@ export default function AccountScreen() {
       message: 'هل تريد تسجيل الخروج من حسابك؟',
       buttons: [
         { text: 'إلغاء', style: 'cancel' },
-        { text: 'خروج', style: 'destructive', onPress: async () => { await logout(); setUser(null); } },
+        { text: 'خروج', style: 'destructive', onPress: async () => { await logout(); } },
       ],
     });
   };
@@ -129,7 +110,7 @@ export default function AccountScreen() {
   }
 
   // ─── Auth Screen (Not Logged In) ────────────────────────
-  if (!user) {
+  if (!isLoggedIn || !user) {
     return (
       <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.authScroll}>
@@ -250,7 +231,7 @@ export default function AccountScreen() {
   const isAgent = user.role === 'agent' || user.role === 'admin';
 
   const getPlanLabel = () => {
-    if (user.plan !== 'premium') return 'مجاني';
+    if (!isPremium) return 'مجاني';
     if (user.expires_at) {
       const d = new Date(user.expires_at);
       const diff = Math.ceil((d.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
@@ -279,9 +260,9 @@ export default function AccountScreen() {
           <Text style={[styles.profileName, { color: colors.text }]}>{user.display_name || user.username}</Text>
           <Text style={[styles.profileSub, { color: colors.textSecondary }]}>{user.email}</Text>
           <View style={styles.badgesRow}>
-            <View style={[styles.planBadge, { backgroundColor: user.plan === 'free' ? colors.inputBackground : 'rgba(255,184,0,0.15)' }]}>
-              {user.plan === 'free' ? <StarIcon size={12} color={Colors.brand.primary} /> : <DiamondIcon size={12} color={Colors.brand.primary} />}
-              <Text style={styles.planText}>{user.plan === 'free' ? 'مجاني' : 'بريميوم'}</Text>
+            <View style={[styles.planBadge, { backgroundColor: !isPremium ? colors.inputBackground : 'rgba(255,184,0,0.15)' }]}>
+              {isPremium ? <DiamondIcon size={12} color={Colors.brand.primary} /> : <StarIcon size={12} color={Colors.brand.primary} />}
+              <Text style={styles.planText}>{isPremium ? 'بريميوم' : 'مجاني'}</Text>
             </View>
             {(user.role === 'agent' || user.role === 'admin') && (
               <View style={[styles.roleBadge, { backgroundColor: 'rgba(99,102,241,0.15)' }]}>

@@ -107,6 +107,7 @@ function IconAccount({ active }: { active: boolean }) {
 const NAV_ICONS: Record<string, React.FC<{ active: boolean }>> = {
   '/': IconHome,
   '/live': IconLive,
+  '/sports': IconSports,
   '/entertainment': IconEntertainment,
   '/kids': IconKids,
   '/mylist': IconMyList,
@@ -119,6 +120,15 @@ const NAV_ITEMS = [
   { href: '/entertainment', label: 'ترفيه' },
   { href: '/kids', label: 'أطفال' },
   { href: '/mylist', label: 'قائمتي' },
+  { href: '/account', label: 'حسابي' },
+];
+
+// Bottom mobile nav (max 5 items for comfortable tap targets)
+const MOBILE_NAV = [
+  { href: '/', label: 'الرئيسية' },
+  { href: '/live', label: 'مباشر' },
+  { href: '/entertainment', label: 'ترفيه' },
+  { href: '/kids', label: 'أطفال' },
   { href: '/account', label: 'حسابي' },
 ];
 
@@ -207,24 +217,14 @@ export default function Navbar() {
               {user ? (user.display_name || user.username).split(' ')[0] : 'دخول'}
             </Link>
 
-            {/* Search shortcut on mobile */}
-            <button
-              onClick={() => router.push('/allcontent')}
-              className="md:hidden p-2 rounded-lg text-light-muted dark:text-dark-muted hover:bg-light-input dark:hover:bg-dark-input transition"
-              title="البحث"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-            </button>
           </div>
         </div>
 
       </header>
 
       {/* Bottom nav for mobile */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-light-card/95 dark:bg-dark-card/95 backdrop-blur border-t border-light-border dark:border-dark-border flex">
-        {NAV_ITEMS.map((item) => {
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-light-card/95 dark:bg-dark-card/95 backdrop-blur border-t border-light-border dark:border-dark-border flex" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
+        {MOBILE_NAV.map((item) => {
           const active = pathname === item.href || (item.href !== '/' && pathname.startsWith(item.href));
           return (
             <Link

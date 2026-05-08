@@ -20,12 +20,14 @@ import {
   SearchIcon,
   CloseCircleIcon,
   InfoIcon,
+  LockPremiumIcon,
 } from "@/components/AppIcons";
 import AppLogo from "@/components/AppLogo";
 import { useRouter } from "expo-router";
 import { useColorScheme } from "@/hooks/useColorScheme";
 import Colors from "@/constants/Colors";
 import { fetchLuluList, LuluItem } from "@/constants/Api";
+import { usePremiumGuard } from "@/hooks/usePremiumGuard";
 
 const { width } = Dimensions.get("window");
 const CARD_W = (width - 48) / 3;
@@ -85,11 +87,13 @@ export default function EntertainmentScreen() {
   const colorScheme = useColorScheme();
   const colors = Colors[colorScheme];
   const router = useRouter();
+  const guard = usePremiumGuard();
   const insets = useSafeAreaInsets();
 
   const [activeType, setActiveType] = useState<"movie" | "series">("movie");
   const [search, setSearch] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [items, setItems] = useState<LuluItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -152,27 +156,39 @@ export default function EntertainmentScreen() {
     setSearchQuery(search);
   }, [search]);
 
+  // بحث تلقائي مع تأخير (debounce)
+  const onSearchChange = useCallback((text: string) => {
+    setSearch(text);
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(() => {
+      setSearchQuery(text);
+    }, 600);
+  }, []);
+
   const handlePress = useCallback(
     (item: LuluItem) => {
-      const type = item.vod_type === "series" ? "series" : "movie";
-      router.push({
-        pathname: "/detail",
-        params: {
-          luluId: item.id,
-          vodType: type,
-          source: "lulu",
-          title: item.title,
-          poster: item.poster,
-        },
+      guard.requireAuth(() => {
+        const type = item.vod_type === "series" ? "series" : "movie";
+        router.push({
+          pathname: "/detail",
+          params: {
+            luluId: item.id,
+            vodType: type,
+            source: "lulu",
+            title: item.title,
+            poster: item.poster,
+          },
+        });
       });
     },
-    [router],
+    [guard, router],
   );
 
   const renderItem = useCallback(
     ({ item }: { item: LuluItem }) => {
       const ratingVal = item.rating ? parseFloat(item.rating) : 0;
       const isSeries = item.vod_type === "series";
+      const showLock = !guard.allowed && !guard.loading;
       return (
         <TouchableOpacity
           style={styles.card}
@@ -182,7 +198,7 @@ export default function EntertainmentScreen() {
           {item.poster ? (
             <Image
               source={{ uri: item.poster }}
-              style={styles.poster}
+              style={[styles.poster, showLock && styles.posterLocked]}
               resizeMode="cover"
             />
           ) : (
@@ -218,7 +234,19 @@ export default function EntertainmentScreen() {
               <Text style={styles.ratingText}>{ratingVal.toFixed(1)}</Text>
             </View>
           )}
-          <View style={styles.cardBottom}>
+          {showLock && (
+            <View style={styles.lockBadge}>
+              <LockPremiumIcon size={9} color="#FFB800" />
+              <Text style={styles.lockBadgeText}>بريميوم</Text>
+            </View>
+          )}
+          {showLock && (
+            <View style={styles.lockOverlay}>
+              <LockPremiumIcon size={18} color="#FFB800" />
+              <Text style={styles.lockOverlayText}>اشترك</Text>
+            </View>
+          )}
+          <View style={[styles.cardBottom, { zIndex: showLock ? 6 : undefined }]}>
             <Text style={styles.cardTitle} numberOfLines={2}>
               {item.title}
             </Text>
@@ -229,7 +257,7 @@ export default function EntertainmentScreen() {
         </TouchableOpacity>
       );
     },
-    [handlePress, colors.inputBackground, colors.textSecondary],
+    [handlePress, colors.inputBackground, colors.textSecondary, guard.allowed, guard.loading],
   );
 
   return (
@@ -259,7 +287,7 @@ export default function EntertainmentScreen() {
             placeholder="بحث..."
             placeholderTextColor={colors.textSecondary}
             value={search}
-            onChangeText={setSearch}
+            onChangeText={onSearchChange}
             onSubmitEditing={handleSearch}
             returnKeyType="search"
             textAlign="right"
@@ -269,6 +297,7 @@ export default function EntertainmentScreen() {
               onPress={() => {
                 setSearch("");
                 setSearchQuery("");
+                if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
               }}
               hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
             >
@@ -498,9 +527,9 @@ const styles = StyleSheet.create({
   cardTitle: {
     fontFamily: Colors.fonts.bold,
     color: "#fff",
-    fontSize: 10,
+    fontSize: 12,
     textAlign: "right",
-    lineHeight: 14,
+    lineHeight: 16,
     textShadowColor: "rgba(0,0,0,0.6)",
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 3,
@@ -508,10 +537,48 @@ const styles = StyleSheet.create({
   cardYear: {
     fontFamily: Colors.fonts.regular,
     color: "rgba(255,255,255,0.5)",
-    fontSize: 9,
+    fontSize: 10,
     textAlign: "right",
     marginTop: 2,
   },
   footerLoader: { alignItems: "center", paddingVertical: 20, gap: 6 },
   footerText: { fontFamily: Colors.fonts.regular, fontSize: 12 },
+  // ─── Lock / Premium styles ───
+  posterLocked: { opacity: 0.6 },
+  lockBadge: {
+    position: 'absolute',
+    bottom: 42,
+    left: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    backgroundColor: 'rgba(0,0,0,0.78)',
+    paddingHorizontal: 5,
+    paddingVertical: 3,
+    borderRadius: 6,
+    zIndex: 5,
+  },
+  lockBadgeText: {
+    fontFamily: Colors.fonts.bold,
+    color: '#FFB800',
+    fontSize: 8,
+  },
+  lockOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.42)',
+    borderRadius: 10,
+    zIndex: 4,
+  },
+  lockOverlayText: {
+    fontFamily: Colors.fonts.bold,
+    color: '#FFB800',
+    fontSize: 9,
+    marginTop: 3,
+  },
 });
