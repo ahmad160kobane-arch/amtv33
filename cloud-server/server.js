@@ -4247,7 +4247,8 @@ app.get("/api/admin/iptv-accounts", requireAuth, async (req, res) => {
 
 app.post("/api/admin/iptv-accounts", requireAuth, async (req, res) => {
   if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
-  const { name, server_url, username, password, max_connections, is_upload_account } = req.body;
+  const { name, server_url, username, password, max_connections, is_upload_account,
+    proxy_enabled, proxy_type, proxy_server, proxy_port, proxy_secret, proxy_local_port, proxy_auto_start } = req.body;
   if (!server_url || !username || !password)
     return res
       .status(400)
@@ -4269,7 +4270,7 @@ app.post("/api/admin/iptv-accounts", requireAuth, async (req, res) => {
   }
   const result = await db
     .prepare(
-      "INSERT INTO iptv_accounts (name, server_url, username, password, max_connections, status, created_at, is_upload_account) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+      "INSERT INTO iptv_accounts (name, server_url, username, password, max_connections, status, created_at, is_upload_account, proxy_enabled, proxy_type, proxy_server, proxy_port, proxy_secret, proxy_local_port, proxy_auto_start) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
     )
     .get(
       name || "",
@@ -4280,7 +4281,22 @@ app.post("/api/admin/iptv-accounts", requireAuth, async (req, res) => {
       "active",
       Date.now(),
       !!is_upload_account,
+      !!proxy_enabled,
+      proxy_type || '',
+      proxy_server || '',
+      proxy_port || 0,
+      proxy_secret || '',
+      proxy_local_port || 0,
+      proxy_auto_start !== false,
     );
+  // Auto-start proxy if enabled
+  if (proxy_enabled && proxy_type && proxy_type !== 'none') {
+    const newAcc = await db.prepare("SELECT * FROM iptv_accounts WHERE id = ?").get(result.id);
+    if (newAcc) {
+      const proxyResult = proxyManager.startProxy(newAcc);
+      console.log(`[ProxyManager] Auto-start for new account #${result.id}: ${proxyResult.success ? 'OK' : proxyResult.error}`);
+    }
+  }
   res.json({ success: true, id: result.id });
 });
 
