@@ -4231,22 +4231,23 @@ app.get("/api/admin/iptv-accounts", requireAuth, async (req, res) => {
   if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
   const accounts = await db
     .prepare(
-      "SELECT id, name, server_url, username, password, max_connections, status, created_at FROM iptv_accounts ORDER BY id",
+      "SELECT id, name, server_url, username, password, max_connections, status, created_at, proxy_enabled, proxy_type, proxy_server, proxy_port, proxy_local_port, proxy_auto_start, is_upload_account FROM iptv_accounts ORDER BY id",
     )
     .all();
-  // Count channels per account
+  // Count channels per account + proxy running status
   for (const acc of accounts) {
     const row = await db
       .prepare("SELECT COUNT(*) as c FROM xtream_channels WHERE account_id = ?")
       .get(acc.id);
     acc.channel_count = row ? row.c : 0;
+    acc.proxy_running = proxyManager.getProxyStatus(acc.id).running;
   }
   res.json({ accounts });
 });
 
 app.post("/api/admin/iptv-accounts", requireAuth, async (req, res) => {
   if (!_isAdmin(req)) return res.status(403).json({ error: "admin required" });
-  const { name, server_url, username, password, max_connections } = req.body;
+  const { name, server_url, username, password, max_connections, is_upload_account } = req.body;
   if (!server_url || !username || !password)
     return res
       .status(400)
@@ -4268,7 +4269,7 @@ app.post("/api/admin/iptv-accounts", requireAuth, async (req, res) => {
   }
   const result = await db
     .prepare(
-      "INSERT INTO iptv_accounts (name, server_url, username, password, max_connections, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
+      "INSERT INTO iptv_accounts (name, server_url, username, password, max_connections, status, created_at, is_upload_account) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
     )
     .get(
       name || "",
@@ -4278,6 +4279,7 @@ app.post("/api/admin/iptv-accounts", requireAuth, async (req, res) => {
       max_connections || 1,
       "active",
       Date.now(),
+      !!is_upload_account,
     );
   res.json({ success: true, id: result.id });
 });
@@ -4919,7 +4921,7 @@ app.get('/api/lulu-upload/folders', requireAuth, async (req, res) => {
 // ── IPTV accounts list (for dropdown) ────────────────────────────────────────
 app.get('/api/lulu-upload/iptv-accounts', requireAuth, async (req, res) => {
   if (!_isAdmin(req)) return res.status(403).json({ error: 'admin required' });
-  const rows = await db.prepare('SELECT id, name, server_url FROM iptv_accounts WHERE status = ? ORDER BY id').all('active');
+  const rows = await db.prepare('SELECT id, name, server_url, is_upload_account FROM iptv_accounts WHERE status = ? ORDER BY id').all('active');
   res.json({ accounts: rows });
 });
 

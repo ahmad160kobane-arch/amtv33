@@ -400,7 +400,7 @@ async function remoteUploadItems(params) {
                   .run(poster, backdrop, plot, year, rating, genres, castList, director, country, runtime, imdbId, tmdb?.tmdbId || null, langLabel, now, catalogId);
               } else {
                 const newId = 'ser-' + now + '-' + Math.random().toString(36).slice(2, 6);
-                const row = await _db.prepare("INSERT INTO lulu_catalog (id,title,vod_type,poster,backdrop,plot,year,rating,genres,cast_list,director,country,runtime,imdb_id,tmdb_id,lang,canplay,episode_count,uploaded_at,updated_at) VALUES (?,?,'series',?,?,?,?,?,?,?,?,?,?,?,false,0,?,?) RETURNING id")
+                const row = await _db.prepare("INSERT INTO lulu_catalog (id,title,vod_type,poster,backdrop,plot,year,rating,genres,cast_list,director,country,runtime,imdb_id,tmdb_id,lang,canplay,episode_count,uploaded_at,updated_at) VALUES (?,?,'series',?,?,?,?,?,?,?,?,?,?,?,?,?,false,0,?,?) RETURNING id")
                   .get(newId, seriesTitle, poster, backdrop, plot, year, rating, genres, castList, director, country, runtime, imdbId, tmdb?.tmdbId || null, langLabel, now, now);
                 catalogId = row?.id || newId;
               }
@@ -412,7 +412,7 @@ async function remoteUploadItems(params) {
                 .run(totalC?.c || 0, (playC?.c || 0) > 0, hlsUrl, embedUrl, now, catalogId);
             } else {
               const catId = 'mov-' + fileCode;
-              await _db.prepare("INSERT INTO lulu_catalog (id,title,vod_type,poster,backdrop,plot,year,rating,genres,cast_list,director,country,runtime,imdb_id,tmdb_id,lang,file_code,hls_url,embed_url,canplay,episode_count,lulu_fld_id,uploaded_at,updated_at) VALUES (?,?,'movie',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?) ON CONFLICT (id) DO UPDATE SET file_code=EXCLUDED.file_code,embed_url=EXCLUDED.embed_url,hls_url=COALESCE(NULLIF(lulu_catalog.hls_url,''),EXCLUDED.hls_url),canplay=CASE WHEN lulu_catalog.canplay=true THEN true ELSE EXCLUDED.canplay END,poster=COALESCE(NULLIF(lulu_catalog.poster,''),EXCLUDED.poster),plot=COALESCE(NULLIF(lulu_catalog.plot,''),EXCLUDED.plot),year=COALESCE(NULLIF(lulu_catalog.year,''),EXCLUDED.year),updated_at=EXCLUDED.updated_at")
+              await _db.prepare("INSERT INTO lulu_catalog (id,title,vod_type,poster,backdrop,plot,year,rating,genres,cast_list,director,country,runtime,imdb_id,tmdb_id,lang,file_code,hls_url,embed_url,canplay,episode_count,lulu_fld_id,uploaded_at,updated_at) VALUES (?,?,'movie',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?) ON CONFLICT (id) DO UPDATE SET file_code=EXCLUDED.file_code,embed_url=EXCLUDED.embed_url,hls_url=COALESCE(NULLIF(lulu_catalog.hls_url,''),EXCLUDED.hls_url),canplay=CASE WHEN lulu_catalog.canplay=true THEN true ELSE EXCLUDED.canplay END,poster=COALESCE(NULLIF(lulu_catalog.poster,''),EXCLUDED.poster),plot=COALESCE(NULLIF(lulu_catalog.plot,''),EXCLUDED.plot),year=COALESCE(NULLIF(lulu_catalog.year,''),EXCLUDED.year),updated_at=EXCLUDED.updated_at")
                 .run(catId, finalTitle, poster, backdrop, plot, year, rating, genres, castList, director, country, runtime, imdbId, tmdb?.tmdbId || null, langLabel, fileCode, hlsUrl, embedUrl, canplay, itemFolders[i], now, now);
             }
           } catch (e) { console.error(`[RemoteUpload] DB save error: ${e.message}`); }
