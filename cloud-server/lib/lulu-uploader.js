@@ -304,7 +304,7 @@ async function remoteUploadItems(params) {
     const title = cleanTitle(item.name) || item.name;
     console.log(`\n[RemoteUpload] ═══ [${i + 1}/${total}] ${title} ═══`);
 
-    const ext = item.ext || 'mp4';
+    const ext = item.ext || 'ts';
     const streamType = item.type === 'episode' ? 'series' : 'movie';
     const publicProxyUrl = _buildPublicProxyUrl(iptvAccountId, streamType, item.streamId, ext);
     console.log(`[RemoteUpload] URL: ${publicProxyUrl.replace(IPTV_PROXY_SECRET, '***')}`);

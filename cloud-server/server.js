@@ -551,11 +551,18 @@ app.get("/iptv-proxy/:secret/:iptvId/:type/:filename", async (req, res) => {
 
       console.log(`[IPTV-PROXY] ✓ Streaming ${id}.${ext} status=${iptvRes.statusCode} size=${iptvRes.headers['content-length'] || '?'} range=${req.headers.range || 'none'}`);
 
-      // حرّر المكان بعد بدء البث (الإتصال أصبح streaming وليس blocking)
-      streamingSem.release();
+      // حرّر السيمافور فقط عند انتهاء البث أو خطأ — ليس قبل ذلك!
+      // الاتصال بـ IPTV لا يزال نشطاً أثناء pipe
+      let semReleased = false;
+      const releaseSem = () => {
+        if (!semReleased) { semReleased = true; streamingSem.release(); }
+      };
+      iptvRes.on('end', releaseSem);
+      iptvRes.on('error', () => { releaseSem(); try { res.end(); } catch {} });
+      iptvRes.on('close', releaseSem);
+      res.on('close', () => { releaseSem(); try { iptvRes.destroy(); } catch {} });
 
       iptvRes.pipe(res);
-      iptvRes.on('error', () => { try { res.end(); } catch {} });
       return; // نجح — لا داعي لإعادة المحاولة
 
     } catch (e) {
@@ -5300,8 +5307,6 @@ db.init()
       hlsProxy.start();
 
       liveProxy.start();
-
-      restreamer.start();
 
       restreamer.start();
 

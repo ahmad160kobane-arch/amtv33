@@ -14,6 +14,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const config = require('../config');
+const { streamingSem } = require('./iptv-connection-manager');
 
 const FFMPEG_PATH = config.FFMPEG_PATH || 'ffmpeg';
 
@@ -252,6 +253,12 @@ class FFmpegRestreamer {
     const stream = this.streams.get(streamId);
     if (!stream) return;
 
+    // احجز اتصال IPTV عبر السيمافور — FFmpeg يحتل اتصال مستمر
+    console.log(`[Restreamer] ⏳ انتظار سيمافور IPTV لـ ${stream.name}...`);
+    await streamingSem.acquire(`ffmpeg:${streamId}`);
+    stream._holdsSemaphore = true;
+    console.log(`[Restreamer] ✓ حصل على سيمافور IPTV لـ ${stream.name}`);
+
     // نظّف الملفات القديمة
     this._cleanupDir(stream.streamDir);
 
@@ -326,6 +333,13 @@ class FFmpegRestreamer {
   _handleExit(streamId, code, lastErr) {
     const stream = this.streams.get(streamId);
     if (!stream) return;
+
+    // حرّر سيمافور IPTV — FFmpeg لم يعد يحتل اتصال
+    if (stream._holdsSemaphore) {
+      stream._holdsSemaphore = false;
+      streamingSem.release();
+      console.log(`[Restreamer] 🔓 حرّر سيمافور IPTV: ${stream.name}`);
+    }
 
     stream.ready = false;
 
@@ -404,6 +418,13 @@ class FFmpegRestreamer {
 
     stream.restarting = true; // منع إعادة التشغيل
     stream.ready = false;
+
+    // حرّر سيمافور IPTV
+    if (stream._holdsSemaphore) {
+      stream._holdsSemaphore = false;
+      streamingSem.release();
+      console.log(`[Restreamer] 🔓 حرّر سيمافور IPTV (kill): ${stream.name}`);
+    }
 
     if (stream.process && !stream.process.killed) {
       try { stream.process.kill('SIGTERM'); } catch {}
